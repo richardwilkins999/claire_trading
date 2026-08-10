@@ -16,8 +16,7 @@ from tests.test_graph import NVDA, Script
 
 SECRET = "test-internal-secret"
 # Tue 2026-08-11 14:00 UTC = 10:00 New York — NASDAQ is open
-NOW = 1_786_543_200 - 1_786_543_200 % 60
-CLOCK = lambda: 1_754_920_800  # noqa: E731 — fixed 2026-08-11 14:00 UTC
+CLOCK = lambda: 1_786_456_800  # noqa: E731
 
 
 @pytest.fixture
@@ -63,7 +62,7 @@ def test_interrupt_minted_token_and_session_expiry(world):
     assert r["token_state"] == "minted"
     assert len(r["approval_token"]) == 32
     # expiry is NASDAQ close (20:00 UTC that day), not now+24h
-    assert r["expires_at"] == 1_754_942_400
+    assert r["expires_at"] == 1_786_478_400
     assert "execute" not in script.calls
 
 
@@ -113,7 +112,7 @@ def test_reused_token_409(world):
 
 def test_expired_410(world):
     conn, desk, client, resume_post, wi, script, app = world
-    late = lambda: 1_754_942_401                    # noqa: E731 — past close
+    late = lambda: 1_786_478_401                    # noqa: E731 — past close
     with pytest.raises(AuthError) as e:
         thesis_action(conn, approve_payload(conn, wi), resume_post, clock=late)
     assert e.value.code == 410

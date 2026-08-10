@@ -141,6 +141,13 @@ CREATE TABLE IF NOT EXISTS price_alerts (
   fire_count_date TEXT                     -- YYYY-MM-DD the counter belongs to
 );
 
+CREATE TABLE IF NOT EXISTS service_health ( -- every guard publishes its own
+  service TEXT NOT NULL,                    -- watcher | custodian | api
+  checked_at INTEGER NOT NULL,
+  ok TEXT NOT NULL,                         -- ok | degraded | stale
+  detail TEXT
+);
+
 -- ── providers & agents (the multi-LLM layer) ─────────────────────────────
 CREATE TABLE IF NOT EXISTS providers (
   id TEXT PRIMARY KEY,
