@@ -48,3 +48,30 @@ function fmtBig(n) {
   return fmt(n);
 }
 function ts(t) { return t ? new Date(t * 1000).toLocaleString() : '—'; }
+function ago(t) {
+  if (!t) return '—';
+  const s = Date.now() / 1000 - t;
+  if (s < 90) return Math.round(s) + 's ago';
+  if (s < 5400) return Math.round(s / 60) + 'm ago';
+  if (s < 172800) return Math.round(s / 3600) + 'h ago';
+  return Math.round(s / 86400) + 'd ago';
+}
+const esc = s => { const d = document.createElement('span');
+  d.textContent = s ?? ''; return d.innerHTML; };
+function sparkline(series, w = 70, h = 22) {
+  if (!series || series.length < 2) return '';
+  const lo = Math.min(...series), hi = Math.max(...series);
+  const up = series[series.length - 1] >= series[0];
+  const pts = series.map((v, i) =>
+    `${(i / (series.length - 1) * w).toFixed(1)},` +
+    `${(h - 2 - (h - 4) * (v - lo) / (hi - lo || 1)).toFixed(1)}`).join(' ');
+  return `<svg class="spark" width="${w}" height="${h}"><polyline
+    points="${pts}" fill="none" stroke-width="1.4"
+    stroke="${up ? 'var(--good)' : 'var(--bad)'}"/></svg>`;
+}
+function feeFor(model, notional) {
+  if (!model) return 0;
+  if (model.type === 'pct')
+    return Math.max(notional * Number(model.pct || 0), Number(model.min || 0));
+  return Number(model.per_trade || 0);
+}

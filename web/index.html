@@ -2,127 +2,303 @@
 <link rel="stylesheet" href="/style.css"><script src="/nav.js"></script>
 <script>nav('/')</script>
 <main>
-  <h1>Mission Control</h1>
+  <h1>Mission Control <span id="conn" class="pill">connecting…</span></h1>
   <div id="banner"></div>
-  <div class="tiles" id="tiles"></div>
-  <h2>The desk — click any component</h2>
-  <div class="row" style="align-items:flex-start">
-    <div style="flex:1;min-width:560px" id="diagram"></div>
-    <div style="width:320px" id="panel" class="card">
-      <p class="muted">Select a component to inspect and configure it.</p>
-    </div>
-  </div>
-  <h2>Pending approvals</h2>
+
+  <h2>Needs your decision</h2>
   <div id="approvals" class="muted">loading…</div>
+
+  <h2>The desk — click any component to inspect &amp; configure</h2>
+  <div class="lane"><span class="llabel">pipeline · LLMs propose</span>
+    <div class="desk" id="pipeline"></div></div>
+  <div class="lane"><span class="llabel">deterministic money path · no LLM</span>
+    <div class="desk" id="services"></div></div>
+  <div class="lane"><span class="llabel">venues &amp; data</span>
+    <div class="desk" id="venues"></div></div>
+
+  <h2>Accounts &amp; system</h2>
+  <div class="tiles" id="tiles"></div>
 </main>
+
+<div class="drawer" id="drawer">
+  <div class="row" style="justify-content:space-between">
+    <h3 id="d-title">—</h3>
+    <button class="ghost" onclick="closeDrawer()">✕ close</button>
+  </div>
+  <div id="d-body"></div>
+</div>
+
 <script>
-let GRAPH = null, selected = null;
+let GRAPH = null, PROVIDERS = [], APPROVALS = {cards: [], accounts: []};
+let OVERVIEW = null, selected = null, fxCache = {};
 
-const POS = {  /* fixed layout: pipeline spine + side systems */
-  claire_chat: [20, 12], screener: [20, 64],
-  prepare: [20, 128], fundamental: [150, 64], technical: [150, 128],
-  news: [150, 192], bull: [290, 96], bear: [400, 96],
-  arbiter: [510, 128], gate: [620, 128], execute: [730, 128],
-  recorder: [840, 128], market: [150, 268],
-  alpaca: [730, 220], saxo: [730, 268], moomoo: [730, 316]};
-const NODE_W = 104, NODE_H = 40;
+const typing = () => ['INPUT', 'TEXTAREA', 'SELECT']
+  .includes((document.activeElement || {}).tagName);
 
-function nodeSvg(id, label, sub, cls) {
-  const [x, y] = POS[id];
-  return `<g class="node ${cls} ${selected === id ? 'selected' : ''}"
-    transform="translate(${x},${y})" onclick="select('${id}')">
-    <rect width="${NODE_W}" height="${NODE_H}"/>
-    <text x="8" y="17">${label}</text>
-    <text x="8" y="31" class="sub">${sub || ''}</text></g>`;
+/* ── approvals with live estimates (v1 pattern) ──────────────────── */
+function renderApprovals() {
+  const el = document.getElementById('approvals');
+  if (typing() && el.querySelector('input')) return;  // never yank the field
+  const cards = APPROVALS.cards;
+  el.innerHTML = cards.length === 0
+    ? `<p class="muted">Nothing awaiting approval. Launch research from
+       <a href="/markets">Markets</a> or ask <a href="/claire">Claire</a> —
+       verdicts land here for your decision.</p>`
+    : cards.map(card).join('');
+  cards.forEach(a => updEst(a.id));
 }
-function edge(a, b) {
-  const [x1, y1] = POS[a], [x2, y2] = POS[b];
-  return `<path class="edge" d="M ${x1 + NODE_W} ${y1 + NODE_H / 2}
-    C ${x1 + NODE_W + 24} ${y1 + NODE_H / 2}, ${x2 - 24} ${y2 + NODE_H / 2},
-      ${x2} ${y2 + NODE_H / 2}"/>`;
+function card(a) {
+  const t = a.thesis || {};
+  const sell = t.direction === 'sell';
+  const lock = a.locked ? `<p class="warn">🔒 locked — click 🔑 in the nav and
+    paste the dashboard key from etc/claire.env</p>` : '';
+  const closed = a.session && a.session.is_open === false
+    ? `<p class="muted">⏸ ${a.session.exchange} is closed — an approved order
+       queues until ${new Date(a.session.next_open).toLocaleString()}</p>` : '';
+  return `<div class="card">
+    <h3>${(t.direction || '?').toUpperCase()} ${esc(a.ticker)}
+      <span class="pill">${a.kind}</span>
+      <span class="pill">conviction ${fmt(t.conviction)}</span></h3>
+    <p class="muted">entry ${fmt(t.entry_low)}–${fmt(t.entry_high)}
+      · stop ${fmt(t.stop_loss)} · target ${fmt(t.take_profit)}
+      · ${t.currency || ''} · expires ${ts(a.expires_at)}</p>
+    ${(t.conditions || []).map(c => `<p>⚠ ${esc(c)}</p>`).join('')}
+    ${closed}${lock}
+    <div class="row">
+      ${sell ? `<label>qty <input id="qty-${a.id}" type="number" value="0"
+          style="width:90px" oninput="updEst('${a.id}')"></label>`
+        : `<label>size <input id="size-${a.id}" type="number" value="1000"
+          style="width:90px" oninput="updEst('${a.id}')"></label>`}
+      <select id="broker-${a.id}" onchange="updEst('${a.id}')">
+        <option>alpaca</option><option>saxo</option><option>moomoo</option>
+      </select>
+      <button ${a.locked ? 'disabled' : ''}
+        onclick="act('${a.id}','approve','${a.token}',${sell})">✔ Approve</button>
+      <button class="reject" ${a.locked ? 'disabled' : ''}
+        onclick="act('${a.id}','reject','${a.token}')">✖ Reject</button>
+    </div>
+    <p class="muted" id="est-${a.id}" style="font-family:var(--mono);
+      font-size:.78rem;margin-top:.4rem"></p></div>`;
 }
-function drawDiagram(g) {
-  const nodes = [], edges = [];
-  const agentEdges = [...g.edges.map(([a, b]) =>
-    [a === 'arbiter' ? 'arbiter' : a, b === 'record' ? 'recorder' : b])];
-  for (const [a, b] of agentEdges)
-    if (POS[a] && POS[b]) edges.push(edge(a, b));
-  ['fundamental', 'technical', 'news'].forEach(a => edges.push(edge('market', a)));
-  g.brokers.forEach(b => { if (POS[b.broker]) edges.push(edge('execute', b.broker)); });
-  for (const id of ['prepare', 'gate', 'execute'])
-    nodes.push(nodeSvg(id, id, id === 'gate' ? 'human approval ⏸' :
-      'deterministic', 'ok'));
-  for (const [id, a] of Object.entries(g.agents)) {
-    if (!POS[id]) continue;
-    nodes.push(nodeSvg(id, a.display_name || id,
-      `${a.provider_id}/${(a.model || '').slice(0, 14)}`, a.state));
+async function updEst(id) {
+  const a = APPROVALS.cards.find(x => x.id === id);
+  const est = document.getElementById('est-' + id);
+  if (!a || !est) return;
+  const t = a.thesis || {};
+  const broker = (document.getElementById('broker-' + id) || {}).value;
+  const acct = APPROVALS.accounts.find(x => x.broker === broker);
+  if (!acct) return;
+  if (t.direction === 'sell') {
+    est.textContent = 'exit sized in shares — proceeds credit ' + acct.id;
+    return;
   }
-  g.brokers.forEach(b => nodes.push(nodeSvg(b.broker, b.broker,
-    `${b.adapter} · ${b.open_orders} open`, b.mcp && b.mcp.creds_present ?
-    'ok' : 'idle')));
-  nodes.push(nodeSvg('market', 'market data',
-    `Yahoo${g.market_data.stale_keys ? ' · stale!' : ''}`,
-    g.market_data.stale_keys ? 'error' : 'ok'));
-  document.getElementById('diagram').innerHTML =
-    `<svg viewBox="0 0 960 372" style="width:100%">${edges.join('')}${nodes.join('')}</svg>`;
+  const size = Number((document.getElementById('size-' + id) || {}).value) || 0;
+  const entry = t.entry_high || t.entry_low;
+  let fx = 1, fxNote = '';
+  if (entry && t.currency && t.currency !== acct.ccy) {
+    const key = t.currency + acct.ccy;
+    if (!(key in fxCache)) {
+      try { fxCache[key] = Number((await api(`/api/fx?from=${t.currency}` +
+        `&to=${acct.ccy}`)).rate); } catch { fxCache[key] = null; }
+    }
+    fx = fxCache[key];
+    fxNote = fx ? ` · fx ${fmt(fx, 4)}` : ' · fx unavailable';
+  }
+  const entryBase = entry && fx ? entry * fx : null;
+  const shares = entryBase ? Math.floor(size / entryBase) : null;
+  const fee = feeFor(acct.fee_model, size);
+  est.innerHTML = `≈ <b>${shares ?? '—'} shares</b> @ ~${fmt(entry)}
+    ${t.currency || ''} · est fee <b>${fmt(fee)} ${acct.ccy}</b>
+    · ${fmt(size / (acct.cash || 1) * 100, 1)}% of ${acct.id} cash
+    (${fmt(acct.cash)} ${acct.ccy})${fxNote}
+    ${size > acct.cash ? ' · <b class="bad">exceeds cash!</b>' : ''}`;
+}
+async function act(id, action, token, sell) {
+  const body = {work_item_id: id, action, token};
+  if (action === 'approve') {
+    body.broker = document.getElementById('broker-' + id).value;
+    if (sell) body.qty = Number(document.getElementById('qty-' + id).value);
+    else body.size_base = Number(document.getElementById('size-' + id).value);
+  }
+  try { await api('/api/thesis-action', body); toast(action + 'd ✓'); }
+  catch (e) { toast(e.message, false); }
+  refresh();
 }
 
-function select(id) {
-  selected = id; drawDiagram(GRAPH);
-  const p = document.getElementById('panel');
+/* ── the desk: staged pipeline strip (v1 pattern) ─────────────────── */
+const STAGES = [
+  {label: 'prepare', det: ['prepare']},
+  {label: 'analyze', agents: ['fundamental', 'technical', 'news']},
+  {label: 'debate', agents: ['bull', 'bear']},
+  {label: 'arbitrate', agents: ['arbiter']},
+  {label: 'approve', det: ['gate']},
+  {label: 'execute', det: ['execute']},
+  {label: 'record', agents: ['recorder']}];
+
+function acard(id, title, sub, cls) {
+  return `<div class="acard ${cls} ${selected === id ? 'sel' : ''}"
+    onclick="openDrawer('${id}')"><b>${title}</b><br>
+    <span class="sub">${sub}</span></div>`;
+}
+function renderDesk() {
+  const g = GRAPH;
+  document.getElementById('pipeline').innerHTML = STAGES.map(s =>
+    `<div class="stage"><div class="slabel">${s.label}</div>` +
+    (s.agents || []).map(id => {
+      const a = g.agents[id];
+      return a ? acard(id, a.display_name || id,
+        `${a.provider_id}/${(a.model || '').replace('claude-', '')}`,
+        a.state) : '';
+    }).join('') +
+    (s.det || []).map(id => acard(id, id,
+      id === 'gate' ? 'human token ⏸' : 'no LLM', 'det')).join('') +
+    '</div>').join('<div class="sep">›</div>');
+
+  const h = OVERVIEW.health || {};
+  const svc = (id, sub, state) => acard(id, id, sub, state);
+  document.getElementById('services').innerHTML = [
+    svc('watcher', (h.watcher || {}).ok || 'never ran',
+        (h.watcher || {}).ok === 'ok' ? 'ok' : 'error'),
+    svc('custodian', (h.custodian || {}).ok || 'never ran',
+        (h.custodian || {}).ok === 'ok' ? 'ok' : 'error'),
+    (() => { const a = g.agents.claire_chat; return a ? acard('claire_chat',
+      'Claire chat', `${a.provider_id}/${(a.model || '')
+      .replace('claude-', '')}`, a.state) : ''; })(),
+    (() => { const a = g.agents.screener; return a ? acard('screener',
+      'Screener', 'pre-open scans', a.state) : ''; })(),
+  ].join('');
+
+  document.getElementById('venues').innerHTML =
+    g.brokers.map(b => acard(b.broker, b.broker,
+      `${b.adapter} · ${b.open_orders} open · ${fmt(b.cash, 0)} ${b.ccy}`,
+      b.mcp && b.mcp.creds_present ? 'ok' : 'det')).join('') +
+    acard('market', 'market data',
+      'Yahoo' + (g.market_data.stale_keys ? ' · stale!' : ''),
+      g.market_data.stale_keys ? 'error' : 'ok');
+}
+
+/* ── drawer: inspect, query, configure ───────────────────────────── */
+function closeDrawer() {
+  document.getElementById('drawer').classList.remove('open');
+  selected = null; renderDesk();
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeDrawer(); });
+
+async function openDrawer(id) {
+  selected = id; renderDesk();
+  const d = document.getElementById('drawer');
+  d.classList.add('open');
+  document.getElementById('d-title').textContent = id;
+  const body = document.getElementById('d-body');
   const g = GRAPH;
   if (g.agents[id]) {
-    const a = g.agents[id]; const lr = a.last_run;
+    const a = g.agents[id];
+    document.getElementById('d-title').textContent =
+      (a.display_name || id) + ' — ' + a.state;
+    body.innerHTML = '<p class="muted">loading activity…</p>';
+    let act = {runs: [], narrative: null, cost_24h: 0};
+    try { act = await api('/api/agent-activity?id=' + id); } catch {}
     const provOpts = PROVIDERS.map(pr => {
       const okc = a.requires.every(c => pr.capabilities[c]);
-      return `<option value="${pr.id}" ${pr.id === a.provider_id ? 'selected' : ''}
-        ${okc ? '' : 'disabled'}>${pr.display_name}${okc ? '' : ' (incompatible)'}</option>`;
+      return `<option value="${pr.id}" ${pr.id === a.provider_id ?
+        'selected' : ''} ${okc ? '' : 'disabled'}>${pr.display_name}
+        ${okc ? '' : '(incompatible)'}</option>`;
     }).join('');
-    p.innerHTML = `<h3>${a.display_name || id}
-      <span class="pill">${a.state}</span></h3>
-      <p class="muted">tools: ${a.tools.join(', ') || 'none — structured call'}</p>
-      ${lr ? `<p class="muted">last run: ${lr.status} · $${fmt(lr.cost_usd, 4)}
-        · ${lr.tokens_in || 0}/${lr.tokens_out || 0} tok · ${ts(lr.started_at)}</p>`
-        : '<p class="muted">never run</p>'}
-      <div class="row" style="margin:.5rem 0">
-        <select id="p-prov">${provOpts}</select>
-        <input id="p-model" value="${a.model}" style="width:100%">
-        <button onclick="saveAgent('${id}')">Save</button>
-        <button class="ghost" onclick="testProv()">Test</button>
+    body.innerHTML = `
+      <p class="muted">${a.tools.length ? 'tools: ' + a.tools.join(', ')
+        : 'single structured call — no tools'} · $${fmt(act.cost_24h, 4)}
+        spent in 24h</p>
+      ${act.current ? `<p class="ok">● running now on
+        ${esc(act.current.ticker || act.current.work_item_id || '—')}</p>`
+        : '<p class="muted">idle right now</p>'}
+      <h2>Ask about this agent</h2>
+      <div class="row"><input id="d-q" style="flex:1" placeholder=
+        "e.g. what did ${id} conclude last, and why?"
+        onkeydown="if(event.key==='Enter')askAgent('${id}')">
+        <button class="ghost" onclick="askAgent('${id}')">Ask Claire</button>
       </div>
-      <details><summary class="muted">system prompt</summary>
-        <pre style="white-space:pre-wrap">${a.system_prompt}</pre></details>`;
+      <div id="d-answer"></div>
+      <h2>Recent runs</h2>
+      ${act.runs.length === 0 ? `<p class="muted">Never run — launch a
+        pipeline from Markets and this agent will light up.</p>`
+        : `<table><tr><th>when</th><th>work item</th><th>status</th>
+          <th>tokens</th><th>cost</th></tr>` + act.runs.map(r =>
+          `<tr><td>${ago(r.started_at)}</td>
+          <td>${esc(r.ticker || r.work_item_id || '—')}</td>
+          <td class="${r.status === 'ok' ? 'ok' : r.status === 'error' ?
+            'bad' : 'warn'}">${r.status}</td>
+          <td>${r.tokens_in || 0}/${r.tokens_out || 0}</td>
+          <td>$${fmt(r.cost_usd, 4)}</td></tr>`).join('') + '</table>'}
+      ${act.narrative ? `<h2>Latest narrative
+        (${esc(act.narrative.work_item)})</h2>
+        <pre style="white-space:pre-wrap">${esc(act.narrative.text)}</pre>` : ''}
+      <h2>Model &amp; provider</h2>
+      <div class="row">
+        <select id="p-prov">${provOpts}</select>
+        <input id="p-model" value="${a.model}" style="flex:1">
+        <button onclick="saveAgent('${id}')">Save</button>
+        <button class="ghost" onclick="testProv()">Test</button></div>
+      <details style="margin-top:.6rem"><summary class="muted">system prompt
+        </summary><pre style="white-space:pre-wrap">${esc(a.system_prompt)}
+        </pre></details>`;
     return;
   }
   const b = g.brokers.find(x => x.broker === id);
   if (b) {
-    p.innerHTML = `<h3>${b.broker} <span class="pill">${b.environment}</span></h3>
-      <p>account <b>${b.account}</b><br>cash <b>${fmt(b.cash)}</b> ${b.ccy}<br>
-      open orders <b>${b.open_orders}</b><br>
-      adapter <b>${b.adapter}</b></p>
-      ${b.mcp ? `<p class="muted">MCP: <code>${b.mcp.command}</code><br>
+    body.innerHTML = `<p>account <b>${b.account}</b>
+      <span class="pill">${b.environment}</span><br>
+      cash <b>${fmt(b.cash)}</b> ${b.ccy} · open orders
+      <b>${b.open_orders}</b> · adapter <b>${b.adapter}</b></p>
+      ${b.mcp ? `<p class="muted">MCP: <code>${esc(b.mcp.command)}</code><br>
         creds (${b.mcp.env_refs.join(', ') || 'none'}):
         <b class="${b.mcp.creds_present ? 'ok' : 'bad'}">
         ${b.mcp.creds_present ? 'present' : 'missing'}</b><br>
-        ${b.mcp.note}</p>` : ''}
-      <p class="muted">Fee model & risk limits are per-account rows in
-        broker_accounts (desk.db).</p>`;
+        ${esc(b.mcp.note)}</p>` : ''}`;
     return;
   }
-  if (id === 'market') {
-    p.innerHTML = `<h3>Market data</h3><p>source: Yahoo Finance (chart /
-      spark / search / screener, FX via =X symbols).<br>
-      stale cached entries: <b>${g.market_data.stale_keys}</b></p>
-      <p class="muted">All Yahoo access is isolated in app/tools/market.py —
-      breakage is one file.</p>`;
-    return;
-  }
-  const desc = {prepare: 'Instrument + FX enrichment; deterministic.',
-    gate: 'interrupt() — nothing passes without a human-presented token (§10).',
-    execute: 'Deterministic order placement; session-aware; risk caps; no LLM.'};
-  p.innerHTML = `<h3>${id}</h3><p class="muted">${desc[id] || ''}</p>`;
+  const desc = {
+    prepare: 'Instrument + FX enrichment. Deterministic.',
+    gate: 'interrupt() — the run suspends here until you present the ' +
+      'single-use token from an approval card. No LLM can pass it.',
+    execute: 'Session-aware order placement with risk caps. No LLM in ' +
+      'this file — an approved typed thesis contains every number needed.',
+    watcher: 'LLM-free stop-loss monitor: session-aware, escalating ' +
+      're-alerts, launches sell-reviews. Publishes its own health.',
+    custodian: 'Fills, order TTLs, approval expiry, orphan checks, ' +
+      'reconciliation. Runs in-process (5 min) + systemd timer.',
+    market: 'Yahoo Finance module. All access isolated in one file; ' +
+      'last-good cache serves stale values under rate limits.'};
+  body.innerHTML = `<p class="muted">${desc[id] || ''}</p>`;
 }
-
+async function askAgent(id) {
+  const q = document.getElementById('d-q').value.trim();
+  if (!q) return;
+  const out = document.getElementById('d-answer');
+  out.innerHTML = '<p class="muted">asking Claire…</p>';
+  try {
+    const r = await fetch('/api/ask', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({thread: 'drawer',
+        text: `[question about the "${id}" agent] ${q}`})});
+    const reader = r.body.getReader(); const dec = new TextDecoder();
+    let buf = '', text = '';
+    for (;;) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, {stream: true});
+      const lines = buf.split('\n'); buf = lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        let ev; try { ev = JSON.parse(line); } catch { continue; }
+        if (ev.kind === 'text') { text = ev.text;
+          out.innerHTML = `<pre style="white-space:pre-wrap">${esc(text)}</pre>`; }
+        if (ev.kind === 'error')
+          out.innerHTML = `<p class="bad">${esc(ev.text)}</p>`;
+      }
+    }
+  } catch (e) { out.innerHTML = `<p class="bad">${esc(e.message)}</p>`; }
+}
 async function saveAgent(id) {
   try {
     await api('/api/agent', {id,
@@ -141,70 +317,36 @@ async function testProv() {
   } catch (e) { toast(e.message, false); }
 }
 
-let PROVIDERS = [];
+/* ── overview + SSE ──────────────────────────────────────────────── */
 async function refresh() {
-  const [o, g, provs, cards] = await Promise.all([
+  [OVERVIEW, GRAPH, PROVIDERS, APPROVALS] = await Promise.all([
     api('/api/overview'), api('/api/agent-graph'), api('/api/providers'),
     api('/api/approvals')]);
-  GRAPH = g; PROVIDERS = provs;
-  document.getElementById('banner').innerHTML = o.flags.length
-    ? `<div class="banner">${o.flags.map(f => `<div>⚠ ${f}</div>`).join('')}</div>` : '';
-  const h = s => {
-    const v = (o.health[s] || {ok: 'stale'}).ok;
-    const cls = v === 'ok' ? 'ok' : (v === 'stale' ? 'warn' : 'bad');
-    return `<b class="${cls}">${v}</b><span>${s}</span>`;
-  };
+  document.getElementById('banner').innerHTML = OVERVIEW.flags.length
+    ? `<div class="banner">${OVERVIEW.flags.map(f =>
+        `<div>⚠ ${esc(f)}</div>`).join('')}</div>` : '';
+  renderApprovals();
+  renderDesk();
   document.getElementById('tiles').innerHTML =
-    `<div class="tile"><b>${o.pending}</b><span>pending approvals</span></div>` +
-    `<div class="tile"><b class="${o.claire_api ? 'ok' : 'bad'}">` +
-    `${o.claire_api ? 'up' : 'down'}</b><span>claire-api :7788</span></div>` +
-    `<div class="tile">${h('watcher')}</div>` +
-    `<div class="tile">${h('custodian')}</div>` +
-    o.cash.map(c => `<div class="tile"><b>${fmt(c.cash)}</b>` +
-      `<span>${c.account} cash (${c.ccy})</span></div>`).join('');
-  drawDiagram(g);
-  if (selected) select(selected);
-  document.getElementById('approvals').innerHTML = cards.length === 0
-    ? '<p class="muted">Nothing awaiting approval.</p>'
-    : cards.map(card).join('');
+    OVERVIEW.cash.map(c => `<div class="tile"><b>${fmt(c.cash)}</b>
+      <span>${c.account} (${c.ccy})</span></div>`).join('') +
+    `<div class="tile"><b>${OVERVIEW.pending}</b><span>pending</span></div>` +
+    `<div class="tile"><b class="${OVERVIEW.claire_api ? 'ok' : 'bad'}">
+      ${OVERVIEW.claire_api ? 'up' : 'down'}</b><span>claire-api</span></div>`;
 }
-function card(a) {
-  const t = a.thesis || {};
-  const sell = t.direction === 'sell';
-  const lock = a.locked ? `<p class="warn">🔒 approvals locked — click the 🔑
-    in the nav and paste the dashboard key</p>` : '';
-  return `<div class="card">
-    <h3>${(t.direction || '?').toUpperCase()} ${a.ticker}
-      <span class="pill">${a.kind}</span>
-      <span class="pill">conviction ${fmt(t.conviction)}</span></h3>
-    <p class="muted">entry ${fmt(t.entry_low)}–${fmt(t.entry_high)}
-      · stop ${fmt(t.stop_loss)} · target ${fmt(t.take_profit)}
-      · ${t.currency || ''} · expires ${ts(a.expires_at)}</p>
-    ${(t.conditions || []).map(c => `<p>⚠ ${c}</p>`).join('')}${lock}
-    <div class="row">
-      ${sell ? `<label>qty <input id="qty-${a.id}" type="number" value="0"
-          style="width:90px"></label>`
-        : `<label>size <input id="size-${a.id}" type="number" value="1000"
-          style="width:90px"></label>`}
-      <select id="broker-${a.id}">
-        <option>alpaca</option><option>saxo</option><option>moomoo</option>
-      </select>
-      <button ${a.locked ? 'disabled' : ''}
-        onclick="act('${a.id}','approve','${a.token}',${sell})">✔ Approve</button>
-      <button class="reject" ${a.locked ? 'disabled' : ''}
-        onclick="act('${a.id}','reject','${a.token}')">✖ Reject</button>
-    </div></div>`;
+function connectSSE() {
+  const dot = document.getElementById('conn');
+  const es = new EventSource('/api/events');
+  es.onopen = () => { dot.textContent = '● live'; dot.className = 'pill ok'; };
+  es.onerror = () => { dot.textContent = '○ polling';
+    dot.className = 'pill warn'; };
+  es.onmessage = ev => {
+    try {
+      const e = JSON.parse(ev.data);
+      if (['awaiting_approval', 'approved', 'rejected', 'expired', 'done',
+           'failed', 'executing'].includes(e.to_state)) refresh();
+    } catch {}
+  };
 }
-async function act(id, action, token, sell) {
-  const body = {work_item_id: id, action, token};
-  if (action === 'approve') {
-    body.broker = document.getElementById('broker-' + id).value;
-    if (sell) body.qty = Number(document.getElementById('qty-' + id).value);
-    else body.size_base = Number(document.getElementById('size-' + id).value);
-  }
-  try { await api('/api/thesis-action', body); toast(action + 'd ✓'); }
-  catch (e) { toast(e.message, false); }
-  refresh();
-}
-refresh(); setInterval(refresh, 8000);
+refresh(); connectSSE(); setInterval(refresh, 20000);
 </script>

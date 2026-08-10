@@ -42,11 +42,42 @@ PIPELINE_EDGES = [("prepare", "fundamental"), ("prepare", "technical"),
 
 def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                   secret="", dash_key="", narratives=None, clock=time.time,
-                  port=7787, env=None, cal=None):
+                  port=7787, env=None, cal=None, sse_interval=2.0):
     resume_post = approvals.default_resume_post(api_base, secret)
     env = env or {}
     status_cache = {"t": 0.0, "ok": False}
     status_lock = threading.Lock()
+
+    # ── SSE fan-out (v1 pattern): one poller thread watches desk.db and
+    #    pushes new event rows to every connected browser queue ────────────
+    import queue as _queue
+    sse_clients: list = []
+    sse_lock = threading.Lock()
+
+    def sse_poller():
+        row = conn.execute("SELECT COALESCE(MAX(id),0) m FROM events").fetchone()
+        last = row["m"]
+        while True:
+            time.sleep(sse_interval)
+            try:
+                rows = [dict(r) for r in conn.execute(
+                    "SELECT * FROM events WHERE id > ? ORDER BY id LIMIT 100",
+                    (last,))]
+                for r in rows:
+                    last = r["id"]
+                    with sse_lock:
+                        clients = list(sse_clients)
+                    for q in clients:
+                        try:
+                            q.put_nowait(r)
+                        except _queue.Full:
+                            pass
+            except Exception:                    # noqa: BLE001
+                pass
+
+    if sse_interval:
+        threading.Thread(target=sse_poller, daemon=True,
+                         name="sse-poller").start()
 
     def api_ok():
         with status_lock:
@@ -101,9 +132,18 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                     "/api/agents": self._agents,
                     "/api/providers": self._providers,
                     "/api/agent-graph": self._agent_graph,
+                    "/api/exchanges": self._exchanges,
                 }.get(u.path)
                 if route:
                     return self._send(200, route())
+                if u.path == "/api/events":
+                    return self._sse()
+                if u.path == "/api/fx":
+                    return self._send(200, {"rate": str(market.fx(
+                        q.get("from", "USD"), q.get("to", "USD")))})
+                if u.path == "/api/agent-activity":
+                    return self._send(200, self._agent_activity(
+                        q.get("id", "")))
                 if u.path == "/api/exchange-info":
                     return self._send(200, self._exchange_info(
                         q.get("exchange", "NASDAQ")))
@@ -201,6 +241,85 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                 except Exception:                # noqa: BLE001
                     pass
 
+        def _sse(self):
+            q = _queue.Queue(maxsize=500)
+            with sse_lock:
+                sse_clients.append(q)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            try:
+                while True:
+                    try:
+                        ev = q.get(timeout=20)
+                        self.wfile.write(
+                            f"data: {json.dumps(ev, default=str)}\n\n".encode())
+                    except _queue.Empty:
+                        self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            finally:
+                with sse_lock:
+                    if q in sse_clients:
+                        sse_clients.remove(q)
+
+        def _exchanges(self):
+            """The world-markets strip: pure session-calendar data — no Yahoo,
+            immune to rate limits, always instant."""
+            cal = cal_or_default()
+            now = datetime.fromtimestamp(int(clock()), tz=timezone.utc)
+            out = []
+            for ex in ("SGX", "HKEX", "TSE", "ASX", "NSE", "LSE", "XETRA",
+                       "PARIS", "NYSE", "NASDAQ"):
+                s = cal.get(ex)
+                if s is None:
+                    continue
+                is_open = sessions.is_open(ex, now, cal)
+                lunch = False
+                if s.lunch_break and not is_open:
+                    nxt = sessions.next_open(ex, now, cal)
+                    lunch = nxt.date() == now.astimezone(nxt.tzinfo).date() \
+                        and nxt.time().isoformat()[:5] == \
+                        s.lunch_break.split("-")[1]
+                out.append({"exchange": ex, "tz": s.tz, "is_open": is_open,
+                            "at_lunch": lunch,
+                            "open_time": s.open_time,
+                            "close_time": s.close_time,
+                            "lunch_break": s.lunch_break,
+                            "next_open": sessions.next_open(ex, now,
+                                                            cal).isoformat(),
+                            "session_close": sessions.close_of(
+                                ex, now, cal).isoformat()})
+            return out
+
+        def _agent_activity(self, agent_id):
+            """What is this agent doing? Recent LLM runs, the work items they
+            belong to, and the agent's latest written narrative."""
+            runs = [dict(r) for r in conn.execute(
+                "SELECT r.*, w.ticker, w.state AS wi_state FROM agent_runs r"
+                " LEFT JOIN work_items w ON w.id = r.work_item_id"
+                " WHERE r.agent_id=? ORDER BY r.started_at DESC LIMIT 10",
+                (agent_id,))]
+            current = next((r for r in runs if r["status"] == "running"), None)
+            narrative = None
+            for r in runs:
+                if r["work_item_id"] and narratives:
+                    try:
+                        narrative = {"work_item": r["work_item_id"],
+                                     "text": narratives.read(
+                                         r["work_item_id"], agent_id)[:2000]}
+                        break
+                    except OSError:
+                        continue
+            (cost_today,) = conn.execute(
+                "SELECT COALESCE(SUM(cost_usd),0) FROM agent_runs"
+                " WHERE agent_id=? AND started_at > ?",
+                (agent_id, int(clock()) - 86400)).fetchone()
+            return {"agent_id": agent_id, "current": current, "runs": runs,
+                    "narrative": narrative, "cost_24h": cost_today}
+
         # ── views ────────────────────────────────────────────────────────
         def _overview(self):
             states = {r["state"]: r["n"] for r in conn.execute(
@@ -243,21 +362,41 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
 
         def _approvals(self):
             paired = self._paired() or not dash_key
-            out = []
+            cal = cal_or_default()
+            nowdt = datetime.fromtimestamp(int(clock()), tz=timezone.utc)
+            accounts = [{
+                "id": a["id"], "broker": a["broker"],
+                "ccy": a["base_currency"],
+                "cash": repo.cash_balance(a["id"]) / 1e6,
+                "fee_model": json.loads(a["fee_model"])}
+                for a in conn.execute("SELECT * FROM broker_accounts")]
+            cards = []
             now = int(clock())
             for r in conn.execute(
                     "SELECT * FROM work_items WHERE state='awaiting_approval'"
                     " ORDER BY created_at DESC"):
                 if r["expires_at"] and now >= r["expires_at"]:
                     continue                     # expiry on every read path §12
-                out.append({
+                inst = conn.execute(
+                    "SELECT exchange FROM instruments WHERE ticker=? LIMIT 1",
+                    (r["ticker"],)).fetchone()
+                exchange = inst["exchange"] if inst else None
+                session = {}
+                if exchange and exchange in cal:
+                    session = {"exchange": exchange,
+                               "is_open": sessions.is_open(exchange, nowdt,
+                                                           cal),
+                               "next_open": sessions.next_open(
+                                   exchange, nowdt, cal).isoformat()}
+                cards.append({
                     "id": r["id"], "kind": r["kind"], "ticker": r["ticker"],
                     "thesis": json.loads(r["thesis_json"] or "{}"),
                     # tokens ONLY for a paired browser (§10 rev2)
                     "token": r["approval_token"] if paired else None,
                     "locked": not paired,
+                    "session": session,
                     "expires_at": r["expires_at"]})
-            return out
+            return {"cards": cards, "accounts": accounts}
 
         def _portfolio(self):
             accounts = []

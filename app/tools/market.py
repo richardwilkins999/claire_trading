@@ -128,8 +128,10 @@ class Market:
                 raise MarketError(f"no price for {sym}")
             ccy = d.get("currency") or currency_for(sym)
             px, ccy = normalize_price(price, ccy)
+            series = d.get("close") if isinstance(d.get("close"), list) else []
             out[sym] = {"symbol": sym, "price": px, "currency": ccy,
                         "stale": stale,
+                        "series": [x for x in series if x is not None][-40:],
                         "previous_close": d.get("previousClose")}
         return out
 

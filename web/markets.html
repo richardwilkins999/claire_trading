@@ -3,27 +3,238 @@
 <script src="/charts.js"></script>
 <script>nav('/markets')</script>
 <main>
-  <h1>Markets</h1>
-  <div class="row">
-    <select id="exchange" onchange="loadExchange()">
-      <option>NASDAQ</option><option>NYSE</option><option>LSE</option>
-      <option>SGX</option><option>HKEX</option><option>TSE</option>
-      <option>ASX</option><option>XETRA</option><option>PARIS</option>
-      <option>NSE</option>
-    </select>
-    <div id="exinfo" class="card" style="flex:1;margin:0">loading…</div>
-  </div>
+  <h1>World Markets</h1>
+  <div class="mstrip" id="mstrip"></div>
+  <div id="exinfo" class="card" style="margin:.2rem 0 1rem">loading…</div>
 
-  <div class="tabs">
-    <button id="tab-all" class="on" onclick="setTab('all')">All stocks</button>
-    <button id="tab-tv" onclick="setTab('tv')">TradingView picks</button>
-    <span class="muted" id="listnote"></span>
-  </div>
-  <div id="list">loading…</div>
+  <div class="split">
+    <div>
+      <div class="tabs">
+        <button id="tab-all" class="on" onclick="setTab('all')">All stocks</button>
+        <button id="tab-tv" onclick="setTab('tv')">TradingView picks</button>
+        <button id="tab-search" onclick="setTab('search')">Search</button>
+      </div>
+      <div class="row" style="margin-bottom:.5rem">
+        <input id="filter" placeholder="filter…" style="flex:1"
+          oninput="renderList()">
+        <span class="muted" id="listnote" style="font-size:.75rem"></span>
+      </div>
+      <div id="searchbar" class="row" style="display:none;margin-bottom:.5rem">
+        <input id="q" placeholder="search any listed company worldwide…"
+          style="flex:1" onkeydown="if(event.key==='Enter')doSearch()">
+        <button class="ghost" onclick="doSearch()">Search</button>
+      </div>
+      <div id="list"><p class="muted">loading…</p></div>
+      <div class="row" id="pager" style="margin-top:.5rem"></div>
+    </div>
 
-  <div id="detail" style="display:none">
-    <h2 id="dtitle">—</h2>
-    <div class="row" style="margin-bottom:.5rem">
+    <div class="sticky" id="detail">
+      <div class="card" style="margin:0">
+        <p class="muted">Select a stock on the left — its chart and analysis
+        tools appear here. Toggle SMA / volume / RSI for your own read, or
+        send it to Claire's pipeline for the full desk treatment.</p>
+      </div>
+    </div>
+  </div>
+</main>
+<script>
+const SUFFIX = {SGX: '.SI', HKEX: '.HK', TSE: '.T', ASX: '.AX', XETRA: '.DE',
+  PARIS: '.PA', NSE: '.NS', LSE: '.L'};
+const CCY = {NASDAQ: 'USD', NYSE: 'USD', LSE: 'GBP', SGX: 'SGD', HKEX: 'HKD',
+  TSE: 'JPY', ASX: 'AUD', XETRA: 'EUR', PARIS: 'EUR', NSE: 'INR'};
+let exchange = 'NASDAQ', tab = 'all', rows = [], page = 0, total = null;
+let sortKey = 'mcap', sortDir = -1, sel = null, chartData = null;
+let EXCHANGES = [], sparks = {}, clockTimer = null;
+
+function exchangeOf(symbol) {
+  for (const [ex, suf] of Object.entries(SUFFIX))
+    if (symbol.endsWith(suf)) return [ex, symbol.slice(0, -suf.length)];
+  return ['NASDAQ', symbol];
+}
+
+/* ── world-markets strip ─────────────────────────────────────────── */
+async function loadStrip() {
+  EXCHANGES = await api('/api/exchanges');
+  renderStrip();
+  clearInterval(clockTimer);
+  clockTimer = setInterval(renderStrip, 1000);
+}
+function renderStrip() {
+  document.getElementById('mstrip').innerHTML = EXCHANGES.map(e => {
+    const t = new Date().toLocaleTimeString('en-GB',
+      {timeZone: e.tz, hour: '2-digit', minute: '2-digit'});
+    const dot = e.is_open ? '<span class="dot open">●</span>'
+      : e.at_lunch ? '<span class="dot lunch">●</span>'
+      : '<span class="dot closed">●</span>';
+    const state = e.is_open ? 'open' : e.at_lunch ? 'lunch'
+      : 'opens ' + new Date(e.next_open).toLocaleString(undefined,
+        {weekday: 'short', hour: '2-digit', minute: '2-digit'});
+    return `<div class="mchip ${e.exchange === exchange ? 'sel' : ''}"
+      onclick="pickExchange('${e.exchange}')"
+      title="hours ${e.open_time}–${e.close_time}${e.lunch_break ?
+        ' (lunch ' + e.lunch_break + ')' : ''} · ${state}">
+      ${dot} <b>${e.exchange}</b><br><span class="t">${t}</span></div>`;
+  }).join('');
+}
+
+/* ── exchange summary (lazy; stale-tolerant) ─────────────────────── */
+async function pickExchange(ex) {
+  exchange = ex; page = 0; renderStrip(); loadList();
+  const el = document.getElementById('exinfo');
+  const e = EXCHANGES.find(x => x.exchange === ex) || {};
+  const base = `<b style="letter-spacing:.08em">${ex}</b>
+    ${e.is_open ? '<span class="pill ok">● TRADING NOW</span>'
+      : `<span class="pill bad">closed — opens ${new Date(e.next_open)
+          .toLocaleString()}</span>`}
+    <span class="muted">hours ${e.open_time}–${e.close_time}${e.lunch_break ?
+      ' · lunch ' + e.lunch_break : ''} (${e.tz})</span>`;
+  el.innerHTML = base + ' <span class="muted">· index loading…</span>';
+  try {
+    const i = await api('/api/exchange-info?exchange=' + ex);
+    const idx = i.index || {};
+    el.innerHTML = base + (idx.level
+      ? ` · index <b>${fmt(idx.level)}</b>
+         <b class="${idx.change_pct >= 0 ? 'ok' : 'bad'}">${idx.change_pct ==
+           null ? '' : (idx.change_pct >= 0 ? '+' : '') +
+           fmt(idx.change_pct) + '%'}</b>
+         <span class="muted">(${idx.symbol}) · volume
+         ${fmtBig(idx.day_volume)} · ${fmt(i.listings, 0)} listings</span>`
+      : ' <span class="muted">· index data unavailable right now</span>');
+  } catch { el.innerHTML = base; }
+}
+
+/* ── list ────────────────────────────────────────────────────────── */
+function setTab(t) {
+  tab = t;
+  for (const x of ['all', 'tv', 'search'])
+    document.getElementById('tab-' + x).className = x === t ? 'on' : '';
+  document.getElementById('searchbar').style.display =
+    t === 'search' ? '' : 'none';
+  if (t === 'search') { rows = []; renderList(); }
+  else loadList();
+}
+async function loadList() {
+  const el = document.getElementById('list');
+  el.innerHTML = '<p class="muted">loading…</p>';
+  try {
+    if (tab === 'all') {
+      const d = await api(`/api/screener?exchange=${exchange}&start=${page * 100}` +
+        '&sort=' + (sortKey === 'price' ? 'intradayprice' : 'intradaymarketcap'));
+      rows = d.rows.map(r => ({...r, ticker: r.symbol}));
+      total = d.total;
+      document.getElementById('listnote').textContent =
+        `${page * 100 + 1}–${page * 100 + rows.length} of ${fmt(total, 0)}`;
+    } else if (tab === 'tv') {
+      const d = await api('/api/tv-recs?exchange=' + exchange);
+      rows = d.rows.map(r => ({...r,
+        symbol: r.ticker + (SUFFIX[exchange] || '')}));
+      total = null;
+      document.getElementById('listnote').textContent =
+        'TradingView technical-rating leaders (unofficial API)';
+    }
+    renderList();
+    loadSparks();
+  } catch (e) { el.innerHTML = `<p class="bad">${esc(e.message)}</p>`; }
+  renderPager();
+}
+async function doSearch() {
+  const q = document.getElementById('q').value.trim();
+  if (!q) return;
+  const found = await api('/api/search?q=' + encodeURIComponent(q));
+  rows = found.filter(r => r.symbol).map(r => {
+    const [ex, ticker] = exchangeOf(r.symbol);
+    return {symbol: r.symbol, ticker, name: r.name,
+            exchange: r.exchange || ex};
+  });
+  document.getElementById('listnote').textContent =
+    rows.length + ' results worldwide';
+  renderList();
+}
+function sortBy(k) {
+  sortDir = sortKey === k ? -sortDir : -1;
+  sortKey = k;
+  if (tab === 'all' && (k === 'price' || k === 'mcap')) loadList();
+  else renderList();
+}
+function renderList() {
+  const f = document.getElementById('filter').value.trim().toLowerCase();
+  const cols = tab === 'tv'
+    ? [['ticker', 'ticker'], ['spark', ''], ['price', 'price'],
+       ['change_pct', 'chg%'], ['rsi', 'RSI'], ['rating_label', 'rating']]
+    : tab === 'search'
+    ? [['symbol', 'symbol'], ['name', 'name'], ['exchange', 'exch']]
+    : [['symbol', 'symbol'], ['spark', ''], ['price', 'price'],
+       ['change_pct', 'chg%'], ['volume', 'vol'], ['mcap', 'mcap'],
+       ['pe', 'P/E']];
+  const data = rows
+    .filter(r => !f || (r.symbol + ' ' + (r.name || '')).toLowerCase()
+      .includes(f))
+    .sort((a, b) => {
+      const x = a[sortKey], y = b[sortKey];
+      if (x == null) return 1; if (y == null) return -1;
+      return (x < y ? -1 : x > y ? 1 : 0) * sortDir;
+    });
+  window._rows = data;
+  document.getElementById('list').innerHTML = data.length === 0
+    ? `<p class="muted">${tab === 'search'
+        ? 'Type a company name above and press Enter — results are worldwide.'
+        : 'Nothing here — Yahoo may be rate-limiting; try again shortly.'}</p>`
+    : '<table><tr>' + cols.map(([k, l]) => k === 'spark' ? '<th></th>'
+      : `<th class="sortable" onclick="sortBy('${k}')">${l}
+        ${sortKey === k ? (sortDir < 0 ? '▼' : '▲') : ''}</th>`).join('') +
+    '</tr>' + data.map((r, i) => `<tr class="clickable
+      ${sel && sel.symbol === r.symbol ? 'sel' : ''}" onclick="pick(${i})">` +
+      cols.map(([k]) => {
+        if (k === 'spark') return `<td>${sparkline(sparks[r.symbol])}</td>`;
+        let v = r[k];
+        if (k === 'change_pct') return `<td class="${v == null ? 'muted'
+          : v >= 0 ? 'ok' : 'bad'}">${v == null ? '—'
+          : (v >= 0 ? '+' : '') + fmt(v) + '%'}</td>`;
+        if (k === 'volume' || k === 'mcap') return `<td>${fmtBig(v)}</td>`;
+        if (k === 'price' || k === 'pe' || k === 'rsi')
+          return `<td>${fmt(v)}</td>`;
+        return `<td>${esc(v ?? '—')}</td>`;
+      }).join('') + '</tr>').join('') + '</table>';
+}
+function renderPager() {
+  const el = document.getElementById('pager');
+  if (tab !== 'all' || !total) { el.innerHTML = ''; return; }
+  el.innerHTML = `
+    <button class="ghost" ${page === 0 ? 'disabled' : ''}
+      onclick="page--;loadList()">‹ prev</button>
+    <span class="muted">page ${page + 1} of ${Math.ceil(total / 100)}</span>
+    <button class="ghost" ${(page + 1) * 100 >= total ? 'disabled' : ''}
+      onclick="page++;loadList()">next ›</button>`;
+}
+async function loadSparks() {
+  const syms = rows.slice(0, 30).map(r => r.symbol);
+  if (!syms.length) return;
+  try {
+    const d = await api('/api/quote?symbols=' + syms.join(','));
+    for (const s of syms) sparks[s] = (d[s] || {}).series;
+    renderList();
+  } catch {}
+}
+
+/* ── detail pane (right side) ─────────────────────────────────────── */
+function pick(i) {
+  sel = window._rows[i];
+  renderList();
+  const ex = sel.exchange && CCY[sel.exchange] ? sel.exchange : exchange;
+  document.getElementById('detail').innerHTML = `<div class="card"
+    style="margin:0">
+    <h3>${esc(sel.symbol)} <span class="muted">${esc(sel.name || '')}</span>
+      ${sel.rating_label ? `<span class="pill warn">${sel.rating_label}</span>`
+        : ''}</h3>
+    <p class="muted" id="qchips">${sel.price ? 'last ' + fmt(sel.price) : ''}
+      ${sel.change_pct != null ? ` · <b class="${sel.change_pct >= 0 ? 'ok'
+        : 'bad'}">${(sel.change_pct >= 0 ? '+' : '') + fmt(sel.change_pct)}%</b>`
+        : ''}
+      ${sel.volume ? ' · vol ' + fmtBig(sel.volume) : ''}
+      ${sel.mcap ? ' · mcap ' + fmtBig(sel.mcap) : ''}
+      ${sel.pe ? ' · P/E ' + fmt(sel.pe) : ''}
+      ${sel.rsi ? ' · RSI ' + fmt(sel.rsi) : ''}</p>
+    <div class="row" style="margin:.4rem 0">
       <select id="range" onchange="loadChart()">
         <option value="1mo">1mo</option><option value="6mo" selected>6mo</option>
         <option value="1y">1y</option><option value="2y">2y</option>
@@ -33,154 +244,27 @@
       <label><input type="checkbox" id="t-sma50" checked
         onchange="loadChart(true)"> SMA50</label>
       <label><input type="checkbox" id="t-vol" checked
-        onchange="loadChart(true)"> Volume</label>
+        onchange="loadChart(true)"> Vol</label>
       <label><input type="checkbox" id="t-rsi" onchange="loadChart(true)">
         RSI</label>
       <span style="flex:1"></span>
-      <button onclick="sendToPipeline()">Send to Claire's pipeline</button>
+      <button onclick="sendToPipeline('${ex}')">Send to pipeline</button>
     </div>
-    <div id="chart"></div>
-  </div>
-
-  <h2>Worldwide search</h2>
-  <div class="row"><input id="q" placeholder="search any listed company…"
-    style="flex:1"><button class="ghost" onclick="search()">Search</button></div>
-  <div id="results"></div>
-</main>
-<script>
-const SUFFIX = {SGX: '.SI', HKEX: '.HK', TSE: '.T', ASX: '.AX', XETRA: '.DE',
-  PARIS: '.PA', NSE: '.NS', LSE: '.L'};
-const CCY = {NASDAQ: 'USD', NYSE: 'USD', LSE: 'GBP', SGX: 'SGD', HKEX: 'HKD',
-  TSE: 'JPY', ASX: 'AUD', XETRA: 'EUR', PARIS: 'EUR', NSE: 'INR'};
-let tab = 'all', rows = [], sortKey = 'mcap', sortDir = -1;
-let sel = null, chartData = null, clockTimer = null, EXTZ = 'UTC';
-
-function ex() { return document.getElementById('exchange').value; }
-
-async function loadExchange() {
-  document.getElementById('exinfo').innerHTML = 'loading…';
-  document.getElementById('detail').style.display = 'none';
-  loadList();
-  try {
-    const i = await api('/api/exchange-info?exchange=' + ex());
-    EXTZ = i.tz;
-    const idx = i.index || {};
-    const chip = i.is_open
-      ? '<span class="pill ok">● TRADING NOW</span>'
-      : `<span class="pill bad">closed — opens ${new Date(i.next_open)
-          .toLocaleString()}</span>`;
-    document.getElementById('exinfo').innerHTML = `
-      <div class="row" style="justify-content:space-between">
-        <div><b style="font-size:1.1rem">${i.exchange}</b> ${chip}<br>
-          <span class="muted">local time <b id="clock">…</b> (${i.tz})<br>
-          hours ${i.open_time}–${i.close_time}
-          ${i.lunch_break ? ' · lunch ' + i.lunch_break : ''}
-          · session ends ${new Date(i.session_close).toLocaleTimeString()}
-          </span></div>
-        <div>${idx.level ? `index <b>${fmt(idx.level)}</b>
-          <b class="${idx.change_pct >= 0 ? 'ok' : 'bad'}">
-          ${idx.change_pct == null ? '' : (idx.change_pct >= 0 ? '+' : '') +
-            fmt(idx.change_pct) + '%'}</b>
-          <span class="muted">(${idx.symbol})</span><br>
-          <span class="muted">index day volume ${fmtBig(idx.day_volume)}
-          · listings ${fmt(i.listings, 0)}</span>`
-          : `<span class="muted">index data unavailable
-             ${idx.error ? '(' + idx.error + ')' : ''}</span>`}</div>
-      </div>`;
-    clearInterval(clockTimer);
-    const tick = () => {
-      const el = document.getElementById('clock');
-      if (el) el.textContent = new Date().toLocaleTimeString('en-GB',
-        {timeZone: EXTZ});
-    };
-    tick(); clockTimer = setInterval(tick, 1000);
-  } catch (e) {
-    document.getElementById('exinfo').innerHTML =
-      `<span class="bad">${e.message}</span>`;
-  }
-}
-
-function setTab(t) {
-  tab = t;
-  document.getElementById('tab-all').className = t === 'all' ? 'on' : '';
-  document.getElementById('tab-tv').className = t === 'tv' ? 'on' : '';
-  loadList();
-}
-
-async function loadList() {
-  const el = document.getElementById('list');
-  el.innerHTML = '<p class="muted">loading…</p>';
-  try {
-    if (tab === 'all') {
-      const d = await api('/api/screener?exchange=' + ex() +
-        '&sort=' + (sortKey === 'price' ? 'intradayprice' : 'intradaymarketcap'));
-      rows = d.rows.map(r => ({...r, ticker: r.symbol}));
-      document.getElementById('listnote').textContent =
-        `top ${rows.length} of ${fmt(d.total, 0)} listings (Yahoo)`;
-    } else {
-      const d = await api('/api/tv-recs?exchange=' + ex());
-      rows = d.rows.map(r => ({...r,
-        symbol: r.ticker + (SUFFIX[ex()] || '')}));
-      document.getElementById('listnote').textContent =
-        'TradingView technical-rating leaders (unofficial API)';
-    }
-    renderList();
-  } catch (e) { el.innerHTML = `<p class="bad">${e.message}</p>`; }
-}
-
-function sortBy(k) {
-  sortDir = sortKey === k ? -sortDir : -1;
-  sortKey = k;
-  renderList();
-}
-function renderList() {
-  const cols = tab === 'all'
-    ? [['symbol', 'symbol'], ['name', 'name'], ['price', 'price'],
-       ['change_pct', 'chg %'], ['volume', 'volume'], ['mcap', 'mkt cap'],
-       ['pe', 'P/E']]
-    : [['ticker', 'ticker'], ['name', 'name'], ['price', 'price'],
-       ['change_pct', 'chg %'], ['volume', 'volume'], ['mcap', 'mkt cap'],
-       ['rsi', 'RSI'], ['rating_label', 'rating']];
-  const data = [...rows].sort((a, b) => {
-    const x = a[sortKey], y = b[sortKey];
-    if (x == null) return 1; if (y == null) return -1;
-    return (x < y ? -1 : x > y ? 1 : 0) * sortDir;
-  });
-  document.getElementById('list').innerHTML = '<table><tr>' +
-    cols.map(([k, l]) => `<th class="sortable" onclick="sortBy('${k}')">${l}
-      ${sortKey === k ? (sortDir < 0 ? '▼' : '▲') : ''}</th>`).join('') +
-    '</tr>' + data.map((r, i) => `<tr class="clickable"
-      onclick='pick(${JSON.stringify(JSON.stringify(r))})'>` +
-      cols.map(([k]) => {
-        let v = r[k];
-        if (k === 'change_pct') return `<td class="${v >= 0 ? 'ok' : 'bad'}">
-          ${v == null ? '—' : (v >= 0 ? '+' : '') + fmt(v) + '%'}</td>`;
-        if (k === 'volume' || k === 'mcap') return `<td>${fmtBig(v)}</td>`;
-        if (k === 'price' || k === 'pe' || k === 'rsi')
-          return `<td>${fmt(v)}</td>`;
-        return `<td>${v ?? '—'}</td>`;
-      }).join('') + '</tr>').join('') + '</table>';
-}
-
-function pick(rjson) {
-  sel = JSON.parse(rjson);
-  document.getElementById('detail').style.display = 'block';
-  document.getElementById('dtitle').textContent =
-    `${sel.symbol} — ${sel.name || ''}`;
-  document.getElementById('detail').scrollIntoView({behavior: 'smooth'});
+    <div id="chart"><p class="muted">loading…</p></div>
+  </div>`;
+  chartData = null;
   loadChart();
 }
 async function loadChart(rerenderOnly) {
   if (!sel) return;
   if (!rerenderOnly || !chartData) {
-    document.getElementById('chart').innerHTML = '<p class="muted">loading…</p>';
     try {
       chartData = await api('/api/chart?symbol=' +
         encodeURIComponent(sel.symbol) + '&range=' +
         document.getElementById('range').value);
     } catch (e) {
       document.getElementById('chart').innerHTML =
-        `<p class="bad">${e.message}</p>`;
+        `<p class="bad">${esc(e.message)}</p>`;
       return;
     }
   }
@@ -188,29 +272,17 @@ async function loadChart(rerenderOnly) {
     sma20: document.getElementById('t-sma20').checked,
     sma50: document.getElementById('t-sma50').checked,
     volume: document.getElementById('t-vol').checked,
-    rsi: document.getElementById('t-rsi').checked, height: 460});
+    rsi: document.getElementById('t-rsi').checked, height: 440});
 }
 window.addEventListener('resize', () => loadChart(true));
-
-async function sendToPipeline() {
-  if (!sel) return;
+async function sendToPipeline(ex) {
   try {
     const r = await api('/api/run', {ticker: sel.ticker || sel.symbol,
-      exchange: ex(), currency: CCY[ex()],
-      lot_size: ex() === 'SGX' ? 100 : 1});
+      exchange: ex, currency: CCY[ex],
+      lot_size: ex === 'SGX' ? 100 : 1});
     toast('launched ' + r.work_item_id + ' — watch it on Trading');
   } catch (e) { toast(e.message, false); }
 }
 
-async function search() {
-  const found = await api('/api/search?q=' +
-    encodeURIComponent(document.getElementById('q').value));
-  document.getElementById('results').innerHTML =
-    '<table><tr><th>symbol</th><th>name</th><th>exchange</th></tr>' +
-    found.map(r => `<tr class="clickable" onclick='pick(${JSON.stringify(
-      JSON.stringify({symbol: r.symbol, ticker: r.symbol, name: r.name}))})'>
-      <td>${r.symbol}</td><td>${r.name || ''}</td><td>${r.exchange || ''}</td>
-      </tr>`).join('') + '</table>';
-}
-loadExchange();
+loadStrip().then(() => pickExchange('NASDAQ'));
 </script>

@@ -24,7 +24,11 @@ class FakeMarket:
 
     def spark(self, symbols):
         return {s: {"symbol": s, "price": Decimal("101"), "currency": "USD",
-                    "stale": False, "previous_close": 100} for s in symbols}
+                    "stale": False, "series": [99, 100, 101],
+                    "previous_close": 100} for s in symbols}
+
+    def fx(self, a, b):
+        return Decimal("0.74") if a != b else Decimal(1)
 
     def search(self, q):
         return [{"symbol": "NVDA", "name": "NVIDIA", "exchange": "NASDAQ"}]
@@ -67,7 +71,7 @@ def web():
                                 "currency": "USD"}), T0, T0))
     srv = create_server(conn, repo, FakeMarket(), secret="s", dash_key=DKEY,
                         api_base="http://127.0.0.1:9",  # discard port: always down
-                        clock=lambda: T0, port=0)
+                        clock=lambda: T0, port=0, sse_interval=None)
     port = srv.server_address[1]
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
@@ -100,7 +104,7 @@ def test_pages_and_apis_serve(web):
 def test_token_release_requires_pairing(web):
     base, conn = web
     with httpx.Client(base_url=base, timeout=5) as anon:
-        cards = anon.get("/api/approvals").json()
+        cards = anon.get("/api/approvals").json()["cards"]
         assert cards[0]["locked"] is True
         assert cards[0]["token"] is None            # curl gets NO token
         r = anon.post("/api/thesis-action",
@@ -109,9 +113,15 @@ def test_token_release_requires_pairing(web):
                             "token": "tok_abc"})
         assert r.status_code == 403                 # even WITH the token
     with paired(base) as c:
-        cards = c.get("/api/approvals").json()
-        assert cards[0]["token"] == "tok_abc"       # the paired card carries it
-        assert cards[0]["locked"] is False
+        data = c.get("/api/approvals").json()
+        assert data["cards"][0]["token"] == "tok_abc"   # paired card carries it
+        assert data["cards"][0]["locked"] is False
+        # the card ships estimate context: accounts with cash + fee models
+        alpaca = next(a for a in data["accounts"] if a["broker"] == "alpaca")
+        assert alpaca["cash"] == 1000
+        assert alpaca["fee_model"]["type"] == "flat"
+        # NVDA instrument isn't registered in this fixture → no session block
+        assert data["cards"][0]["session"] == {}
 
 
 def test_thesis_action_authorization_over_http(web):
@@ -166,6 +176,35 @@ def test_screener_and_run_detail_and_graph(web):
         assert g["brokers"][0]["broker"] == "alpaca"
         assert g["brokers"][0]["adapter"] == "paper-sim"
         assert ["gate", "execute"] in [list(e) for e in g["edges"]]
+
+
+def test_world_markets_strip(web):
+    base, conn = web
+    with paired(base) as c:
+        rows = c.get("/api/exchanges").json()
+        assert len(rows) == 10
+        byex = {r["exchange"]: r for r in rows}
+        # T0 = Tue 14:00 UTC: NASDAQ open, SGX (22:00 SGT) closed
+        assert byex["NASDAQ"]["is_open"] is True
+        assert byex["SGX"]["is_open"] is False
+        assert byex["SGX"]["next_open"].startswith("2026-08-12T09:00")
+        assert byex["HKEX"]["lunch_break"] == "12:00-13:00"
+        assert rows[0]["exchange"] == "SGX"         # geographic order, Asia first
+
+
+def test_fx_and_agent_activity(web):
+    base, conn = web
+    with paired(base) as c:
+        assert c.get("/api/fx?from=SGD&to=USD").json()["rate"] == "0.74"
+        conn.execute(
+            "INSERT INTO agent_runs (id, agent_id, work_item_id, provider_id,"
+            " model, started_at, status, tokens_in, tokens_out, cost_usd)"
+            " VALUES ('r1', 'technical', 'wi_1', 'anthropic', 'm', ?,"
+            " 'running', 10, 0, 0.01)", (T0 - 30,))
+        act = c.get("/api/agent-activity?id=technical").json()
+        assert act["current"]["work_item_id"] == "wi_1"
+        assert act["runs"][0]["ticker"] == "NVDA"
+        assert act["cost_24h"] == 0.01
 
 
 def test_tv_recommendations_offline():
