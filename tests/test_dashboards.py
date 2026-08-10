@@ -207,6 +207,26 @@ def test_fx_and_agent_activity(web):
         assert act["cost_24h"] == 0.01
 
 
+def test_schedule_endpoints(web):
+    base, conn = web
+    with paired(base) as c:
+        jobs = {j["job"]: j for j in c.get("/api/schedules").json()}
+        assert jobs["custodian"]["spec"]["minutes"] == 5
+        assert jobs["analysis_asia"]["spec"]["require_open"] is True
+        assert jobs["watcher"]["runs_in"] == "dashboards"
+        # analysis_asia last ran Tue 10:00 SGT? never — next is computed
+        assert jobs["custodian"]["next_run_at"] == T0    # due immediately
+        r = c.post("/api/schedule", json={"job": "watcher",
+                                          "spec": {"minutes": 30}})
+        assert r.status_code == 200
+        jobs = {j["job"]: j for j in c.get("/api/schedules").json()}
+        assert jobs["watcher"]["spec"]["minutes"] == 30
+        assert c.post("/api/schedule", json={
+            "job": "watcher", "spec": {"minutes": 0}}).status_code == 400
+        assert c.post("/api/schedule", json={
+            "job": "ghost"}).status_code == 400
+
+
 def test_tv_recommendations_offline():
     class FakeResp:
         status_code = 200

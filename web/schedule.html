@@ -1,0 +1,117 @@
+<meta charset="utf-8"><title>Claire — Schedule</title>
+<link rel="stylesheet" href="/style.css"><script src="/nav.js"></script>
+<script>nav('/schedule')</script>
+<main>
+  <h1>Schedule</h1>
+  <p class="muted">Every recurring job on the desk. Edits apply live — the
+  schedulers re-read this table every cycle, no restarts. Market-scan jobs
+  only run against exchanges that are <b>open</b> at fire time (toggleable
+  per job). All times are interpreted in the timezone shown.</p>
+  <div id="jobs">loading…</div>
+  <h2>Also on a clock (not editable here)</h2>
+  <table>
+    <tr><th>what</th><th>cadence</th><th>where</th></tr>
+    <tr><td>SSE event push to browsers</td><td>every 2s</td>
+      <td>dashboards</td></tr>
+    <tr><td>claire-api health probe cache</td><td>10s TTL</td>
+      <td>dashboards</td></tr>
+    <tr><td>market data caches</td><td>quotes 60s · charts/FX 5m ·
+      screener 10m</td><td>market module</td></tr>
+    <tr><td>approval expiry</td><td>end of the instrument's next trading
+      session (§10)</td><td>minted per thesis</td></tr>
+    <tr><td>order TTL</td><td>end of current session</td>
+      <td>set per order</td></tr>
+  </table>
+</main>
+<script>
+const TZS = ['Asia/Singapore', 'Asia/Hong_Kong', 'Asia/Tokyo',
+  'Australia/Sydney', 'Asia/Kolkata', 'Europe/London', 'Europe/Berlin',
+  'Europe/Paris', 'America/New_York', 'UTC', 'local'];
+const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+let JOBS = [];
+
+const typing = () => ['INPUT', 'SELECT']
+  .includes((document.activeElement || {}).tagName);
+
+async function refresh() {
+  if (typing()) return;
+  JOBS = await api('/api/schedules');
+  document.getElementById('jobs').innerHTML = JOBS.map(card).join('');
+}
+function card(j) {
+  const s = j.spec;
+  const editor = s.type === 'interval'
+    ? `every <input id="min-${j.job}" type="number" min="1" max="1440"
+        value="${s.minutes}" style="width:70px"> minutes`
+    : `at <input id="time-${j.job}" value="${s.time}" style="width:70px">
+       <select id="tz-${j.job}">${TZS.map(z => `<option ${z === s.tz ?
+         'selected' : ''}>${z}</option>`).join('')}</select>
+       <span style="display:inline-flex;gap:.3rem">${DAYS.map((d, i) =>
+         `<label class="pill" style="cursor:pointer"><input type="checkbox"
+           id="day-${j.job}-${i + 1}" ${s.days.includes(i + 1) ?
+           'checked' : ''} style="margin-right:.2rem">${d}</label>`)
+         .join('')}</span>`;
+  const openToggle = 'require_open' in s
+    ? `<label class="pill" style="cursor:pointer"><input type="checkbox"
+        id="open-${j.job}" ${s.require_open ? 'checked' : ''}
+        style="margin-right:.2rem">only when market open</label>` : '';
+  const last = j.last_run_at
+    ? `${ago(j.last_run_at)} — ${lastSummary(j.last_result)}`
+    : 'never';
+  return `<div class="card">
+    <h3>${j.job.replace(/_/g, ' ')}
+      <span class="pill">${j.runs_in}</span>
+      ${j.enabled ? '' : '<span class="pill bad">disabled</span>'}</h3>
+    <p class="muted">${esc(j.description)}</p>
+    <div class="row">
+      <label class="pill" style="cursor:pointer"><input type="checkbox"
+        id="en-${j.job}" ${j.enabled ? 'checked' : ''}
+        style="margin-right:.2rem">enabled</label>
+      ${editor} ${openToggle}
+      <button onclick="save('${j.job}')">Save</button>
+    </div>
+    <p class="muted" style="font-family:var(--mono);font-size:.78rem">
+      next: <b class="${j.enabled ? 'ok' : 'muted'}">${j.next_run_at ?
+        ts(j.next_run_at) + ' (' + until(j.next_run_at) + ')' : '—'}</b>
+      · last: ${last}</p></div>`;
+}
+function until(t) {
+  const s = t - Date.now() / 1000;
+  if (s < 0) return 'due';
+  if (s < 5400) return 'in ' + Math.round(s / 60) + 'm';
+  if (s < 172800) return 'in ' + Math.round(s / 3600) + 'h';
+  return 'in ' + Math.round(s / 86400) + 'd';
+}
+function lastSummary(r) {
+  if (!r) return 'ok';
+  if (r.error) return '✖ ' + esc(r.error);
+  if (r.started) return r.started.length + ' run(s) started' +
+    (r.skipped_closed && r.skipped_closed.length
+      ? ', skipped closed: ' + r.skipped_closed.join(' ') : '');
+  if ('fills' in r) return `${r.fills} fill(s), ${(r.flags || []).length}
+    flag(s)`;
+  return 'ok';
+}
+async function save(job) {
+  const j = JOBS.find(x => x.job === job);
+  const spec = {};
+  if (j.spec.type === 'interval')
+    spec.minutes = Number(document.getElementById('min-' + job).value);
+  else {
+    spec.time = document.getElementById('time-' + job).value.trim();
+    spec.tz = document.getElementById('tz-' + job).value;
+    spec.days = [1, 2, 3, 4, 5, 6, 7].filter(d =>
+      document.getElementById(`day-${job}-${d}`).checked);
+  }
+  if ('require_open' in j.spec)
+    spec.require_open = document.getElementById('open-' + job).checked;
+  try {
+    await api('/api/schedule', {job, spec,
+      enabled: document.getElementById('en-' + job).checked});
+    toast('saved ✓ — takes effect next cycle');
+  } catch (e) { toast(e.message, false); }
+  document.activeElement.blur();
+  refresh();
+}
+refresh(); setInterval(refresh, 15000);
+</script>

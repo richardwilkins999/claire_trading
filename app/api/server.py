@@ -64,12 +64,9 @@ def build_world():
     return conn, repo, desk, claire, brokers, market
 
 
-def start_custodian_thread(conn, repo, brokers, market, secret, *,
-                           interval=300):
+def build_custodian(conn, repo, brokers, market, secret):
     """In-process custodian (fills need the broker adapters this process
-    owns); the systemd timer variant covers DB-only duties redundantly."""
-    import threading
-
+    owns); cadence comes from the schedules table via the Scheduler."""
     from .. import sessions
     from ..approvals import default_resume_post
     from ..custodian import Custodian, _account_broker_from_db
@@ -86,22 +83,63 @@ def start_custodian_thread(conn, repo, brokers, market, secret, *,
         except Exception:                       # noqa: BLE001 — degrade loudly
             return to_micro("1")
 
-    c = Custodian(conn, repo, brokers,
-                  resume_post=default_resume_post("http://127.0.0.1:7788",
-                                                  secret),
-                  account_broker=_account_broker_from_db(conn),
-                  fx_rate_for=fx_rate_for, cal=sessions.load(conn) or None)
+    return Custodian(conn, repo, brokers,
+                     resume_post=default_resume_post("http://127.0.0.1:7788",
+                                                     secret),
+                     account_broker=_account_broker_from_db(conn),
+                     fx_rate_for=fx_rate_for,
+                     cal=sessions.load(conn) or None)
 
-    def loop():
-        while True:
-            time.sleep(interval)
-            try:
-                c.run_once()
-            except Exception:                   # noqa: BLE001
-                import traceback
-                traceback.print_exc()
 
-    threading.Thread(target=loop, daemon=True, name="custodian").start()
+def start_scheduler(conn, repo, desk, market, custodian):
+    """DB-backed schedules (app/scheduler.py): analysis regions, custodian,
+    reconcile. The screener only scans markets that are OPEN at fire time."""
+    from datetime import datetime, timezone
+
+    from .. import scheduler, sessions
+    from ..autonomous import CCY, REGIONS, pick_candidates
+    from ..graph.state import Instrument
+
+    scheduler.seed(conn)
+
+    def run_analysis(spec):
+        cal = sessions.load(conn) or None
+        now = datetime.now(timezone.utc)
+        exchanges = REGIONS[spec.get("region", "us")]
+        skipped = []
+        if spec.get("require_open", True):
+            open_ex = [ex for ex in exchanges
+                       if sessions.is_open(ex, now, cal)]
+            skipped = sorted(set(exchanges) - set(open_ex))
+            exchanges = open_ex
+        held = {r["ticker"] for r in conn.execute(
+            "SELECT DISTINCT i.ticker FROM lots l JOIN instruments i"
+            " ON i.id=l.instrument_id WHERE l.qty_remaining > 0")}
+        started = []
+        for ticker, ex in pick_candidates(market, exchanges, held):
+            inst = Instrument(id=f"{ex}:{ticker}", ticker=ticker, exchange=ex,
+                              currency=CCY[ex],
+                              lot_size=100 if ex == "SGX" else 1)
+            started.append(desk.start_run(inst))
+        return {"started": started, "skipped_closed": skipped}
+
+    def run_reconcile(spec):
+        report = custodian.run_once()
+        custodian.snapshot_brokers()
+        backup = ROOT / "var" / "desk.backup.db"
+        backup.unlink(missing_ok=True)
+        conn.execute("VACUUM INTO ?", (str(backup),))
+        return {**report, "backup": str(backup)}
+
+    sched = scheduler.Scheduler(conn, {
+        "custodian": lambda spec: custodian.run_once(),
+        "reconcile": run_reconcile,
+        "analysis_asia": run_analysis,
+        "analysis_eu": run_analysis,
+        "analysis_us": run_analysis,
+    })
+    sched.start()
+    return sched
 
 
 def main():
@@ -117,7 +155,8 @@ def main():
               file=sys.stderr)
         sys.exit(2)
     conn, repo, desk, claire, brokers, market = build_world()
-    start_custodian_thread(conn, repo, brokers, market, secret)
+    custodian = build_custodian(conn, repo, brokers, market, secret)
+    start_scheduler(conn, repo, desk, market, custodian)
 
     def ask_handler(body):
         text = (body or {}).get("text", "")

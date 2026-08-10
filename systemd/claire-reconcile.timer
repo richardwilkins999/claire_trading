@@ -1,8 +1,0 @@
-[Unit]
-Description=Daily Claire reconcile
-
-[Timer]
-OnCalendar=*-*-* 09:00:00
-
-[Install]
-WantedBy=timers.target

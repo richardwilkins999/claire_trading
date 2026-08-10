@@ -44,9 +44,16 @@ git clone git@github.com:richardwilkins999/claire_trading /opt/Claire
 cd /opt/Claire && python3.14 -m venv venv && venv/bin/pip install -r requirements.txt
 cp etc/claire.env.example etc/claire.env && chmod 600 etc/claire.env  # add keys
 cp systemd/* ~/.config/systemd/user/ && systemctl --user daemon-reload
-systemctl --user enable --now claire-api claire-dashboards \
-  claire-custodian.timer claire-reconcile.timer \
-  claire-analysis-asia.timer claire-analysis-eu.timer claire-analysis-us.timer
+systemctl --user enable --now claire-api claire-dashboards claire-custodian.timer
+```
+
+Recurring jobs (region screens, custodian cadence, reconcile, watcher) are
+scheduled from the **/schedule page**, stored in desk.db, and executed by the
+scheduler inside claire-api — the custodian systemd timer remains only as a
+DB-side safety net if claire-api is down. Market scans run only against
+exchanges that are open at fire time.
+
+```sh
 ```
 
 ## Layout

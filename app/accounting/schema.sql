@@ -141,6 +141,17 @@ CREATE TABLE IF NOT EXISTS price_alerts (
   fire_count_date TEXT                     -- YYYY-MM-DD the counter belongs to
 );
 
+CREATE TABLE IF NOT EXISTS schedules (      -- UI-editable job schedules; the
+  job TEXT PRIMARY KEY,                     -- claire-api scheduler thread and
+  description TEXT NOT NULL,                -- the dashboards watcher read this
+  runs_in TEXT NOT NULL,                    -- claire-api | dashboards
+  spec TEXT NOT NULL,                       -- JSON: {type:'interval',minutes}
+                                            -- | {type:'daily',time,tz,days,
+                                            --    region?,require_open?}
+  enabled INTEGER NOT NULL DEFAULT 1,
+  last_run_at INTEGER, last_result TEXT
+);
+
 CREATE TABLE IF NOT EXISTS service_health ( -- every guard publishes its own
   service TEXT NOT NULL,                    -- watcher | custodian | api
   checked_at INTEGER NOT NULL,

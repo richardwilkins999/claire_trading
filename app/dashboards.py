@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 
-from . import approvals, sessions
+from . import approvals, scheduler, sessions
 from .providers import health as provider_health
 from .providers import registry
 from .tools import tradingview
@@ -28,7 +28,7 @@ WEB = ROOT / "web"
 PAGES = {"/": "index.html", "/portfolio": "portfolio.html",
          "/markets": "markets.html", "/trading": "trading.html",
          "/agents": "agents.html", "/providers": "providers.html",
-         "/claire": "claire.html"}
+         "/claire": "claire.html", "/schedule": "schedule.html"}
 STATIC = {"/style.css": ("style.css", "text/css"),
           "/nav.js": ("nav.js", "text/javascript"),
           "/charts.js": ("charts.js", "text/javascript")}
@@ -78,6 +78,7 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
     if sse_interval:
         threading.Thread(target=sse_poller, daemon=True,
                          name="sse-poller").start()
+    scheduler.seed(conn)
 
     def api_ok():
         with status_lock:
@@ -136,6 +137,9 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                 }.get(u.path)
                 if route:
                     return self._send(200, route())
+                if u.path == "/api/schedules":
+                    return self._send(200, scheduler.rows_with_next(
+                        conn, clock=clock))
                 if u.path == "/api/events":
                     return self._sse()
                 if u.path == "/api/fx":
@@ -206,6 +210,14 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                         body["provider_id"])
                     return self._send(200, dict(latest) if latest else
                                       {"ok": ok})
+                if u.path == "/api/schedule":
+                    try:
+                        scheduler.update(conn, body["job"],
+                                         enabled=body.get("enabled"),
+                                         spec_patch=body.get("spec"))
+                        return self._send(200, {"ok": True})
+                    except (KeyError, ValueError) as e:
+                        return self._send(400, {"error": str(e)})
                 self._send(404, {"error": "not found"})
             except Exception as e:               # noqa: BLE001
                 traceback.print_exc()
@@ -588,11 +600,22 @@ def start_watcher_thread(conn, repo, market, *, api_base, interval=600,
 
     def loop():
         while True:
+            minutes, enabled = interval / 60, True
+            try:                                 # cadence is UI-configurable
+                row = conn.execute("SELECT spec, enabled FROM schedules"
+                                   " WHERE job='watcher'").fetchone()
+                if row:
+                    minutes = json.loads(row["spec"]).get("minutes",
+                                                          interval / 60)
+                    enabled = bool(row["enabled"])
+            except Exception:                    # noqa: BLE001
+                pass
             try:
-                watcher.tick()
+                if enabled:
+                    watcher.tick()
             except Exception:                    # noqa: BLE001
                 traceback.print_exc()
-            time.sleep(interval)
+            time.sleep(max(60, minutes * 60))
 
     t = threading.Thread(target=loop, daemon=True, name="watcher")
     t.start()

@@ -1,9 +1,0 @@
-[Unit]
-Description=Claire pre-open autonomous run (us)
-After=claire-api.service
-
-[Service]
-Type=oneshot
-WorkingDirectory=/opt/Claire
-EnvironmentFile=/opt/Claire/etc/claire.env
-ExecStart=/opt/Claire/venv/bin/python -m app.autonomous --region us

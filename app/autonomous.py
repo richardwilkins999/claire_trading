@@ -43,9 +43,14 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--region", choices=list(REGIONS), required=True)
     ap.add_argument("--api", default="http://127.0.0.1:7788")
+    ap.add_argument("--ignore-hours", action="store_true",
+                    help="scan even when the market is closed")
     args = ap.parse_args(argv)
     load_env()
 
+    from datetime import datetime, timezone
+
+    from . import sessions
     from .accounting import db
     from .api.server import ROOT
     conn = db.connect(ROOT / "var" / "desk.db")
@@ -53,8 +58,19 @@ def main(argv=None):
         "SELECT DISTINCT i.ticker FROM lots l JOIN instruments i"
         " ON i.id=l.instrument_id WHERE l.qty_remaining > 0")}
 
+    # the screener only scans markets that are actually trading
+    exchanges = REGIONS[args.region]
+    if not args.ignore_hours:
+        cal = sessions.load(conn) or None
+        now = datetime.now(timezone.utc)
+        open_ex = [ex for ex in exchanges if sessions.is_open(ex, now, cal)]
+        skipped = sorted(set(exchanges) - set(open_ex))
+        if skipped:
+            print(json.dumps({"skipped_closed": skipped}))
+        exchanges = open_ex
+
     started = []
-    for ticker, ex in pick_candidates(Market(), REGIONS[args.region], held):
+    for ticker, ex in pick_candidates(Market(), exchanges, held):
         r = httpx.post(f"{args.api}/api/run",
                        json={"ticker": ticker, "exchange": ex,
                              "currency": CCY[ex],
