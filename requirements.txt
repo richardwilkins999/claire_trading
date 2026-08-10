@@ -1,0 +1,4 @@
+# Pinned deliberately (DESIGN.md §3). LLM-stack pins (langgraph, langchain,
+# provider packages) are added at build step 3 when they are installed and
+# verified; the accounting core is stdlib-only on purpose.
+pytest==8.4.2

@@ -1,6 +1,6 @@
-etc/claire.env
-var/
 venv/
+var/
+etc/claire.env
 __pycache__/
 *.pyc
-*.db
+.pytest_cache/
