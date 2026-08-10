@@ -1,0 +1,70 @@
+<meta charset="utf-8"><title>Claire — Chat</title>
+<link rel="stylesheet" href="/style.css"><script src="/nav.js"></script>
+<script>nav('/claire')</script>
+<main>
+  <h1>Claire</h1>
+  <p class="muted">Ask about the portfolio, pending theses, markets — or say
+  "run the pipeline on NVDA". Claire can research and explain; she can never
+  approve — that stays on <a href="/">Mission Control</a>.</p>
+  <div class="chat">
+    <div class="chatlog" id="log"></div>
+    <div class="row">
+      <input id="text" style="flex:1" placeholder="Talk to Claire…"
+        onkeydown="if(event.key==='Enter')send()">
+      <button id="sendbtn" onclick="send()">Send</button>
+    </div>
+  </div>
+</main>
+<script>
+const log = document.getElementById('log');
+function bubble(cls, text) {
+  const d = document.createElement('div');
+  d.className = 'bubble ' + cls;
+  d.textContent = text;
+  log.appendChild(d);
+  log.scrollTop = log.scrollHeight;
+  return d;
+}
+async function send() {
+  const input = document.getElementById('text');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  bubble('user', text);
+  const btn = document.getElementById('sendbtn');
+  btn.disabled = true;
+  let current = null;
+  try {
+    const r = await fetch('/api/ask', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text, thread: 'dashboard'})});
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, {stream: true});
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        let ev;
+        try { ev = JSON.parse(line); } catch { continue; }
+        if (ev.kind === 'tool')
+          bubble('toolcall', `⚙ ${ev.name}(${JSON.stringify(ev.args || {})})`);
+        else if (ev.kind === 'text') {
+          if (!current) current = bubble('claire', '');
+          current.textContent = ev.text;
+          log.scrollTop = log.scrollHeight;
+        } else if (ev.kind === 'error')
+          bubble('toolcall', `✖ ${ev.text}`);
+      }
+    }
+  } catch (e) { bubble('toolcall', '✖ ' + e.message); }
+  btn.disabled = false;
+  input.focus();
+}
+bubble('claire', "Hi, I'm Claire. Ask me about the desk, or name a ticker " +
+  'and I\'ll put it through the pipeline.');
+</script>

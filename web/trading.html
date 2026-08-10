@@ -11,12 +11,13 @@
       <option>PARIS</option><option>NSE</option></select>
     <button onclick="launch()">Run pipeline</button>
   </div>
-  <h2>Work items</h2><div id="runs"></div>
-  <h2>Event feed</h2><pre id="feed" style="max-height:300px;overflow:auto"></pre>
+  <h2>Work items — click a row for detail</h2><div id="runs"></div>
+  <h2>Event feed</h2><pre id="feed" style="max-height:280px;overflow:auto"></pre>
 </main>
 <script>
 const CCY = {NASDAQ:'USD',NYSE:'USD',LSE:'GBP',SGX:'SGD',HKEX:'HKD',TSE:'JPY',
              ASX:'AUD',XETRA:'EUR',PARIS:'EUR',NSE:'INR'};
+let openId = null;
 async function launch() {
   const ex = document.getElementById('exchange').value;
   const t = document.getElementById('ticker').value.trim().toUpperCase();
@@ -33,13 +34,56 @@ async function refresh() {
   const runs = await api('/api/runs');
   document.getElementById('runs').innerHTML = '<table><tr><th>id</th>' +
     '<th>kind</th><th>ticker</th><th>state</th><th>updated</th></tr>' +
-    runs.map(r => `<tr><td>${r.id}</td><td>${r.kind}</td><td>${r.ticker}</td>
+    runs.map(r => `<tr class="clickable" onclick="toggle('${r.id}')">
+      <td>${r.id}</td><td>${r.kind}</td><td>${r.ticker}</td>
       <td class="${cls[r.state] || ''}">${r.state}</td>
-      <td class="muted">${ts(r.updated_at)}</td></tr>`).join('') + '</table>';
+      <td class="muted">${ts(r.updated_at)}</td></tr>
+      <tr id="d-${r.id}" style="display:${openId === r.id ? '' : 'none'}">
+      <td colspan="5" id="dc-${r.id}"></td></tr>`).join('') + '</table>';
+  if (openId) detail(openId);
   const f = await api('/api/feed');
   document.getElementById('feed').textContent = f.events.slice(-60).reverse()
     .map(e => `${ts(e.ts)}  ${e.item_id}  ${e.actor}: ` +
       `${e.from_state || ''}→${e.to_state}`).join('\n');
+}
+function toggle(id) {
+  openId = openId === id ? null : id;
+  document.querySelectorAll('[id^="d-"]').forEach(el =>
+    el.style.display = 'none');
+  if (openId) {
+    document.getElementById('d-' + id).style.display = '';
+    detail(id);
+  }
+}
+async function detail(id) {
+  const el = document.getElementById('dc-' + id);
+  if (!el || el.dataset.loaded) return;
+  el.innerHTML = '<span class="muted">loading…</span>';
+  const d = await api('/api/run-detail?id=' + encodeURIComponent(id));
+  el.dataset.loaded = '1';
+  let html = '';
+  const errEv = d.events.filter(e => e.payload &&
+    e.payload.includes('error')).slice(-1)[0];
+  if (d.state === 'failed' && errEv) {
+    let why = errEv.payload;
+    try { why = (JSON.parse(errEv.payload).errors || [why]).join('\n'); }
+    catch {}
+    html += `<p class="bad">why it failed:</p><pre>${why}</pre>`;
+  }
+  if (d.thesis) html += `<p><b>Thesis</b>: ${d.thesis.direction} conviction
+    ${fmt(d.thesis.conviction)} · entry ${fmt(d.thesis.entry_low)}–
+    ${fmt(d.thesis.entry_high)} · stop ${fmt(d.thesis.stop_loss)} · target
+    ${fmt(d.thesis.take_profit)} ${d.thesis.currency}</p>`;
+  if (d.agent_runs.length) html += '<p><b>LLM calls</b>: ' +
+    d.agent_runs.map(a => `${a.agent_id}(${a.status},$${fmt(a.cost_usd, 4)})`)
+      .join(' · ') + '</p>';
+  if (d.orders.length) html += '<p><b>Orders</b>: ' + d.orders.map(o =>
+    `${o.side} ${fmt(o.qty)} — ${o.status}`).join(' · ') + '</p>';
+  if (d.summary) html += `<details><summary class="muted">run summary</summary>
+    <pre style="white-space:pre-wrap">${d.summary}</pre></details>`;
+  html += `<p class="muted">events: ${d.events.map(e =>
+    `${e.from_state || ''}→${e.to_state}`).join(', ')}</p>`;
+  el.innerHTML = html || '<span class="muted">no detail</span>';
 }
 refresh(); setInterval(refresh, 8000);
 </script>

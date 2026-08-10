@@ -3,13 +3,152 @@
 <script>nav('/')</script>
 <main>
   <h1>Mission Control</h1>
+  <div id="banner"></div>
   <div class="tiles" id="tiles"></div>
+  <h2>The desk — click any component</h2>
+  <div class="row" style="align-items:flex-start">
+    <div style="flex:1;min-width:560px" id="diagram"></div>
+    <div style="width:320px" id="panel" class="card">
+      <p class="muted">Select a component to inspect and configure it.</p>
+    </div>
+  </div>
   <h2>Pending approvals</h2>
   <div id="approvals" class="muted">loading…</div>
 </main>
 <script>
+let GRAPH = null, selected = null;
+
+const POS = {  /* fixed layout: pipeline spine + side systems */
+  claire_chat: [20, 12], screener: [20, 64],
+  prepare: [20, 128], fundamental: [150, 64], technical: [150, 128],
+  news: [150, 192], bull: [290, 96], bear: [400, 96],
+  arbiter: [510, 128], gate: [620, 128], execute: [730, 128],
+  recorder: [840, 128], market: [150, 268],
+  alpaca: [730, 220], saxo: [730, 268], moomoo: [730, 316]};
+const NODE_W = 104, NODE_H = 40;
+
+function nodeSvg(id, label, sub, cls) {
+  const [x, y] = POS[id];
+  return `<g class="node ${cls} ${selected === id ? 'selected' : ''}"
+    transform="translate(${x},${y})" onclick="select('${id}')">
+    <rect width="${NODE_W}" height="${NODE_H}"/>
+    <text x="8" y="17">${label}</text>
+    <text x="8" y="31" class="sub">${sub || ''}</text></g>`;
+}
+function edge(a, b) {
+  const [x1, y1] = POS[a], [x2, y2] = POS[b];
+  return `<path class="edge" d="M ${x1 + NODE_W} ${y1 + NODE_H / 2}
+    C ${x1 + NODE_W + 24} ${y1 + NODE_H / 2}, ${x2 - 24} ${y2 + NODE_H / 2},
+      ${x2} ${y2 + NODE_H / 2}"/>`;
+}
+function drawDiagram(g) {
+  const nodes = [], edges = [];
+  const agentEdges = [...g.edges.map(([a, b]) =>
+    [a === 'arbiter' ? 'arbiter' : a, b === 'record' ? 'recorder' : b])];
+  for (const [a, b] of agentEdges)
+    if (POS[a] && POS[b]) edges.push(edge(a, b));
+  ['fundamental', 'technical', 'news'].forEach(a => edges.push(edge('market', a)));
+  g.brokers.forEach(b => { if (POS[b.broker]) edges.push(edge('execute', b.broker)); });
+  for (const id of ['prepare', 'gate', 'execute'])
+    nodes.push(nodeSvg(id, id, id === 'gate' ? 'human approval ⏸' :
+      'deterministic', 'ok'));
+  for (const [id, a] of Object.entries(g.agents)) {
+    if (!POS[id]) continue;
+    nodes.push(nodeSvg(id, a.display_name || id,
+      `${a.provider_id}/${(a.model || '').slice(0, 14)}`, a.state));
+  }
+  g.brokers.forEach(b => nodes.push(nodeSvg(b.broker, b.broker,
+    `${b.adapter} · ${b.open_orders} open`, b.mcp && b.mcp.creds_present ?
+    'ok' : 'idle')));
+  nodes.push(nodeSvg('market', 'market data',
+    `Yahoo${g.market_data.stale_keys ? ' · stale!' : ''}`,
+    g.market_data.stale_keys ? 'error' : 'ok'));
+  document.getElementById('diagram').innerHTML =
+    `<svg viewBox="0 0 960 372" style="width:100%">${edges.join('')}${nodes.join('')}</svg>`;
+}
+
+function select(id) {
+  selected = id; drawDiagram(GRAPH);
+  const p = document.getElementById('panel');
+  const g = GRAPH;
+  if (g.agents[id]) {
+    const a = g.agents[id]; const lr = a.last_run;
+    const provOpts = PROVIDERS.map(pr => {
+      const okc = a.requires.every(c => pr.capabilities[c]);
+      return `<option value="${pr.id}" ${pr.id === a.provider_id ? 'selected' : ''}
+        ${okc ? '' : 'disabled'}>${pr.display_name}${okc ? '' : ' (incompatible)'}</option>`;
+    }).join('');
+    p.innerHTML = `<h3>${a.display_name || id}
+      <span class="pill">${a.state}</span></h3>
+      <p class="muted">tools: ${a.tools.join(', ') || 'none — structured call'}</p>
+      ${lr ? `<p class="muted">last run: ${lr.status} · $${fmt(lr.cost_usd, 4)}
+        · ${lr.tokens_in || 0}/${lr.tokens_out || 0} tok · ${ts(lr.started_at)}</p>`
+        : '<p class="muted">never run</p>'}
+      <div class="row" style="margin:.5rem 0">
+        <select id="p-prov">${provOpts}</select>
+        <input id="p-model" value="${a.model}" style="width:100%">
+        <button onclick="saveAgent('${id}')">Save</button>
+        <button class="ghost" onclick="testProv()">Test</button>
+      </div>
+      <details><summary class="muted">system prompt</summary>
+        <pre style="white-space:pre-wrap">${a.system_prompt}</pre></details>`;
+    return;
+  }
+  const b = g.brokers.find(x => x.broker === id);
+  if (b) {
+    p.innerHTML = `<h3>${b.broker} <span class="pill">${b.environment}</span></h3>
+      <p>account <b>${b.account}</b><br>cash <b>${fmt(b.cash)}</b> ${b.ccy}<br>
+      open orders <b>${b.open_orders}</b><br>
+      adapter <b>${b.adapter}</b></p>
+      ${b.mcp ? `<p class="muted">MCP: <code>${b.mcp.command}</code><br>
+        creds (${b.mcp.env_refs.join(', ') || 'none'}):
+        <b class="${b.mcp.creds_present ? 'ok' : 'bad'}">
+        ${b.mcp.creds_present ? 'present' : 'missing'}</b><br>
+        ${b.mcp.note}</p>` : ''}
+      <p class="muted">Fee model & risk limits are per-account rows in
+        broker_accounts (desk.db).</p>`;
+    return;
+  }
+  if (id === 'market') {
+    p.innerHTML = `<h3>Market data</h3><p>source: Yahoo Finance (chart /
+      spark / search / screener, FX via =X symbols).<br>
+      stale cached entries: <b>${g.market_data.stale_keys}</b></p>
+      <p class="muted">All Yahoo access is isolated in app/tools/market.py —
+      breakage is one file.</p>`;
+    return;
+  }
+  const desc = {prepare: 'Instrument + FX enrichment; deterministic.',
+    gate: 'interrupt() — nothing passes without a human-presented token (§10).',
+    execute: 'Deterministic order placement; session-aware; risk caps; no LLM.'};
+  p.innerHTML = `<h3>${id}</h3><p class="muted">${desc[id] || ''}</p>`;
+}
+
+async function saveAgent(id) {
+  try {
+    await api('/api/agent', {id,
+      provider_id: document.getElementById('p-prov').value,
+      model: document.getElementById('p-model').value});
+    toast('saved ✓');
+  } catch (e) { toast(e.message, false); }
+  refresh();
+}
+async function testProv() {
+  const pid = document.getElementById('p-prov').value;
+  toast('probing ' + pid + '…');
+  try {
+    const r = await api('/api/provider-test', {provider_id: pid});
+    toast(r.ok ? `ok, ${r.latency_ms}ms` : `failed: ${r.error}`, !!r.ok);
+  } catch (e) { toast(e.message, false); }
+}
+
+let PROVIDERS = [];
 async function refresh() {
-  const o = await api('/api/overview');
+  const [o, g, provs, cards] = await Promise.all([
+    api('/api/overview'), api('/api/agent-graph'), api('/api/providers'),
+    api('/api/approvals')]);
+  GRAPH = g; PROVIDERS = provs;
+  document.getElementById('banner').innerHTML = o.flags.length
+    ? `<div class="banner">${o.flags.map(f => `<div>⚠ ${f}</div>`).join('')}</div>` : '';
   const h = s => {
     const v = (o.health[s] || {ok: 'stale'}).ok;
     const cls = v === 'ok' ? 'ok' : (v === 'stale' ? 'warn' : 'bad');
@@ -23,8 +162,8 @@ async function refresh() {
     `<div class="tile">${h('custodian')}</div>` +
     o.cash.map(c => `<div class="tile"><b>${fmt(c.cash)}</b>` +
       `<span>${c.account} cash (${c.ccy})</span></div>`).join('');
-
-  const cards = await api('/api/approvals');
+  drawDiagram(g);
+  if (selected) select(selected);
   document.getElementById('approvals').innerHTML = cards.length === 0
     ? '<p class="muted">Nothing awaiting approval.</p>'
     : cards.map(card).join('');
@@ -32,27 +171,28 @@ async function refresh() {
 function card(a) {
   const t = a.thesis || {};
   const sell = t.direction === 'sell';
-  return `<div class="card" id="card-${a.id}">
-    <h3>${t.direction?.toUpperCase() || '?'} ${a.ticker}
+  const lock = a.locked ? `<p class="warn">🔒 approvals locked — click the 🔑
+    in the nav and paste the dashboard key</p>` : '';
+  return `<div class="card">
+    <h3>${(t.direction || '?').toUpperCase()} ${a.ticker}
       <span class="pill">${a.kind}</span>
       <span class="pill">conviction ${fmt(t.conviction)}</span></h3>
     <p class="muted">entry ${fmt(t.entry_low)}–${fmt(t.entry_high)}
       · stop ${fmt(t.stop_loss)} · target ${fmt(t.take_profit)}
       · ${t.currency || ''} · expires ${ts(a.expires_at)}</p>
-    ${(t.conditions || []).map(c => `<p>⚠ ${c}</p>`).join('')}
+    ${(t.conditions || []).map(c => `<p>⚠ ${c}</p>`).join('')}${lock}
     <div class="row">
-      ${sell
-        ? `<label>qty <input id="qty-${a.id}" type="number" value="0"
-             style="width:90px"></label>`
+      ${sell ? `<label>qty <input id="qty-${a.id}" type="number" value="0"
+          style="width:90px"></label>`
         : `<label>size <input id="size-${a.id}" type="number" value="1000"
-             style="width:90px"></label>`}
+          style="width:90px"></label>`}
       <select id="broker-${a.id}">
         <option>alpaca</option><option>saxo</option><option>moomoo</option>
       </select>
-      <button onclick="act('${a.id}','approve','${a.token}',${sell})">
-        ✔ Approve</button>
-      <button class="reject" onclick="act('${a.id}','reject','${a.token}')">
-        ✖ Reject</button>
+      <button ${a.locked ? 'disabled' : ''}
+        onclick="act('${a.id}','approve','${a.token}',${sell})">✔ Approve</button>
+      <button class="reject" ${a.locked ? 'disabled' : ''}
+        onclick="act('${a.id}','reject','${a.token}')">✖ Reject</button>
     </div></div>`;
 }
 async function act(id, action, token, sell) {
@@ -66,5 +206,5 @@ async function act(id, action, token, sell) {
   catch (e) { toast(e.message, false); }
   refresh();
 }
-refresh(); setInterval(refresh, 10000);
+refresh(); setInterval(refresh, 8000);
 </script>

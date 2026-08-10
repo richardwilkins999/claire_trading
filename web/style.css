@@ -42,4 +42,35 @@ pre { background:var(--bg); border:1px solid var(--line); border-radius:8px;
   padding:.6rem; overflow-x:auto; font-size:.8rem; }
 #msg { position:fixed; bottom:1rem; right:1rem; background:var(--panel);
   border:1px solid var(--line); border-radius:10px; padding:.6rem 1rem;
-  display:none; }
+  display:none; z-index:10; }
+.banner { background:#3a2a12; border:1px solid var(--warn); color:var(--warn);
+  border-radius:10px; padding:.6rem 1rem; margin-bottom:1rem; }
+.banner div { margin:.15rem 0; }
+/* agent diagram */
+.node rect { fill:var(--panel); stroke:var(--line); rx:8; cursor:pointer; }
+.node text { fill:var(--text); font-size:11px; pointer-events:none; }
+.node .sub { fill:var(--dim); font-size:9px; }
+.node.ok rect { stroke:var(--good); }
+.node.error rect { stroke:var(--bad); }
+.node.disabled rect { stroke:var(--line); opacity:.45; }
+.node.active rect { stroke:var(--accent); animation:pulse 1.2s infinite; }
+.node.selected rect { stroke-width:2.5; }
+@keyframes pulse { 0%,100% { stroke-opacity:1 } 50% { stroke-opacity:.25 } }
+.edge { stroke:var(--line); stroke-width:1.4; fill:none; }
+.tabs { display:flex; gap:.4rem; margin:.6rem 0; }
+.tabs button { background:transparent; color:var(--dim);
+  border:1px solid var(--line); }
+.tabs button.on { color:var(--accent); border-color:var(--accent); }
+th.sortable { cursor:pointer; }
+tr.clickable { cursor:pointer; }
+tr.clickable:hover td { background:#1d2733; }
+.chat { display:flex; flex-direction:column; height:70vh; }
+.chatlog { flex:1; overflow-y:auto; background:var(--panel);
+  border:1px solid var(--line); border-radius:10px; padding:1rem;
+  margin-bottom:.8rem; }
+.bubble { max-width:80%; padding:.5rem .9rem; border-radius:12px;
+  margin:.4rem 0; white-space:pre-wrap; }
+.bubble.user { background:#1c3a5e; margin-left:auto; }
+.bubble.claire { background:#20262e; }
+.bubble.toolcall { background:transparent; border:1px dashed var(--line);
+  color:var(--dim); font-size:.8rem; }

@@ -89,6 +89,7 @@ class Custodian:
                     qty=to_micro(f["qty"]), price_native=to_micro(f["price"]),
                     fx_rate=self.fx_rate_for(o["instrument_id"],
                                              o["account_id"]),
+                    intended_price=o["limit_price"],  # → slippage metric
                     ts=int(self.clock()))
                 if ex:
                     report["fills"] += 1
