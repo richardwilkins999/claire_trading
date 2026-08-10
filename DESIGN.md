@@ -16,6 +16,15 @@ Everything in this document is either verified on the target machine or a
 direct consequence of a lesson learnt building an earlier prototype of this
 desk (§19). Nothing speculative.
 
+> **Revision 2 (2026-08-11).** Design-review amendments, none architectural:
+> approval tokens must now be *presented* by the caller (localhost access alone
+> can no longer approve); all ledger arithmetic moves to integer micro-units
+> (no floats in money); order fills are modelled as asynchronous (orders table,
+> partial fills, TTLs); the approve→resume seam is idempotent (no token-burn
+> race); sell-side thesis validation; per-account risk caps; SQLite WAL across
+> processes; and a market-session calendar (§14a) driving execution, watching,
+> approval expiry, and per-region analysis timers.
+
 ---
 
 ## 0. Verified foundations
@@ -55,7 +64,8 @@ Confirmed working on the target machine before this design was frozen:
    authorization layer above it is ours.
 3. **Deterministic code owns money.** Order placement, position sizing, fees,
    FX, lot matching, and P&L are plain Python. LLMs produce *views*; code
-   produces *transactions*.
+   produces *transactions*. Ledger arithmetic is integer micro-units /
+   `Decimal` — floats never touch money (§7).
 4. **Adversarial debate before decisions**, enforced by graph edges: bear
    cannot run before bull, the arbiter cannot run before both.
 5. **Typed state everywhere.** Every number an agent emits passes through a
@@ -64,6 +74,9 @@ Confirmed working on the target machine before this design was frozen:
    run, in the database. Model choice becomes an evidence-based decision.
 7. **Honest degradation.** Provider outages fall back or fail loudly; missing
    credentials and stale data are reported, never papered over.
+8. **Market-session aware.** Every exchange has a timezone, hours, and
+   holidays (§14a); execution, watching, and approval expiry all consult the
+   session calendar. Nothing pretends a closed market is open.
 
 ---
 
@@ -83,8 +96,8 @@ Confirmed working on the target machine before this design was frozen:
  │  deterministic  │                        │  └───────────┬──────────────┘  │
  └─────────────────┘                        │              ▼                 │
                                             │  ┌──────────────────────────┐  │
- ┌─────────────────┐   15-min timer         │  │ PIPELINE GRAPH (per run) │  │
- │   CUSTODIAN     │──expiry, reconcile────▶│  │ analysts ∥ → bull → bear │  │
+ ┌─────────────────┐   5-min timer          │  │ PIPELINE GRAPH (per run) │  │
+ │   CUSTODIAN     │──fills, expiry,───────▶│  │ analysts ∥ → bull → bear │  │
  │  deterministic  │                        │  │ → arbiter → ⏸ interrupt  │  │
  └─────────────────┘                        │  │ → execute → record       │  │
                                             │  └──────────────────────────┘  │
@@ -103,7 +116,7 @@ Confirmed working on the target machine before this design was frozen:
 |---|---|---|---|
 | `claire-api` | 7788 | FastAPI/uvicorn | chat, pipeline control, graph resume |
 | `dashboards` | 7787 | stdlib Python | pages, market data, **approval authorization**, watcher |
-| `custodian` | — | Python, timer | TTL expiry, reconciliation, orphan detection |
+| `custodian` | — | Python, timer | fill polling, TTL expiry, reconciliation, orphan detection |
 
 The chat contract (`POST /ask` streaming NDJSON, `GET /status`, `GET /feed`)
 is a deliberate integration seam: any future assistant, voice front-end, or
@@ -233,7 +246,9 @@ g.add_node("record", record_node)
 g.add_edge(START, "prepare")
 for a in ("fundamental", "technical", "news"):
     g.add_edge("prepare", a)                   # parallel fan-out
-    g.add_edge(a, "bull")                      # barrier: bull waits for all 3
+g.add_edge(["fundamental", "technical", "news"], "bull")   # explicit barrier:
+                                               # bull waits for ALL analysts —
+                                               # a law, not a superstep accident
 g.add_edge("bull", "bear")                     # bear STRICTLY after bull
 g.add_edge("bear", "arbitrate")
 g.add_conditional_edges("arbitrate",
@@ -284,7 +299,8 @@ class AnalystReport(BaseModel):
     ticker: str
     agent: Literal["fundamental", "technical", "news"]
     signal: Literal["bullish", "neutral", "bearish"]
-    conviction: float = Field(ge=-1.0, le=1.0)          # 0.0 = abstain
+    conviction: float = Field(ge=0.0, le=1.0)           # strength ONLY — the signal
+                                                        # carries direction; 0 = abstain
     summary: str = Field(max_length=300)
     narrative_path: str                                 # full prose on disk
     data_asof: datetime
@@ -294,13 +310,14 @@ class DebateCase(BaseModel):
     side: Literal["bull", "bear"]
     key_points: list[str]
     rebuttals: list[str] = []                           # bear: vs bull, point by point
-    conviction: float = Field(ge=-1.0, le=1.0)
+    conviction: float = Field(ge=0.0, le=1.0)           # strength of the case;
+                                                        # `side` carries direction
     narrative_path: str
 
 class Thesis(BaseModel):
     ticker: str
     direction: Literal["buy", "sell", "pass"]
-    conviction: float = Field(ge=-1.0, le=1.0)
+    conviction: float = Field(ge=0.0, le=1.0)             # strength; direction above
     entry_low: float | None = Field(default=None, gt=0)   # a range is two numbers,
     entry_high: float | None = Field(default=None, gt=0)  # never prose
     stop_loss: float | None = Field(default=None, gt=0)
@@ -314,11 +331,17 @@ class Thesis(BaseModel):
         if self.direction == "buy":
             assert self.entry_low and self.stop_loss, "buy thesis needs entry+stop"
             assert self.stop_loss < self.entry_low, "stop must be below entry"
+        if self.direction == "sell" and self.entry_high and self.stop_loss:
+            assert self.stop_loss > self.entry_high, \
+                "sell/short stop must be ABOVE entry"   # exits/shorts invert
         return self
 
 class Approval(BaseModel):
     status: Literal["approved", "rejected", "expired"]
-    size_usd: float | None = Field(default=None, gt=0)
+    size_base: float | None = Field(default=None, gt=0)  # buys: spend, in the
+                                                         # ACCOUNT's base currency
+    qty: float | None = Field(default=None, gt=0)        # sells: shares to close —
+                                                         # exits are sized in shares
     broker: Literal["alpaca", "saxo", "moomoo"] | None = None
     actor: str                                           # "human" | "reaper"
     token: str
@@ -333,7 +356,7 @@ class PipelineState(BaseModel):
     bear: DebateCase | None = None
     thesis: Thesis | None = None
     approval: Approval | None = None
-    execution_ids: list[str] = []
+    order_ids: list[str] = []                # fills (executions) arrive async — §11/§12
     errors: Annotated[list[str], operator.add] = []
 ```
 
@@ -349,6 +372,18 @@ moment of production.
 `accounting/repo.py` is the **only writer**. Nodes and API handlers call it;
 nothing else touches SQL; no LLM ever writes to this database.
 
+**Money convention:** every money/quantity column is an `INTEGER` count of
+micro-units (1 share = 1 000 000 qty units; $1 = 1 000 000 amount units;
+`fx_rate` is the rate × 10⁶). Python converts to `Decimal` at the repo
+boundary; floats never touch the ledger. The cash invariant — *balance == Σ
+cash_transactions* — is exact integer arithmetic, not float-approximate.
+Thesis prices in §6 stay floats: they are views, not ledger rows.
+
+**Concurrency:** three processes import `repo.py`, so "one writer" is
+enforced by SQLite, not a Python lock — desk.db is opened in WAL mode with
+`busy_timeout=5000` by every process, and each repo write is one short
+transaction.
+
 ```sql
 -- ── lifecycle ─────────────────────────────────────────────────────────────
 CREATE TABLE work_items (
@@ -360,8 +395,9 @@ CREATE TABLE work_items (
                                            -- | expired | failed
   thread_id TEXT NOT NULL,                 -- ← LangGraph bridge
   thesis_json TEXT,                        -- Thesis snapshot at arbitration
-  approval_token TEXT,                     -- single-use, server-minted
-  expires_at INTEGER,                      -- TTL
+  approval_token TEXT,                     -- single-use, server-minted, delivered
+                                           -- ONLY in the dashboard approval card
+  expires_at INTEGER,                      -- session-aware TTL (§10)
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
 CREATE TABLE events (                      -- append-only audit trail
@@ -377,6 +413,9 @@ CREATE TABLE broker_accounts (
   environment TEXT NOT NULL CHECK(environment IN ('paper','sim')),  -- no 'live'
   base_currency TEXT NOT NULL,
   fee_model TEXT NOT NULL,                 -- JSON: {type, per_trade, pct, min}
+  risk_limits TEXT NOT NULL DEFAULT '{}',  -- JSON: max_order_base, max_position_pct,
+                                           -- max_open_positions, max_trades_per_day —
+                                           -- enforced deterministically pre-order (§11)
   external_ref TEXT, opened_at INTEGER NOT NULL
 );
 CREATE TABLE instruments (
@@ -384,43 +423,69 @@ CREATE TABLE instruments (
   ticker TEXT NOT NULL, exchange TEXT NOT NULL,
   currency TEXT NOT NULL, name TEXT
 );
+CREATE TABLE exchange_sessions (           -- static session calendar (§14a)
+  exchange TEXT PRIMARY KEY,               -- NASDAQ, NYSE, LSE, SGX, HKEX, TSE, …
+  tz TEXT NOT NULL,                        -- IANA: America/New_York, Asia/Singapore
+  open_time TEXT NOT NULL, close_time TEXT NOT NULL,   -- local wall time, "09:30"
+  lunch_break TEXT,                        -- HKEX/TSE: "12:00-13:00"
+  holidays TEXT NOT NULL DEFAULT '[]'      -- JSON list of ISO dates, reviewed yearly
+);
 
--- ── money: immutable executions → lots → derived P&L ─────────────────────
-CREATE TABLE executions (                  -- IMMUTABLE; corrections are reversal rows
+-- ── money: orders → immutable fill executions → lots → derived P&L ───────
+CREATE TABLE orders (                      -- broker order lifecycle; FILLS ARE ASYNC
   id TEXT PRIMARY KEY,
+  work_item_id TEXT REFERENCES work_items(id),
+  account_id TEXT NOT NULL REFERENCES broker_accounts(id),
+  instrument_id TEXT NOT NULL REFERENCES instruments(id),
+  side TEXT NOT NULL CHECK(side IN ('buy','sell')),
+  qty INTEGER NOT NULL,                    -- requested, micro-units
+  limit_price INTEGER, stop_loss INTEGER, take_profit INTEGER,
+  status TEXT NOT NULL,                    -- pending_session | placed | partially_filled
+                                           -- | filled | cancelled | expired | rejected
+  broker_order_id TEXT UNIQUE,
+  expires_at INTEGER NOT NULL,             -- order TTL: cancel at broker if unfilled
+  placed_at INTEGER, updated_at INTEGER NOT NULL
+);
+CREATE TABLE executions (                  -- IMMUTABLE; ONE ROW PER FILL —
+                                           -- partial fills are simply multiple rows;
+                                           -- corrections are reversal rows
+  id TEXT PRIMARY KEY,
+  order_id TEXT REFERENCES orders(id),
   account_id TEXT NOT NULL REFERENCES broker_accounts(id),
   instrument_id TEXT NOT NULL REFERENCES instruments(id),
   work_item_id TEXT REFERENCES work_items(id),
   side TEXT NOT NULL CHECK(side IN ('buy','sell')),
-  qty REAL NOT NULL CHECK(qty > 0),
-  price_native REAL NOT NULL CHECK(price_native > 0),
+  qty INTEGER NOT NULL CHECK(qty > 0),     -- micro-units, as is every money column
+  price_native INTEGER NOT NULL CHECK(price_native > 0),
   currency TEXT NOT NULL,
-  fx_rate REAL NOT NULL,                   -- snapshotted at fill; never recomputed
-  commission REAL NOT NULL DEFAULT 0,
-  other_fees REAL NOT NULL DEFAULT 0,
-  gross_base REAL NOT NULL, net_base REAL NOT NULL,
-  intended_price REAL,                     -- thesis entry → slippage metric
-  broker_order_id TEXT,
-  executed_at INTEGER NOT NULL, recorded_at INTEGER NOT NULL
+  fx_rate INTEGER NOT NULL,                -- rate ×1e6, snapshotted at fill;
+                                           -- never recomputed
+  commission INTEGER NOT NULL DEFAULT 0,
+  other_fees INTEGER NOT NULL DEFAULT 0,
+  gross_base INTEGER NOT NULL, net_base INTEGER NOT NULL,
+  intended_price INTEGER,                  -- thesis entry → slippage metric
+  broker_order_id TEXT, broker_fill_id TEXT,
+  executed_at INTEGER NOT NULL, recorded_at INTEGER NOT NULL,
+  UNIQUE(broker_order_id, broker_fill_id)  -- idempotency: a fill records once
 );
 CREATE TABLE lots (                        -- one per opening execution
   id TEXT PRIMARY KEY,
   open_execution_id TEXT NOT NULL REFERENCES executions(id),
   account_id TEXT NOT NULL, instrument_id TEXT NOT NULL,
-  qty_opened REAL NOT NULL,
-  qty_remaining REAL NOT NULL CHECK(qty_remaining >= 0),
-  cost_per_share_base REAL NOT NULL,
-  commission_allocated REAL NOT NULL,      -- this lot's share of the buy commission
+  qty_opened INTEGER NOT NULL,
+  qty_remaining INTEGER NOT NULL CHECK(qty_remaining >= 0),
+  cost_per_share_base INTEGER NOT NULL,
+  commission_allocated INTEGER NOT NULL,   -- this lot's share of the buy commission
   opened_at INTEGER NOT NULL
 );
 CREATE TABLE lot_closures (                -- realized P&L is born here, nowhere else
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   lot_id TEXT NOT NULL REFERENCES lots(id),
   close_execution_id TEXT NOT NULL REFERENCES executions(id),
-  qty REAL NOT NULL,
-  proceeds_base REAL NOT NULL, cost_base REAL NOT NULL,
-  commission_base REAL NOT NULL,           -- both sides' allocated commissions
-  realized_pl_base REAL NOT NULL,
+  qty INTEGER NOT NULL,
+  proceeds_base INTEGER NOT NULL, cost_base INTEGER NOT NULL,
+  commission_base INTEGER NOT NULL,        -- both sides' allocated commissions
+  realized_pl_base INTEGER NOT NULL,
   holding_days INTEGER, closed_at INTEGER NOT NULL
 );
 CREATE TABLE cash_transactions (           -- EVERY cash movement; balance = SUM()
@@ -428,7 +493,7 @@ CREATE TABLE cash_transactions (           -- EVERY cash movement; balance = SUM
   account_id TEXT NOT NULL REFERENCES broker_accounts(id),
   kind TEXT NOT NULL CHECK(kind IN ('deposit','withdrawal','trade_buy','trade_sell',
     'commission','dividend','withholding_tax','fx_conversion','interest','adjustment')),
-  amount_base REAL NOT NULL,               -- signed: +in / −out
+  amount_base INTEGER NOT NULL,            -- signed micro-units: +in / −out
   execution_id TEXT REFERENCES executions(id),
   note TEXT, occurred_at INTEGER NOT NULL
 );
@@ -441,14 +506,16 @@ CREATE TABLE corporate_actions (           -- splits adjust lots as auditable ro
 CREATE TABLE broker_snapshots (            -- broker-reported truth, for reconciliation
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   account_id TEXT NOT NULL, taken_at INTEGER NOT NULL,
-  cash REAL, positions_json TEXT
+  cash INTEGER, positions_json TEXT        -- micro-units
 );
 CREATE TABLE price_alerts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   instrument_id TEXT NOT NULL,
   rule TEXT NOT NULL,                      -- below_price | above_price | drop_pct_from_entry
   threshold REAL NOT NULL, armed INTEGER NOT NULL DEFAULT 1,
-  last_fired_at INTEGER, fire_count_today INTEGER DEFAULT 0
+  last_fired_at INTEGER, fire_count_today INTEGER DEFAULT 0,
+  fire_count_date TEXT                     -- YYYY-MM-DD the counter belongs to;
+                                           -- mismatch with today resets the count
 );
 
 -- ── providers & agents (the multi-LLM layer) ─────────────────────────────
@@ -511,7 +578,8 @@ Worked example the accounting tests encode: buy 10 @ $200 (+$1 fee), buy 5 @
 $220 (+$1), buy 10 @ $180 (+$1), then sell 12 @ $240 (−$1.50). FIFO consumes
 all of lot A and 2 shares of lot B → realized **+$437.10** net of all fees;
 13 shares remain at $189.35 average cost. Every figure traces to immutable
-rows; nothing is ever hand-computed twice.
+rows; nothing is ever hand-computed twice — and every assertion is on exact
+integer micro-units, so float drift is unrepresentable, not merely unlikely.
 
 ---
 
@@ -560,7 +628,7 @@ def model_for(agent_id: str):
 | web search | `search.py`: **Tavily** if `TAVILY_API_KEY` set, else DuckDuckGo (free, no key, noticeably weaker). Ship DDG default; recommend Tavily for news/fundamental quality. |
 | page fetch | `httpx` + readability extraction, size-capped |
 | file I/O | `files.py` — **jailed to `var/narratives/<work_item>/`**. Agents cannot roam the filesystem, by construction. |
-| technical math | a sandboxed `run_python` tool: numpy/pandas over OHLCV the tool itself fetches — no shell access for any agent |
+| technical math | `run_python`: numpy/pandas over OHLCV the tool itself fetches, in a subprocess with a **scrubbed environment (no claire.env secrets), no network access, and a CPU/time cap** — an injected prompt cannot reach the internal endpoints or any credential. No shell access for any agent. |
 | brokers | `langchain-mcp-adapters` wrapping the three MCP servers |
 | market data | `market.py` (§14) exposed as tools: quote, chart, screener, fx |
 
@@ -571,16 +639,23 @@ def model_for(agent_id: str):
 ```
 1. graph reaches gate → interrupt() → checkpoint persists
    claire-api: work_item → awaiting_approval
-               token = secrets.token_hex(16); expires_at = now + 24h
-               SSE event → dashboard approval card
+               token = secrets.token_hex(16)
+               expires_at = END OF THE INSTRUMENT'S NEXT TRADING SESSION (§14a)
+               — wall-clock 24 h would kill a Friday-evening SGX approval
+               before Monday's open
+               SSE event → dashboard approval card; THE CARD CARRIES THE TOKEN
 2. human reviews the TYPED thesis on the dashboard, sets size + broker
-   POST :7787/api/thesis-action {work_item_id, action:"approve", size_usd, broker}
+   POST :7787/api/thesis-action
+        {work_item_id, action:"approve", size_base, broker, token}  ← token REQUIRED
 3. dashboards server AUTHORIZES — all of:
-     token matches ∧ unexpired ∧ unused ∧ state == awaiting_approval
-   → burns the token, appends events row (actor: human)
-   → POST :7788/internal/resume {status:"approved", size_usd, broker, token, actor}
+     presented token matches ∧ unexpired ∧ unused ∧ state == awaiting_approval
+   → marks the token pending_resume (NOT yet burned), appends events row
+   → POST :7788/internal/resume {status:"approved", size_base, broker, token, actor}
+     — idempotent per work_item, retried with backoff if claire-api is down
 4. claire-api: pipeline.invoke(Command(resume=payload), {"thread_id": wi})
-   → gate returns → execute node runs → record → done
+   → on ACK the token is burned and the item marked approved: a crash between
+     authorize and resume can only DELAY an approval, never lose or replay one
+   → gate returns → execute node runs → record
 ```
 
 **The security property, stated plainly:** `Command(resume=…)` will resume for
@@ -590,16 +665,19 @@ def model_for(agent_id: str):
 is the only component that converts a human click into a resume, and only
 after token verification. No LLM — any provider, any prompt injection — has a
 path to approving a trade. A chat message saying "approved" is just a chat
-message.
+message. And because the token travels only inside the dashboard's approval
+card, **localhost access alone is not sufficient either**: a co-resident agent
+with `curl` (today's assistants or tomorrow's) can reach :7787 but cannot
+present a token only a human has seen.
 
 Rejection is the same flow with `status:"rejected"`. Expiry is the custodian
 calling the same endpoint with `status:"expired", actor:"reaper"` — the graph
 finishes through `record`, so expired runs **terminate cleanly** instead of
 leaking suspended checkpoints forever.
 
-Reconciliation guard: the custodian flags any `approved` item with no
-execution after 10 minutes and any `executing` item stuck past 30 — approvals
-must never silently vanish.
+Reconciliation guard: the custodian flags any `approved` item with no order
+after 10 minutes and any `executing` item whose order is past its TTL but not
+terminal — approvals must never silently vanish.
 
 ---
 
@@ -609,16 +687,22 @@ must never silently vanish.
 # nodes_execution.py — no LLM anywhere in this file
 def execute_node(state):
     ap, th = state.approval, state.thesis
+    if not sessions.is_open(state.instrument.exchange):    # §14a
+        order = repo.queue_order(state, status="pending_session")
+        return {"order_ids": [order.id]}                   # custodian places it at
+                                                           # next open; dashboard
+                                                           # shows "resting until …"
     px  = quote(state.instrument)                          # live price
-    qty = position_qty(ap.size_usd, px, state.instrument)  # FX + lot-size floor
-    check_cash(ap.broker, ap.size_usd)                     # refuse over-spend
+    qty = position_qty(ap.size_base, px, state.instrument) # FX + lot-size floor
+    check_risk(ap.broker, ap, qty)                         # cash + risk_limits: max
+                                                           # order, concentration,
+                                                           # position & daily caps
     order = broker(ap.broker).place_bracket(               # paper/sim enforced here
         instrument=state.instrument, side=th.direction, qty=qty,
         limit=th.entry_high, stop_loss=th.stop_loss, take_profit=th.take_profit)
-    ex = repo.record_execution(order, work_item=state.work_item_id,
-                               intended_price=th.entry_low)
-    repo.record_cash(ex)                                   # trade + commission rows
-    return {"execution_ids": [ex.id]}
+    repo.record_order(order, work_item=state.work_item_id,
+                      ttl=sessions.close_of(state.instrument.exchange))
+    return {"order_ids": [order.id]}                       # fills arrive ASYNC (§12)
 ```
 
 - **Bracket order is atomic** — entry and stop placed together. If a venue
@@ -628,27 +712,42 @@ def execute_node(state):
 - Fee models mirror the real venues so paper results stay honest:
   alpaca flat $0 · saxo 0.08% min $5 · moomoo flat $0.99 — stored per account
   in `fee_model`, applied by `repo`, never by a model.
-- `record_execution` opens a lot (buy) or FIFO-matches into `lot_closures`
-  (sell). Shorts are explicit: sell-to-open opens a negative lot,
-  buy-to-cover closes it.
-- All of this runs under a single writer lock; cash can never go negative and
-  the same execution can never be recorded twice (idempotency key =
-  `broker_order_id`).
+- **Fills are asynchronous.** `execute` places and records the *order*; the
+  custodian (§12) polls the broker and records one immutable execution row per
+  fill — partial fills are just multiple rows, each opening a lot (buy) or
+  FIFO-matching into `lot_closures` (sell) and writing cash as it lands. The
+  work item stays `executing` until the order is terminal.
+- **Orders carry a TTL** (default: end of the current session). Unfilled at
+  expiry → cancelled at the broker; partially filled → keep what filled,
+  cancel the remainder, close the item with a partial-fill note.
+- Shorts are explicit: sell-to-open opens a negative lot, buy-to-cover
+  closes it.
+- Cash can never go negative, and no fill records twice — the idempotency key
+  is `(broker_order_id, broker_fill_id)`.
 
 ---
 
 ## 12. The custodian
 
-`custodian.py`, systemd timer every 15 minutes, deterministic, read-mostly:
+`custodian.py`, systemd timer every 5 minutes, deterministic:
 
-- **Expire:** `awaiting_approval` past `expires_at` (default 24 h) → resume
-  with `expired`; `approved` but unexecuted past 60 min → same, token burned.
+- **Fills:** poll every non-terminal order at its broker; record one execution
+  row per new fill (idempotent on `(broker_order_id, broker_fill_id)`), open /
+  close lots and write cash as fills land; cancel orders past their TTL; place
+  `pending_session` orders whose market has just opened; transition work items
+  `executing` → `done` when the order goes terminal.
+- **Expire:** `awaiting_approval` past `expires_at` (end of next session, §10)
+  → resume with `expired`; `approved` but with no order past 60 min → same,
+  token burned.
   Expiry is enforced twice: by this reaper **and** on every read path — an
   expired item is never served as actionable even if the reaper is down.
 - **Reconcile:** latest `broker_snapshots` vs the book — positions and cash.
   Drift is *flagged*, never silently corrected; the broker is presumed right.
 - **Orphans:** executions without lots, lots with negative remainder,
-  work-items `running` > 2 h, suspended checkpoints with no work_item.
+  work-items `running` > 2 h, suspended checkpoints with no work_item — and
+  the inverse: `awaiting_approval` items whose checkpoint thread no longer
+  exists (checkpoints.db is disposable; this WILL eventually happen) → failed
+  loudly, never left hanging.
 - **Archive:** terminal items > 30 days; nightly `VACUUM INTO` backup of
   desk.db.
 - Publishes a health row the dashboard renders as a tile — the safety net
@@ -670,7 +769,7 @@ The custodian **cannot** approve or execute: `/internal/resume` accepts only
 | `/portfolio` | positions from `v_positions`, per-share P&L from `v_share_pl` (multi-lot detail), equity curve, cash + top-up/withdraw per account, alerts panel, broker-metrics comparison |
 | `/agent/<id>` | drill-down: reports, run history with cost; **Model & Provider panel** — provider dropdown (incompatible greyed with reason), model list refreshed from the provider, fallback, temperature, a **Test button** (canned prompt → latency, cost, structured-output pass/fail *before* committing), prompt editor with version rollback |
 | `/providers` | add/enable providers, key present/absent (never the value), health, cost config |
-| `/approvals` (cards also on `/` and `/agent/arbiter`) | the typed thesis, **editable size with live share-count + fee + FX preview**, broker choice, ✔ Approve / ✖ Reject |
+| `/approvals` (cards also on `/` and `/agent/arbiter`) | the typed thesis, **editable size with live share-count + fee + FX preview**, broker choice, market-open/closed badge with next-open time, ✔ Approve / ✖ Reject (the card carries the single-use token — §10) |
 
 Charts: lightweight-charts from vendored JS (single file, no CDN dependency at
 runtime). All pages read `desk.db` through the API — numbers come from typed
@@ -702,6 +801,26 @@ Yahoo Finance keyless endpoints, from code proven in production use:
 
 ---
 
+## 14a. Market sessions
+
+`app/sessions.py` — pure functions over the `exchange_sessions` table (§7); no
+LLM, no network:
+
+- `is_open(exchange, ts=None)` — honours timezone, weekends, holidays, and
+  lunch breaks (HKEX, TSE).
+- `next_open(exchange)` / `close_of(exchange)` — drive order queueing (§11),
+  order TTLs, and session-aware approval expiry (§10).
+- Consumers: the executor queues instead of firing at a closed venue; the
+  watcher (§15) evaluates rules only during sessions; approval expiry is
+  measured in market time; the analysis timers (§16) run pre-open per region.
+- SGX (09:00–17:00 Asia/Singapore) and NYSE (09:30–16:00 America/New_York)
+  never overlap — a single global "run time" cannot exist, which is why
+  sessions are data, not configuration comments. Holiday lists are static
+  JSON reviewed yearly: a stale holiday costs one queued order a year, never
+  money.
+
+---
+
 ## 15. The price watcher
 
 Deterministic loop in the dashboards process (no LLM cost), every 10 minutes:
@@ -709,6 +828,10 @@ Deterministic loop in the dashboards process (no LLM cost), every 10 minutes:
 - Every open position automatically gets a **down-8%-from-entry** rule; users
   add `below_price` / `above_price` / `drop_pct_from_entry` rules per
   instrument.
+- **Session-aware:** rules are evaluated only while the instrument's exchange
+  is open (§14a), plus a 30-minute grace after close. Outside hours the
+  position tile shows `market closed — next open …`, never an `ok` computed
+  from stale prices.
 - **Escalating re-alerts:** fire on first breach, then only after each further
   3% decline, capped at 6/instrument/day — a worsening position keeps nudging
   without spamming.
@@ -731,11 +854,15 @@ alerts land together.
 |---|---|---|
 | `claire-api.service` | always | graph runtime + chat (7788) |
 | `claire-dashboards.service` | always | pages + APIs + watcher (7787) |
-| `claire-custodian.timer` | every 15 min | reaper + reconciler |
-| `claire-analysis.timer` | Mon–Fri 21:00 | autonomous run: review open positions, screen, full pipeline on 1–2 candidates → verdicts land `awaiting_approval` |
+| `claire-custodian.timer` | every 5 min | fill polling + reaper + reconciler |
+| `claire-analysis-asia.timer` | Mon–Fri 08:15 Asia/Singapore | pre-open autonomous run over SGX/HKEX/TSE/ASX names + open Asian positions → verdicts land `awaiting_approval` |
+| `claire-analysis-eu.timer` | Mon–Fri 07:30 Europe/London | pre-open run over LSE/XETRA/Paris names + open European positions |
+| `claire-analysis-us.timer` | Mon–Fri 08:30 America/New_York | pre-open run over NASDAQ/NYSE names + open US positions |
 | `claire-reconcile.timer` | daily 09:00 | broker snapshots → drift check |
 
-All: `EnvironmentFile=/opt/Claire/etc/claire.env`, `Restart=always`.
+All: `EnvironmentFile=/opt/Claire/etc/claire.env`, `Restart=always`. Analysis
+timers state their times in each region's own IANA zone — systemd `OnCalendar`
+supports this natively, so DST shifts are systemd's problem, not ours.
 Autonomous runs are started by a CLI (`claire-run --autonomous`), not by
 prompting a chat model — starting work needs no LLM.
 
@@ -766,25 +893,33 @@ Served at `POST /ask` (streaming NDJSON: `{kind:"text"|"tool"|"done"|"error"}`),
 
 ## 18. Testing
 
-Five layers, run by `tests/run.sh`; the money and authorization layers must be
+Six layers, run by `tests/run.sh`; the money and authorization layers must be
 runnable offline in under a second.
 
 1. **Accounting (most important):** the §7 worked example as a fixture —
    exact closure rows, FIFO order, commission allocation both sides, shorts,
-   splits via `corporate_actions`, and the invariant *cash balance == Σ
-   cash_transactions* after every operation. Property-style: random
-   buy/sell sequences must never produce negative lots or unbalanced cash.
+   splits via `corporate_actions`, partial and multi-fill order recording
+   (idempotent per fill), order-TTL cancellation, and the invariant *cash
+   balance == Σ cash_transactions* after every operation — all asserted in
+   exact integer micro-units. Property-style: random buy/sell/partial-fill
+   sequences must never produce negative lots or unbalanced cash.
 2. **Graph:** compile with a `FakeChatModel` scripted per node — analysts fan
    out and all complete before bull; bear receives bull's case; `pass` never
    reaches the gate; interrupt fires with the typed payload; each resume
    status reaches the right terminal node; a killed-and-restarted run resumes
    without re-running finished nodes. No keys, no network.
-3. **Authorization:** spoofed resume without token → 403; reused token → 409;
-   expired → 410; `/internal/resume` refuses non-localhost / bad secret; no
+3. **Authorization:** approve without presenting the token → 403 *even from
+   localhost*; spoofed resume without token → 403; reused token → 409;
+   expired → 410; `/internal/resume` refuses non-localhost / bad secret;
+   authorize-then-crash → resume retries and the token burns exactly once; no
    registered agent tool reaches resume.
 4. **Providers:** capability gate rejects incompatible assignments; fallback
    fires on simulated provider failure; the meter records tokens and cost.
-5. **Live smoke (auto-skips when services are down):** every page serves,
+5. **Sessions:** `is_open` across timezones, weekends, holidays, and lunch
+   breaks; a closed-market execute queues `pending_session` instead of
+   placing; the watcher stays silent out of hours; approval expiry lands at
+   the end of the next session, not +24 h.
+6. **Live smoke (auto-skips when services are down):** every page serves,
    `/ask` streams, a pipeline launches and interrupts against mocked brokers,
    FX is plausible, full-exchange listing is genuinely sorted.
 
@@ -840,17 +975,20 @@ runnable offline in under a second.
 
 1. Repo scaffold, venv, pinned requirements, both DBs created from
    `schema.sql`, `etc/claire.env.example`.
-2. **Accounting core + its tests** — repo layer, lot matcher, cash invariants.
-   It must be bulletproof before anything can trade, and it has no LangGraph
-   dependency.
+2. **Accounting core + its tests** — repo layer, lot matcher, order
+   lifecycle, cash invariants; integer micro-units and the `Decimal` boundary
+   from the first line. It must be bulletproof before anything can trade, and
+   it has no LangGraph dependency.
 3. Typed state models; provider registry with Anthropic only; meter callback.
 4. Pipeline graph against `FakeChatModel` → graph tests green.
 5. Approval gate + token authorization across both servers → authorization
    tests green.
-6. Market data module (§14) + tools layer (search choice made here).
+6. Market data module (§14) + session calendar (§14a) + tools layer (search
+   choice made here).
 7. Real analyst/debate/arbiter nodes; first live pipeline run to an
    interrupt; approve it from the dashboard against a mocked broker.
-8. Deterministic executor against mocked brokers, then the three MCP adapters.
+8. Deterministic executor + async order lifecycle (fill polling, partial
+   fills, TTLs) against mocked brokers, then the three MCP adapters.
 9. Claire chat agent + `/ask` streaming contract.
 10. Dashboards, Model & Provider panel, `/providers` page.
 11. Watcher, custodian, timers.
@@ -872,3 +1010,5 @@ runnable offline in under a second.
   path exist; the automatic split-watcher ships later).
 - Saxo SIM tokens expire every 24 h and need manual refresh until OAuth
   refresh is added.
+- `exchange_sessions` holidays are a hand-maintained yearly list; a missed
+  holiday delays a queued order by a day, nothing more.
