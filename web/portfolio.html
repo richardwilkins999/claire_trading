@@ -1,0 +1,33 @@
+<meta charset="utf-8"><title>Claire — Portfolio</title>
+<link rel="stylesheet" href="/style.css"><script src="/nav.js"></script>
+<script>nav('/portfolio')</script>
+<main><h1>Portfolio</h1><div id="out">loading…</div>
+<h2>Alerts</h2><div id="alerts"></div></main>
+<script>
+async function refresh() {
+  const p = await api('/api/portfolio');
+  document.getElementById('out').innerHTML = p.accounts.map(a => `
+    <div class="card"><h3>${a.id}
+      <span class="pill">${a.broker}</span></h3>
+    <p>cash <b>${fmt(a.cash)}</b> ${a.ccy} ·
+       realized P&amp;L <b class="${a.realized_pl >= 0 ? 'ok' : 'bad'}">
+       ${fmt(a.realized_pl)}</b></p>
+    ${a.positions.length === 0 ? '<p class="muted">no open positions</p>' :
+    `<table><tr><th>instrument</th><th>qty</th><th>cost basis</th>
+       <th>avg (incl fees)</th></tr>` +
+      a.positions.map(x => `<tr><td>${x.instrument_id}</td>
+        <td>${fmt(x.qty, 4)}</td><td>${fmt(x.cost + x.comm)}</td>
+        <td>${fmt((x.cost + x.comm) / x.qty)}</td></tr>`).join('') +
+      '</table>'}</div>`).join('');
+  const al = p.alerts;
+  document.getElementById('alerts').innerHTML = al.length === 0
+    ? '<p class="muted">no alert rules yet (auto down-8% rules appear with positions)</p>'
+    : '<table><tr><th>instrument</th><th>rule</th><th>threshold</th>' +
+      '<th>fires today</th><th>last fired</th></tr>' +
+      al.map(a => `<tr><td>${a.instrument_id}</td><td>${a.rule}</td>
+        <td>${a.threshold}</td><td>${a.fire_count_today || 0}</td>
+        <td class="muted">${ts(a.last_fired_at)}</td></tr>`).join('') +
+      '</table>';
+}
+refresh(); setInterval(refresh, 15000);
+</script>

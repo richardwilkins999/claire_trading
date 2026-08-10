@@ -1,0 +1,52 @@
+<meta charset="utf-8"><title>Claire — Agents</title>
+<link rel="stylesheet" href="/style.css"><script src="/nav.js"></script>
+<script>nav('/agents')</script>
+<main><h1>Agents — model &amp; provider</h1><div id="out">loading…</div></main>
+<script>
+let providers = [];
+async function refresh() {
+  const [agents, provs] = await Promise.all(
+    [api('/api/agents'), api('/api/providers')]);
+  providers = provs;
+  document.getElementById('out').innerHTML = agents.map(a => {
+    const opts = provs.map(p => {
+      const compatible = a.requires.every(c => p.capabilities[c]);
+      return `<option value="${p.id}" ${p.id === a.provider_id ? 'selected' : ''}
+        ${compatible ? '' : 'disabled'}>
+        ${p.display_name}${compatible ? '' : ' (missing ' +
+        a.requires.filter(c => !p.capabilities[c]).join(',') + ')'}</option>`;
+    }).join('');
+    const lr = a.last_run;
+    return `<div class="card"><h3>${a.display_name || a.id}
+      <span class="pill">${a.id}</span>
+      ${a.enabled ? '' : '<span class="pill bad">disabled</span>'}</h3>
+      <p class="muted">tools: ${a.tools.join(', ') || 'none (structured call)'}
+      ${lr ? `· last run: ${lr.status} $${fmt(lr.cost_usd, 4)}
+        (${lr.tokens_in || 0}/${lr.tokens_out || 0} tok)` : ''}</p>
+      <div class="row">
+        <select id="prov-${a.id}">${opts}</select>
+        <input id="model-${a.id}" value="${a.model}" style="width:220px">
+        <button onclick="save('${a.id}')">Save</button>
+        <button class="ghost" onclick="test('${a.id}')">Test provider</button>
+      </div></div>`;
+  }).join('');
+}
+async function save(id) {
+  try {
+    await api('/api/agent', {id,
+      provider_id: document.getElementById('prov-' + id).value,
+      model: document.getElementById('model-' + id).value});
+    toast('saved ✓');
+  } catch (e) { toast(e.message, false); }
+  refresh();
+}
+async function test(id) {
+  const pid = document.getElementById('prov-' + id).value;
+  toast('probing ' + pid + '…');
+  try {
+    const r = await api('/api/provider-test', {provider_id: pid});
+    toast(r.ok ? `ok, ${r.latency_ms}ms` : `failed: ${r.error}`, !!r.ok);
+  } catch (e) { toast(e.message, false); }
+}
+refresh();
+</script>

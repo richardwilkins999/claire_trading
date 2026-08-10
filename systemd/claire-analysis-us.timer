@@ -1,0 +1,8 @@
+[Unit]
+Description=Claire us pre-open analysis
+
+[Timer]
+OnCalendar=Mon..Fri 08:30:00 America/New_York
+
+[Install]
+WantedBy=timers.target

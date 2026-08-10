@@ -1,0 +1,52 @@
+<meta charset="utf-8"><title>Claire — Markets</title>
+<link rel="stylesheet" href="/style.css"><script src="/nav.js"></script>
+<script>nav('/markets')</script>
+<main><h1>Markets</h1>
+  <div class="row"><input id="q" placeholder="search any listed company…"
+    style="flex:1"><button onclick="search()">Search</button></div>
+  <div id="results"></div>
+  <h2>Quote</h2>
+  <div class="row"><input id="sym" placeholder="symbol e.g. NVDA, C07.SI">
+    <button class="ghost" onclick="quote()">Quote</button></div>
+  <div id="quote"></div>
+</main>
+<script>
+async function search() {
+  const rows = await api('/api/search?q=' +
+    encodeURIComponent(document.getElementById('q').value));
+  document.getElementById('results').innerHTML =
+    '<table><tr><th>symbol</th><th>name</th><th>exchange</th><th></th></tr>' +
+    rows.map(r => `<tr><td>${r.symbol}</td><td>${r.name || ''}</td>
+      <td>${r.exchange || ''}</td>
+      <td><button class="ghost" onclick="q('${r.symbol}')">quote</button>
+      </td></tr>`).join('') + '</table>';
+}
+function q(s) { document.getElementById('sym').value = s; quote(); }
+async function quote() {
+  const s = document.getElementById('sym').value.trim();
+  if (!s) return;
+  try {
+    const d = await api('/api/quote?symbols=' + encodeURIComponent(s));
+    const x = d[s];
+    document.getElementById('quote').innerHTML = `<div class="card">
+      <h3>${s} — ${fmt(x.price, 4)} ${x.currency}
+        ${x.stale ? '<span class="pill warn">market closed</span>' : ''}</h3>
+      <p class="muted">prev close ${fmt(x.previous_close, 4)}</p>
+      <button onclick="send('${s}')">Send to pipeline</button></div>`;
+  } catch (e) { toast(e.message, false); }
+}
+const SUFFIX = {'.SI':['SGX','SGD',100],'.HK':['HKEX','HKD',1],
+  '.T':['TSE','JPY',1],'.AX':['ASX','AUD',1],'.DE':['XETRA','EUR',1],
+  '.PA':['PARIS','EUR',1],'.NS':['NSE','INR',1],'.L':['LSE','GBP',1]};
+async function send(sym) {
+  let [ex, ccy, lot] = ['NASDAQ', 'USD', 1], ticker = sym;
+  for (const suf in SUFFIX) if (sym.endsWith(suf)) {
+    [ex, ccy, lot] = SUFFIX[suf]; ticker = sym.slice(0, -suf.length);
+  }
+  try {
+    const r = await api('/api/run',
+      {ticker, exchange: ex, currency: ccy, lot_size: lot});
+    toast('launched ' + r.work_item_id);
+  } catch (e) { toast(e.message, false); }
+}
+</script>

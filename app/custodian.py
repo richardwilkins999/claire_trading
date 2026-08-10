@@ -43,7 +43,10 @@ class Custodian:
 
     # ── orders ───────────────────────────────────────────────────────────
     def _adapter(self, account_id):
-        return self.brokers[self.account_broker(account_id)]
+        """None when this custodian instance has no adapter for the venue —
+        the timer-run custodian does DB-only duties; fill polling happens in
+        the claire-api process, which owns the (possibly in-memory) venues."""
+        return self.brokers.get(self.account_broker(account_id))
 
     def _place_pending_session(self, report):
         now = datetime.fromtimestamp(int(self.clock()), tz=timezone.utc)
@@ -53,8 +56,11 @@ class Custodian:
                 " WHERE o.status='pending_session'").fetchall():
             if not sessions.is_open(o["exchange"], now, self.cal):
                 continue
+            adapter = self._adapter(o["account_id"])
+            if adapter is None:
+                continue
             from .tools.market import yahoo_symbol
-            placed = self._adapter(o["account_id"]).place_bracket(
+            placed = adapter.place_bracket(
                 symbol=yahoo_symbol(o["ticker"], o["exchange"]),
                 side=o["side"], qty=from_micro(o["qty"]),
                 limit=from_micro(o["limit_price"]) if o["limit_price"] else None,
@@ -73,10 +79,10 @@ class Custodian:
         for o in self.conn.execute(
                 "SELECT * FROM orders WHERE status IN"
                 " ('placed','partially_filled')").fetchall():
-            if not o["broker_order_id"]:
+            adapter = self._adapter(o["account_id"])
+            if adapter is None or not o["broker_order_id"]:
                 continue
-            status = self._adapter(o["account_id"]).order_status(
-                o["broker_order_id"])
+            status = adapter.order_status(o["broker_order_id"])
             for f in status["fills"]:
                 ex = self.repo.record_fill(
                     o["id"], broker_fill_id=f["fill_id"],
@@ -104,8 +110,9 @@ class Custodian:
                 "SELECT * FROM orders WHERE status IN"
                 " ('placed','partially_filled','pending_session')"
                 " AND expires_at < ?", (now,)).fetchall():
-            if o["broker_order_id"]:
-                self._adapter(o["account_id"]).cancel(o["broker_order_id"])
+            adapter = self._adapter(o["account_id"])
+            if o["broker_order_id"] and adapter is not None:
+                adapter.cancel(o["broker_order_id"])
             (fills,) = self.conn.execute(
                 "SELECT COUNT(*) FROM executions WHERE order_id=?",
                 (o["id"],)).fetchone()
@@ -155,11 +162,64 @@ class Custodian:
     def snapshot_brokers(self):
         ts = int(self.clock())
         for acct in self.conn.execute("SELECT id, broker FROM broker_accounts"):
+            adapter = self.brokers.get(acct["broker"])
+            if adapter is None:
+                continue
             try:
-                snap = self.brokers[acct["broker"]].snapshot()
+                snap = adapter.snapshot()
             except Exception as e:              # noqa: BLE001
                 snap = {"error": str(e)}
             self.conn.execute(
                 "INSERT INTO broker_snapshots (account_id, taken_at, cash,"
                 " positions_json) VALUES (?,?,?,?)",
                 (acct["id"], ts, None, json.dumps(snap, default=str)))
+
+
+def _account_broker_from_db(conn):
+    def account_broker(account_id):
+        row = conn.execute("SELECT broker FROM broker_accounts WHERE id=?",
+                           (account_id,)).fetchone()
+        return row["broker"] if row else ""
+    return account_broker
+
+
+def main(argv=None):
+    """Timer entrypoint (claire-custodian.timer): DB-side duties — approval
+    expiry, authorize-crash retries, orphan flags — plus --snapshot for the
+    daily reconcile and a nightly VACUUM backup. Fill polling runs inside
+    claire-api, which owns the broker adapters."""
+    import argparse
+    import os
+
+    from . import sessions as sess
+    from .accounting import db
+    from .accounting.repo import Repo
+    from .api.server import ROOT, load_env
+    from .approvals import default_resume_post
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--snapshot", action="store_true",
+                    help="also VACUUM-backup desk.db")
+    args = ap.parse_args(argv)
+    load_env()
+    var = ROOT / "var"
+    conn = db.connect(var / "desk.db")
+    db.init(conn)
+    repo = Repo(conn)
+    resume_post = default_resume_post(
+        "http://127.0.0.1:7788", os.environ.get("CLAIRE_INTERNAL_SECRET", ""))
+    c = Custodian(conn, repo, {}, resume_post=resume_post,
+                  account_broker=_account_broker_from_db(conn),
+                  fx_rate_for=lambda i, a: 1_000_000,
+                  cal=sess.load(conn) or None)
+    report = c.run_once()
+    if args.snapshot:
+        backup = var / "desk.backup.db"
+        backup.unlink(missing_ok=True)
+        conn.execute("VACUUM INTO ?", (str(backup),))
+        report["backup"] = str(backup)
+    print(json.dumps(report, default=str))
+
+
+if __name__ == "__main__":
+    main()

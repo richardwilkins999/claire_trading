@@ -1,0 +1,40 @@
+<meta charset="utf-8"><title>Claire — Providers</title>
+<link rel="stylesheet" href="/style.css"><script src="/nav.js"></script>
+<script>nav('/providers')</script>
+<main><h1>Providers</h1><div id="out">loading…</div>
+<p class="muted">Adding a provider (incl. a local LLM) is one DB row + a key
+in etc/claire.env — see DESIGN.md §8. Keys are shown present/absent only;
+values never leave the env file.</p></main>
+<script>
+async function refresh() {
+  const provs = await api('/api/providers');
+  document.getElementById('out').innerHTML =
+    '<table><tr><th>provider</th><th>kind</th><th>key</th><th>health</th>' +
+    '<th>capabilities</th><th></th></tr>' + provs.map(p => {
+      const h = p.health;
+      const hs = h ? (h.ok ? `<span class="ok">ok ${h.latency_ms}ms</span>`
+        : `<span class="bad" title="${h.error || ''}">failing</span>`)
+        : '<span class="muted">unprobed</span>';
+      return `<tr><td><b>${p.display_name}</b><br>
+        <span class="muted">${p.base_url || 'api.anthropic.com'}</span></td>
+        <td>${p.kind}</td>
+        <td class="${p.key_present ? 'ok' : (p.key_ref ? 'bad' : 'muted')}">
+          ${p.key_ref ? (p.key_present ? 'present' : 'MISSING') : 'none needed'}
+          <br><span class="muted">${p.key_ref || ''}</span></td>
+        <td>${hs}</td>
+        <td class="muted">${Object.keys(p.capabilities)
+          .filter(k => p.capabilities[k]).join(', ')}</td>
+        <td><button class="ghost" onclick="probe('${p.id}')">probe</button>
+        </td></tr>`;
+    }).join('') + '</table>';
+}
+async function probe(id) {
+  toast('probing ' + id + '…');
+  try {
+    const r = await api('/api/provider-test', {provider_id: id});
+    toast(r.ok ? `ok, ${r.latency_ms}ms` : `failed: ${r.error}`, !!r.ok);
+  } catch (e) { toast(e.message, false); }
+  refresh();
+}
+refresh();
+</script>

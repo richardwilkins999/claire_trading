@@ -1,14 +1,21 @@
-"""desk.db connection — WAL + busy_timeout in every process (DESIGN.md §7)."""
+"""desk.db connection — WAL + busy_timeout in every process (DESIGN.md §7).
+
+File databases get ONE CONNECTION PER THREAD (thread-local proxy): parallel
+graph nodes and API worker threads each own an isolated connection, WAL +
+busy_timeout arbitrate between them, and a repo transaction can never be
+interleaved by another thread's statements. `:memory:` (tests) stays a single
+shared connection.
+"""
 import sqlite3
+import threading
 from pathlib import Path
 
 SCHEMA = Path(__file__).with_name("schema.sql")
 
 
-def connect(path) -> sqlite3.Connection:
-    # explicit BEGIN in repo; cross-thread use is safe — sqlite3 is built
-    # serialized and desk writes are single short transactions
-    conn = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+def _raw_connect(path) -> sqlite3.Connection:
+    conn = sqlite3.connect(path, isolation_level=None,  # explicit BEGIN in repo
+                           check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
@@ -16,5 +23,29 @@ def connect(path) -> sqlite3.Connection:
     return conn
 
 
-def init(conn: sqlite3.Connection) -> None:
+class ThreadLocalConnection:
+    """One real sqlite3 connection per thread, same file, same interface."""
+
+    def __init__(self, path):
+        self._path = str(path)
+        self._local = threading.local()
+
+    def _conn(self) -> sqlite3.Connection:
+        c = getattr(self._local, "conn", None)
+        if c is None:
+            c = _raw_connect(self._path)
+            self._local.conn = c
+        return c
+
+    def __getattr__(self, name):
+        return getattr(self._conn(), name)
+
+
+def connect(path):
+    if str(path) == ":memory:":
+        return _raw_connect(path)
+    return ThreadLocalConnection(path)
+
+
+def init(conn) -> None:
     conn.executescript(SCHEMA.read_text())

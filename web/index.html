@@ -1,0 +1,70 @@
+<meta charset="utf-8"><title>Claire — Mission Control</title>
+<link rel="stylesheet" href="/style.css"><script src="/nav.js"></script>
+<script>nav('/')</script>
+<main>
+  <h1>Mission Control</h1>
+  <div class="tiles" id="tiles"></div>
+  <h2>Pending approvals</h2>
+  <div id="approvals" class="muted">loading…</div>
+</main>
+<script>
+async function refresh() {
+  const o = await api('/api/overview');
+  const h = s => {
+    const v = (o.health[s] || {ok: 'stale'}).ok;
+    const cls = v === 'ok' ? 'ok' : (v === 'stale' ? 'warn' : 'bad');
+    return `<b class="${cls}">${v}</b><span>${s}</span>`;
+  };
+  document.getElementById('tiles').innerHTML =
+    `<div class="tile"><b>${o.pending}</b><span>pending approvals</span></div>` +
+    `<div class="tile"><b class="${o.claire_api ? 'ok' : 'bad'}">` +
+    `${o.claire_api ? 'up' : 'down'}</b><span>claire-api :7788</span></div>` +
+    `<div class="tile">${h('watcher')}</div>` +
+    `<div class="tile">${h('custodian')}</div>` +
+    o.cash.map(c => `<div class="tile"><b>${fmt(c.cash)}</b>` +
+      `<span>${c.account} cash (${c.ccy})</span></div>`).join('');
+
+  const cards = await api('/api/approvals');
+  document.getElementById('approvals').innerHTML = cards.length === 0
+    ? '<p class="muted">Nothing awaiting approval.</p>'
+    : cards.map(card).join('');
+}
+function card(a) {
+  const t = a.thesis || {};
+  const sell = t.direction === 'sell';
+  return `<div class="card" id="card-${a.id}">
+    <h3>${t.direction?.toUpperCase() || '?'} ${a.ticker}
+      <span class="pill">${a.kind}</span>
+      <span class="pill">conviction ${fmt(t.conviction)}</span></h3>
+    <p class="muted">entry ${fmt(t.entry_low)}–${fmt(t.entry_high)}
+      · stop ${fmt(t.stop_loss)} · target ${fmt(t.take_profit)}
+      · ${t.currency || ''} · expires ${ts(a.expires_at)}</p>
+    ${(t.conditions || []).map(c => `<p>⚠ ${c}</p>`).join('')}
+    <div class="row">
+      ${sell
+        ? `<label>qty <input id="qty-${a.id}" type="number" value="0"
+             style="width:90px"></label>`
+        : `<label>size <input id="size-${a.id}" type="number" value="1000"
+             style="width:90px"></label>`}
+      <select id="broker-${a.id}">
+        <option>alpaca</option><option>saxo</option><option>moomoo</option>
+      </select>
+      <button onclick="act('${a.id}','approve','${a.token}',${sell})">
+        ✔ Approve</button>
+      <button class="reject" onclick="act('${a.id}','reject','${a.token}')">
+        ✖ Reject</button>
+    </div></div>`;
+}
+async function act(id, action, token, sell) {
+  const body = {work_item_id: id, action, token};
+  if (action === 'approve') {
+    body.broker = document.getElementById('broker-' + id).value;
+    if (sell) body.qty = Number(document.getElementById('qty-' + id).value);
+    else body.size_base = Number(document.getElementById('size-' + id).value);
+  }
+  try { await api('/api/thesis-action', body); toast(action + 'd ✓'); }
+  catch (e) { toast(e.message, false); }
+  refresh();
+}
+refresh(); setInterval(refresh, 10000);
+</script>

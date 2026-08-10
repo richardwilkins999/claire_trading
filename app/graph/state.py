@@ -28,7 +28,7 @@ class AnalystReport(BaseModel):
     conviction: float = Field(ge=0.0, le=1.0)   # strength only — the signal
                                                 # carries direction; 0 = abstain
     summary: str = Field(max_length=300)
-    narrative_path: str
+    narrative_path: str = ""
     data_asof: datetime
     sources: list[str] = []
 
@@ -38,7 +38,7 @@ class DebateCase(BaseModel):
     key_points: list[str]
     rebuttals: list[str] = []                   # bear: vs bull, point by point
     conviction: float = Field(ge=0.0, le=1.0)   # strength; `side` carries direction
-    narrative_path: str
+    narrative_path: str = ""
 
 
 class Thesis(BaseModel):
@@ -51,7 +51,7 @@ class Thesis(BaseModel):
     take_profit: float | None = None
     currency: str
     conditions: list[str] = []                  # caveats live HERE, as text
-    narrative_path: str
+    narrative_path: str = ""
 
     @model_validator(mode="after")
     def _guards(self):

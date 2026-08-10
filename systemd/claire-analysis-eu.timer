@@ -1,0 +1,8 @@
+[Unit]
+Description=Claire eu pre-open analysis
+
+[Timer]
+OnCalendar=Mon..Fri 07:30:00 Europe/London
+
+[Install]
+WantedBy=timers.target

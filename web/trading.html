@@ -1,0 +1,45 @@
+<meta charset="utf-8"><title>Claire — Trading</title>
+<link rel="stylesheet" href="/style.css"><script src="/nav.js"></script>
+<script>nav('/trading')</script>
+<main>
+  <h1>Runs</h1>
+  <div class="row">
+    <input id="ticker" placeholder="ticker e.g. NVDA">
+    <select id="exchange"><option>NASDAQ</option><option>NYSE</option>
+      <option>LSE</option><option>SGX</option><option>HKEX</option>
+      <option>TSE</option><option>ASX</option><option>XETRA</option>
+      <option>PARIS</option><option>NSE</option></select>
+    <button onclick="launch()">Run pipeline</button>
+  </div>
+  <h2>Work items</h2><div id="runs"></div>
+  <h2>Event feed</h2><pre id="feed" style="max-height:300px;overflow:auto"></pre>
+</main>
+<script>
+const CCY = {NASDAQ:'USD',NYSE:'USD',LSE:'GBP',SGX:'SGD',HKEX:'HKD',TSE:'JPY',
+             ASX:'AUD',XETRA:'EUR',PARIS:'EUR',NSE:'INR'};
+async function launch() {
+  const ex = document.getElementById('exchange').value;
+  const t = document.getElementById('ticker').value.trim().toUpperCase();
+  if (!t) return toast('ticker?', false);
+  try {
+    const r = await api('/api/run', {ticker: t, exchange: ex,
+      currency: CCY[ex], lot_size: ex === 'SGX' ? 100 : 1});
+    toast('launched ' + r.work_item_id);
+  } catch (e) { toast(e.message, false); }
+}
+const cls = {done:'ok', executing:'warn', awaiting_approval:'warn',
+             failed:'bad', rejected:'muted', expired:'muted', running:'warn'};
+async function refresh() {
+  const runs = await api('/api/runs');
+  document.getElementById('runs').innerHTML = '<table><tr><th>id</th>' +
+    '<th>kind</th><th>ticker</th><th>state</th><th>updated</th></tr>' +
+    runs.map(r => `<tr><td>${r.id}</td><td>${r.kind}</td><td>${r.ticker}</td>
+      <td class="${cls[r.state] || ''}">${r.state}</td>
+      <td class="muted">${ts(r.updated_at)}</td></tr>`).join('') + '</table>';
+  const f = await api('/api/feed');
+  document.getElementById('feed').textContent = f.events.slice(-60).reverse()
+    .map(e => `${ts(e.ts)}  ${e.item_id}  ${e.actor}: ` +
+      `${e.from_state || ''}→${e.to_state}`).join('\n');
+}
+refresh(); setInterval(refresh, 8000);
+</script>

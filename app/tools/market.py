@@ -63,9 +63,13 @@ class Market:
                                         follow_redirects=True)
         if need_crumb:
             params = dict(params or {}, crumb=self._get_crumb())
-        r = self._client.get(url, params=params)
-        r.raise_for_status()
-        return r.json()
+        for attempt in (1, 2):
+            r = self._client.get(url, params=params)
+            if r.status_code == 429 and attempt == 1:   # unofficial endpoints
+                time.sleep(2)                           # rate-limit: one retry
+                continue
+            r.raise_for_status()
+            return r.json()
 
     def _get_crumb(self):
         """The screener cookie+crumb dance (§14)."""
