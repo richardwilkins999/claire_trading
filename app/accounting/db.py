@@ -6,7 +6,9 @@ SCHEMA = Path(__file__).with_name("schema.sql")
 
 
 def connect(path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path, isolation_level=None)  # explicit BEGIN in repo
+    # explicit BEGIN in repo; cross-thread use is safe — sqlite3 is built
+    # serialized and desk writes are single short transactions
+    conn = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
