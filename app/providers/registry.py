@@ -127,13 +127,22 @@ class MeterCallback(BaseCallbackHandler):
             (int(time.time()), str(error)[:500], self.run_id))
 
 
+def supports_temperature(model: str) -> bool:
+    """The Claude 5 family rejects `temperature` outright (verified against
+    the API: opus-5 and sonnet-5 return 400, haiku-4-5 accepts). Match the
+    tier immediately followed by -5, so claude-haiku-4-5 is NOT caught."""
+    import re
+    return not re.match(r"^claude-(opus|sonnet|haiku|fable|mythos)-5(-|$)",
+                        model or "")
+
+
 def build_llm(conn, provider_id, model, temperature=None, max_tokens=None,
               env=os.environ):
     from langchain.chat_models import init_chat_model
     p = provider_row(conn, provider_id)
     key = env.get(p["api_key_ref"] or "", "")
-    kw = {}
-    if temperature is not None:
+    kw = {"max_retries": 3}                 # ride out transient 429/529s
+    if temperature is not None and supports_temperature(model):
         kw["temperature"] = temperature
     if max_tokens is not None:
         kw["max_tokens"] = max_tokens

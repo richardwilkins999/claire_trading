@@ -9,7 +9,18 @@ import operator
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+SUMMARY_MAX = 300
+
+
+def _clip(v):
+    """A too-long summary is a formatting slip, not a reason to throw away a
+    completed analysis — clip it and keep the run alive. The full prose lives
+    in the narrative file anyway."""
+    if isinstance(v, str) and len(v) > SUMMARY_MAX:
+        return v[:SUMMARY_MAX - 1].rstrip() + "…"
+    return v
 
 
 class Instrument(BaseModel):
@@ -27,10 +38,12 @@ class AnalystReport(BaseModel):
     signal: Literal["bullish", "neutral", "bearish"]
     conviction: float = Field(ge=0.0, le=1.0)   # strength only — the signal
                                                 # carries direction; 0 = abstain
-    summary: str = Field(max_length=300)
+    summary: str = Field(max_length=SUMMARY_MAX)
     narrative_path: str = ""
     data_asof: datetime
     sources: list[str] = []
+
+    _clip_summary = field_validator("summary", mode="before")(_clip)
 
 
 class DebateCase(BaseModel):

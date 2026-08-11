@@ -16,16 +16,37 @@ def gather_context(conn, narratives, agent_id, *, clock=time.time) -> str:
         " LEFT JOIN work_items w ON w.id = r.work_item_id"
         " WHERE r.agent_id=? ORDER BY r.started_at DESC LIMIT 8", (agent_id,))]
     if runs:
-        parts.append("Your recent runs (newest first):")
+        parts.append("Your recent runs (newest first). NOTE: the dollar "
+                     "figure is the API cost of the call — it is NOT your "
+                     "conviction:")
         for r in runs:
             when = int(clock()) - (r["started_at"] or 0)
             parts.append(
                 f"- {when // 60}m ago · {r['ticker'] or r['work_item_id'] or '?'}"
-                f" · {r['status']} · ${r['cost_usd'] or 0:.4f}"
+                f" · status={r['status']} · api_cost=${r['cost_usd'] or 0:.4f}"
                 f" · work item state: {r['wi_state'] or '?'}"
                 + (f" · error: {r['error']}" if r["error"] else ""))
     else:
         parts.append("You have never run yet.")
+
+    # your actual verdict on the most recent run — signal, conviction and the
+    # one-line summary you emitted, so you never have to guess at your own
+    # conclusion (the run summary is the only place these are written down)
+    for r in runs:
+        if not r["work_item_id"] or not narratives:
+            continue
+        try:
+            summary = narratives.read(r["work_item_id"], "summary")
+        except OSError:
+            continue
+        mine = [ln for ln in summary.splitlines()
+                if f"**{agent_id}**" in ln or
+                (agent_id == "arbiter" and ln.startswith("**Arbiter**"))]
+        if mine:
+            parts.append(f"\nWhat you actually concluded on "
+                         f"{r['ticker'] or r['work_item_id']}:\n"
+                         + "\n".join(mine))
+        break
     current = next((r for r in runs if r["status"] == "running"), None)
     parts.append(f"Right now you are "
                  f"{'RUNNING on ' + str(current['ticker']) if current else 'idle'}.")

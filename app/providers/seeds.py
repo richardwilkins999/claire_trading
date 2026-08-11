@@ -72,6 +72,7 @@ AGENTS = [
 
 
 def seed(conn, *, ts=None):
+    from .registry import supports_temperature
     ts = ts or int(time.time())
     for row in PROVIDERS:
         conn.execute(
@@ -80,13 +81,26 @@ def seed(conn, *, ts=None):
             " VALUES (?,?,?,?,?,?,?,?,1)", row)
     for aid, model, temp, tools, requires, brief in AGENTS:
         role = aid.replace("_", " ")
+        # a provider outage must not be a desk outage (§8): opus-class work
+        # falls back to sonnet, which is the same family and always cheaper
+        fb = "claude-sonnet-5" if model.startswith("claude-opus") else None
         conn.execute(
             "INSERT OR IGNORE INTO agents (id, display_name, system_prompt,"
             " version, tools, requires, provider_id, model, temperature,"
-            " updated_at) VALUES (?,?,?,1,?,?,?,?,?,?)",
+            " fallback_provider_id, fallback_model, updated_at)"
+            " VALUES (?,?,?,1,?,?,?,?,?,?,?,?)",
             (aid, role.title(), _P.format(role=role, brief=brief),
              json.dumps(tools), json.dumps(requires), "anthropic", model,
-             temp, ts))
+             temp if supports_temperature(model) else None,
+             "anthropic" if fb else None, fb, ts))
+        # existing installs: adopt the fallback and drop rejected temperatures
+        conn.execute(
+            "UPDATE agents SET fallback_provider_id=?, fallback_model=?"
+            " WHERE id=? AND fallback_model IS NULL",
+            ("anthropic" if fb else None, fb, aid))
+        if not supports_temperature(model):
+            conn.execute("UPDATE agents SET temperature=NULL WHERE id=?"
+                         " AND model=?", (aid, model))
         conn.execute(
             "INSERT OR IGNORE INTO agent_versions (agent_id, version,"
             " system_prompt, changed_at) VALUES (?,1,?,?)",

@@ -67,14 +67,24 @@ PROMPTS = {"bull": bull_prompt, "bear": bear_prompt, "arbiter": arbiter_prompt}
 
 # ── production factories ─────────────────────────────────────────────────
 def default_structured_factory(conn, env=None):
+    """Structured calls get the SAME fallback protection as tool loops — an
+    overloaded primary model must not fail a run (§8). This was the gap that
+    let a 529 on opus kill an otherwise-complete pipeline."""
     def factory(agent_id, schema, work_item_id):
         a = registry.agent_row(conn, agent_id)
-        llm = registry.build_llm(conn, a["provider_id"], a["model"],
-                                 a["temperature"], a["max_tokens"],
-                                 env=env or __import__("os").environ)
+        environ = env or __import__("os").environ
+
+        def structured(provider_id, model):
+            return registry.build_llm(conn, provider_id, model,
+                                      a["temperature"], a["max_tokens"],
+                                      env=environ).with_structured_output(schema)
+
+        llm = structured(a["provider_id"], a["model"])
+        if a["fallback_provider_id"] and a["fallback_model"]:
+            llm = llm.with_fallbacks([structured(a["fallback_provider_id"],
+                                                 a["fallback_model"])])
         meter = registry.MeterCallback(conn, agent_id, work_item_id)
-        return llm.with_structured_output(schema).with_config(
-            callbacks=[meter]), a["system_prompt"]
+        return llm.with_config(callbacks=[meter]), a["system_prompt"]
     return factory
 
 
@@ -113,7 +123,11 @@ def make_analyst(conn, agent_id, narratives, tool_builder, *,
             ("user", f"{task}\n\nYour research transcript:\n{transcript}\n\n"
                      f"Now emit the structured AnalystReport "
                      f"(agent='{agent_id}', ticker='{state.ticker}', "
-                     f"data_asof=now in ISO-8601 UTC).")])
+                     f"data_asof=now in ISO-8601 UTC). `summary` must be ONE "
+                     f"plain sentence under 300 characters — no markdown, no "
+                     f"tables; your full reasoning belongs in the narrative. "
+                     f"`conviction` is strength 0..1; the signal carries "
+                     f"direction.")])
         if isinstance(obj, dict):
             obj = AnalystReport.model_validate(obj)
         path = narratives.write(state.work_item_id, agent_id,

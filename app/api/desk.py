@@ -78,6 +78,15 @@ class Desk:
             self.repo._event(wi, ts, "system", "running", "awaiting_approval")
             return
         vals = snap.values
+        # a `pass` verdict is still a thesis worth keeping: it feeds
+        # v_thesis_outcomes, the run drill-down and the screener's own
+        # track record. Previously only gated runs persisted one.
+        thesis = vals.get("thesis")
+        if thesis is not None:
+            self.conn.execute(
+                "UPDATE work_items SET thesis_json=? WHERE id=?"
+                " AND thesis_json IS NULL",
+                (thesis.model_dump_json(), wi))
         ap = vals.get("approval")
         status = ap.status if ap is not None else None
         errors = vals.get("errors") or []
