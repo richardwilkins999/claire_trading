@@ -258,6 +258,24 @@ def test_account_topup_withdraw_and_approve_balance_guard(web):
         assert row["token_state"] == "minted"       # nothing consumed
 
 
+def test_mission_control_map_is_one_svg(web):
+    """The map must be a single SVG (nodes AND edges in one coordinate
+    space) — the earlier overlay version had panels painting over the
+    connectors, which is what made it unreadable."""
+    base, conn = web
+    with paired(base) as c:
+        page = c.get("/").text
+        assert 'id="map"' in page and 'viewBox="0 0 1240 486"' in page
+        assert "class=\"mapwrap\"" in page
+        assert "position:absolute" not in page      # no overlay layer
+        for piece in ("renderMap", "SCREEN · PREPARE", "SUPPORTING SYSTEMS",
+                      "VENUES", "mcp:", "id === 'book'"):
+            assert piece in page, piece
+        css = c.get("/style.css").text
+        assert ".mnode" in css and ".medge" in css
+        assert ".deskmap" not in css                # old overlay styles gone
+
+
 def test_merged_agents_schedule_page(web):
     base, conn = web
     with paired(base) as c:

@@ -3,39 +3,27 @@
 <script>nav('/')</script>
 <main>
   <h1>Mission Control <span id="conn" class="pill">connecting…</span></h1>
+  <div class="statstrip" id="strip"></div>
   <div id="banner"></div>
 
   <h2>Needs your decision</h2>
   <div id="approvals" class="muted">loading…</div>
 
-  <h2>The desk — click any component to inspect &amp; configure</h2>
-  <div class="deskmap" id="deskmap">
-    <svg class="wires" id="wires"></svg>
-    <div class="lane" style="margin-bottom:1.4rem">
-      <span class="llabel">entry points — what starts a run</span>
-      <div class="row" id="entries" style="align-items:stretch"></div>
-    </div>
-    <div class="lane" style="margin-bottom:1.4rem">
-      <span class="llabel">pipeline — LLMs propose, you decide</span>
-      <div class="desk" id="pipeline"></div>
-    </div>
-    <div class="lane">
-      <span class="llabel">execution, venues &amp; the book</span>
-      <div class="row" id="venues" style="align-items:flex-start"></div>
-    </div>
-  </div>
+  <h2>System map</h2>
+  <div class="mapwrap"><svg id="map" viewBox="0 0 1240 486"
+    preserveAspectRatio="xMidYMin meet"></svg></div>
   <div class="legend">
-    <span><i style="border-color:var(--blue)"></i>run flow</span>
-    <span><i style="border-color:var(--good);border-top-style:dashed"></i>
-      fills &amp; book writes</span>
-    <span><i style="border-color:var(--warn)"></i>human approval</span>
-    <span><i style="border-color:var(--purple);border-top-style:dotted"></i>
-      MCP link</span>
-    <span><i style="border-color:var(--warn);border-top-style:dashed"></i>
+    <span><i style="border-color:#2c4560;border-top-style:solid"></i>run flow</span>
+    <span><i style="border-color:#1d6b62;border-top-style:dashed"></i>book
+      writes &amp; data</span>
+    <span><i style="border-color:#8a6a2a;border-top-style:dashed"></i>stop
       breach → sell review</span>
+    <span style="color:var(--warn)">▢ amber = your approval gate</span>
+    <span style="color:var(--purple)">⚙ MCP status sits inside each venue</span>
+    <span>click any box to inspect, question or configure it</span>
   </div>
 
-  <h2>Accounts &amp; system</h2>
+  <h2>Accounts</h2>
   <div class="tiles" id="tiles"></div>
 </main>
 
@@ -54,7 +42,7 @@ let OVERVIEW = null, SCHEDULES = [], selected = null, fxCache = {};
 const typing = () => ['INPUT', 'TEXTAREA', 'SELECT']
   .includes((document.activeElement || {}).tagName);
 
-/* ── approvals with live estimates (v1 pattern) ──────────────────── */
+/* ── approvals with live estimates ───────────────────────────────── */
 function renderApprovals() {
   const el = document.getElementById('approvals');
   if (typing() && el.querySelector('input')) return;
@@ -144,176 +132,169 @@ async function act(id, action, token, sell) {
   refresh();
 }
 
-/* ── the desk map ────────────────────────────────────────────────── */
+/* ── system map ──────────────────────────────────────────────────── */
+const L = {railX: 12, railW: 152, railH: 44, railGap: 14, railTop: 46,
+  stageX: 200, stageW: 128, pitch: 148, nodeH: 40, nodeGap: 8, band: 122,
+  gIn: 180, gLoop: 170};
 const STAGES = [
-  {label: 'screen · prepare', agents: ['screener'], det: ['prepare']},
-  {label: 'analyze', agents: ['fundamental', 'technical', 'news']},
-  {label: 'debate', agents: ['bull', 'bear']},
-  {label: 'arbitrate', agents: ['arbiter']},
-  {label: 'approve', det: ['gate']},
-  {label: 'execute', det: ['execute']},
-  {label: 'record', agents: ['recorder']}];
+  {label: 'SCREEN · PREPARE', ids: ['screener', 'prepare']},
+  {label: 'ANALYZE ∥', ids: ['fundamental', 'technical', 'news']},
+  {label: 'DEBATE', ids: ['bull', 'bear']},
+  {label: 'ARBITRATE', ids: ['arbiter']},
+  {label: 'APPROVE', ids: ['gate']},
+  {label: 'EXECUTE', ids: ['execute']},
+  {label: 'RECORD', ids: ['recorder']}];
+const DET = {
+  prepare: ['prepare', 'instrument · no LLM'],
+  gate: ['approve', 'your token ⏸'],
+  execute: ['execute', 'guards · place']};
 
-function acard(id, title, sub, cls, sub2) {
-  return `<div class="acard ${cls} ${selected === id ? 'sel' : ''}"
-    id="n-${id}" onclick="openDrawer('${id}')"><b>${title}</b><br>
-    <span class="sub">${sub}</span>${sub2 ?
-      `<br><span class="sub">${sub2}</span>` : ''}</div>`;
-}
-function until(t) {
-  const s = t - Date.now() / 1000;
-  if (s < 0) return 'due';
-  if (s < 5400) return 'in ' + Math.round(s / 60) + 'm';
-  if (s < 172800) return 'in ' + Math.round(s / 3600) + 'h';
-  return 'in ' + Math.round(s / 86400) + 'd';
-}
 function jobNext(prefix) {
   const t = SCHEDULES.filter(j => j.job.startsWith(prefix) && j.enabled &&
     j.next_run_at).map(j => j.next_run_at);
-  return t.length ? until(Math.min(...t)) : 'disabled';
+  if (!t.length) return 'off';
+  const s = Math.min(...t) - Date.now() / 1000;
+  if (s < 0) return 'due';
+  if (s < 5400) return Math.round(s / 60) + 'm';
+  if (s < 172800) return Math.round(s / 3600) + 'h';
+  return Math.round(s / 86400) + 'd';
 }
+const cut = (s, n) => { s = String(s ?? '');
+  return s.length > n ? s.slice(0, n - 1) + '…' : s; };
 
-function renderDesk() {
-  const g = GRAPH, h = g.health || {};
+function node(id, x, y, w, h, title, sub, cls, extra) {
+  const sel = selected === id ? ' sel' : '';
+  const pulse = cls.includes('active') ? ' mpulse' : '';
+  return `<g class="mnode ${cls}${sel}${pulse}" transform="translate(${x},${y})"
+    onclick="openDrawer('${id}')">
+    <rect class="body" width="${w}" height="${h}" rx="7"/>
+    <text class="nt" x="10" y="17">${esc(cut(title, 18))}</text>
+    <text class="ns" x="10" y="30">${esc(cut(sub, 22))}</text>
+    ${extra || ''}</g>`;
+}
+function renderMap() {
+  const g = GRAPH, h = g.health || {}, parts = [], edges = [];
+  const arrow = (id, col) => `<marker id="${id}" markerWidth="7"
+    markerHeight="7" refX="6.5" refY="3.5" orient="auto">
+    <path d="M0,0 L7,3.5 L0,7 z" fill="${col}"/></marker>`;
+  parts.push(`<defs>${arrow('af', '#2c4560')}${arrow('ai', '#1d6b62')}
+    ${arrow('al', '#8a6a2a')}</defs>`);
 
-  /* entry points — everything that can start a run */
-  document.getElementById('entries').innerHTML = `
-    <div class="entrycard human" id="n-you" style="flex:1">
-      <b>👤 You — Markets</b>
-      <span>pick a stock → send to pipeline</span></div>
-    <div class="entrycard" id="n-sched" style="flex:1"
-      onclick="location.href='/agents'" title="opens Agents &amp; Schedule">
-      <b>🗓 Schedule</b>
-      <span>region scans ${jobNext('analysis_')} · event scan
-        ${jobNext('event_scan')}</span></div>
-    <div class="entrycard" id="n-claire" style="flex:1"
-      onclick="openDrawer('claire_chat')">
-      <b>💬 Claire</b>
-      <span>"run the pipeline on NVDA" · answers from the book</span></div>
-    <div class="entrycard" id="n-loop" style="flex:1"
-      onclick="openDrawer('watcher')">
-      <b>🔔 Watcher loop-back</b>
-      <span>stop breach → sell_review re-enters here</span></div>`;
+  /* entry rail */
+  parts.push(`<text class="mlabel" x="${L.railX}" y="34">ENTRY POINTS</text>`);
+  const entries = [
+    ['you', '👤 You', 'Markets → pipeline'],
+    ['sched', '🗓 Schedule', `scans in ${jobNext('analysis_')} · events ` +
+      jobNext('event_scan')],
+    ['claire', '💬 Claire', 'ask her to run one']];
+  entries.forEach(([id, t, s], i) => {
+    const y = L.railTop + i * (L.railH + L.railGap);
+    parts.push(node(id, L.railX, y, L.railW, L.railH, t, s, 'entry'));
+    edges.push(`<path class="medge" d="M ${L.railX + L.railW} ${y + L.railH / 2}
+      H ${L.gIn} V ${L.band - 10}"/>`);
+  });
+  edges.push(`<path class="medge" marker-end="url(#af)"
+    d="M ${L.gIn} ${L.band - 10} H ${L.stageX}"/>`);
 
   /* pipeline */
-  document.getElementById('pipeline').innerHTML = STAGES.map(s =>
-    `<div class="stage"><div class="slabel">${s.label}</div>` +
-    (s.agents || []).map(id => {
-      const a = g.agents[id];
-      return a ? acard(id, a.display_name || id,
-        `${a.provider_id}/${(a.model || '').replace('claude-', '')}`,
-        a.state, id === 'screener' ? 'next ' + jobNext('analysis_') : null)
-        : '';
-    }).join('') +
-    (s.det || []).map(id => acard(id, id,
-      id === 'gate' ? 'human token ⏸' : 'no LLM', 'det')).join('') +
-    '</div>').join('<div class="sep">›</div>');
-
-  /* venues, custodian, book, watcher */
-  const mcpFor = b => (g.mcps || []).find(m => m.broker === b.broker);
-  document.getElementById('venues').innerHTML = `
-    <div style="flex:2">
-      <div class="slabel" style="margin-bottom:.3rem">venues</div>
-      <div class="row">${g.brokers.map(b => {
-        const m = mcpFor(b);
-        return `<div>${acard(b.broker, b.broker,
-          `${b.adapter} · ${b.open_orders} open`,
-          b.mcp && b.mcp.creds_present ? 'ok' : 'det',
-          `${fmt(b.cash, 0)} ${b.ccy}`)}
-          ${m ? `<div class="mcpchip ${m.creds_present ? '' : 'off'}"
-            id="n-mcp-${m.id}" onclick="openDrawer('mcp:${m.id}')"
-            title="${esc(m.command.join(' '))}">
-            ⚙ mcp ${m.creds_present ? '●' : '○'} ${esc(m.id)}</div>` : ''}
-          </div>`;
-      }).join('')}</div>
-    </div>
-    <div style="flex:1">
-      <div class="slabel" style="margin-bottom:.3rem">async back-half</div>
-      ${acard('custodian', 'custodian',
-        (h.custodian || {}).ok || 'never ran',
-        (h.custodian || {}).ok === 'ok' ? 'ok' : 'error',
-        'fills · TTLs · expiry')}
-    </div>
-    <div style="flex:1">
-      <div class="slabel" style="margin-bottom:.3rem">the book</div>
-      <div class="booknode" id="n-book" onclick="openDrawer('book')">
-        <b>desk.db</b><br><span class="sub">${g.book.positions} positions ·
-        ${g.book.open_orders} open orders</span></div>
-      <div style="margin-top:.4rem">${acard('watcher', 'watcher',
-        (h.watcher || {}).ok || 'never ran',
-        (h.watcher || {}).ok === 'ok' ? 'ok' : 'error',
-        'breach → sell review')}</div>
-    </div>
-    <div style="flex:1">
-      <div class="slabel" style="margin-bottom:.3rem">market data</div>
-      ${acard('market', g.market_data.source,
-        'fallbacks: ' + g.market_data.fallbacks,
-        g.market_data.stale_keys ? 'error' : 'ok',
-        g.market_data.stale_keys ? g.market_data.stale_keys + ' stale' : null)}
-    </div>`;
-
-  requestAnimationFrame(drawWires);
-}
-
-/* measured SVG connectors — layout stays HTML, so the map survives
-   roster changes (no hand-placed coordinates like v1's diagram) */
-function drawWires() {
-  const map = document.getElementById('deskmap');
-  const svg = document.getElementById('wires');
-  if (!map || !svg) return;
-  const base = map.getBoundingClientRect();
-  svg.setAttribute('viewBox', `0 0 ${base.width} ${base.height}`);
-  const at = (id, sx, sy) => {
-    const el = document.getElementById('n-' + id);
-    if (!el) return null;
-    const r = el.getBoundingClientRect();
-    return [r.left - base.left + r.width * sx,
-            r.top - base.top + r.height * sy];
-  };
-  const paths = [];
-  const link = (a, b, cls, bow = 40) => {
-    if (!a || !b) return;
-    const [x1, y1] = a, [x2, y2] = b;
-    paths.push(`<path class="wire ${cls}" d="M ${x1} ${y1}
-      C ${x1} ${y1 + bow}, ${x2} ${y2 - bow}, ${x2} ${y2}"/>`);
-  };
-  const entryTarget = at('screener', 0.5, 0);
-  ['you', 'sched', 'claire', 'loop'].forEach(id =>
-    link(at(id, 0.5, 1), entryTarget, id === 'you' ? 'flow' : 'flow'));
-  // approval: you → gate (amber, the only path to execution)
-  link(at('you', 0.9, 1), at('gate', 0.5, 0), 'approve', 60);
-  // execute → each venue
-  (GRAPH.brokers || []).forEach(b =>
-    link(at('execute', 0.5, 1), at(b.broker, 0.5, 0), 'flow'));
-  // mcp links: broker → its mcp chip
-  (GRAPH.mcps || []).forEach(m => {
-    if (m.broker) link(at(m.broker, 0.5, 1), at('mcp-' + m.id, 0.5, 0),
-                       'mcp', 8);
+  STAGES.forEach((st, i) => {
+    const x = L.stageX + i * L.pitch;
+    const tot = st.ids.length * L.nodeH + (st.ids.length - 1) * L.nodeGap;
+    const top = L.band - tot / 2;
+    parts.push(`<text class="mlabel" x="${x}" y="34">${st.label}</text>`);
+    st.ids.forEach((id, k) => {
+      const y = top + k * (L.nodeH + L.nodeGap);
+      if (DET[id]) {
+        const [t, s] = DET[id];
+        parts.push(node(id, x, y, L.stageW, L.nodeH, t, s,
+          id === 'gate' ? 'det gate' : 'det'));
+      } else {
+        const a = g.agents[id];
+        if (!a) return;
+        parts.push(node(id, x, y, L.stageW, L.nodeH, a.display_name || id,
+          `${a.provider_id}/${(a.model || '').replace('claude-', '')}`,
+          a.state === 'disabled' ? 'disabled' : a.state));
+      }
+    });
+    if (i < STAGES.length - 1)
+      edges.push(`<path class="medge" marker-end="url(#af)"
+        d="M ${x + L.stageW} ${L.band} H ${x + L.pitch}"/>`);
   });
-  // custodian: venues → custodian → book ; record → book
-  link(at('custodian', 0, 0.5), at('book', 0.5, 0), 'info', 20);
-  link(at('recorder', 0.5, 1), at('book', 0.5, 0), 'info', 50);
-  // book → watcher → back up to the entry lane
-  link(at('book', 0.5, 1), at('watcher', 0.5, 0), 'info', 10);
-  const w = at('watcher', 1, 0.5), l = at('loop', 0.5, 1);
-  if (w && l) paths.push(`<path class="wire loop" d="M ${w[0]} ${w[1]}
-    C ${w[0] + 70} ${w[1]}, ${l[0] + 40} ${l[1] + 30}, ${l[0]} ${l[1] + 4}"/>`);
-  // market data feeds the analysts and the watcher
-  link(at('market', 0.5, 0), at('technical', 0.5, 1), 'info', -40);
-  svg.innerHTML = paths.join('');
-}
-window.addEventListener('resize', () => requestAnimationFrame(drawWires));
 
-/* ── drawer: inspect, query, configure ───────────────────────────── */
+  /* supporting systems */
+  parts.push(`<text class="mlabel" x="190" y="292">SUPPORTING SYSTEMS</text>`);
+  const md = g.market_data;
+  parts.push(node('market', 190, 300, 128, 50, md.source, 'data source',
+    md.stale_keys ? 'error' : 'ok',
+    `<text class="ns" x="10" y="43">${esc(cut('via ' + md.fallbacks, 22))}</text>`));
+  const hs = k => (h[k] || {}).ok || 'never ran';
+  const hc = k => hs(k) === 'ok' ? 'ok' : 'error';
+  parts.push(node('watcher', 450, 300, 128, 50, 'watcher', hs('watcher'),
+    hc('watcher'),
+    `<text class="ns" x="10" y="43">breach → sell review</text>`));
+  parts.push(node('book', 640, 300, 128, 50, 'desk.db',
+    `${g.book.positions} pos · ${g.book.open_orders} orders`, 'ok',
+    `<text class="ns" x="10" y="43">the book</text>`));
+  parts.push(node('custodian', 830, 300, 128, 50, 'custodian', hs('custodian'),
+    hc('custodian'),
+    `<text class="ns" x="10" y="43">fills · TTLs · expiry</text>`));
+
+  /* venues group with MCP status inside each broker */
+  const gx = 1000, gy = 262, gw = 148;
+  const brokers = g.brokers || [];
+  const gh = brokers.length * 54 + (brokers.length - 1) * 8 + 30;
+  parts.push(`<g class="mgroup"><rect x="${gx}" y="${gy}" width="${gw}"
+    height="${gh}" rx="9"/><text class="mlabel" x="${gx + 10}"
+    y="${gy + 16}">VENUES</text></g>`);
+  brokers.forEach((b, i) => {
+    const y = gy + 26 + i * 62;
+    const m = (g.mcps || []).find(x => x.broker === b.broker);
+    const mcpTxt = m ? (m.creds_present ? `⚙ mcp ● ${m.id}`
+      : `⚙ mcp ○ needs creds`) : '⚙ no mcp';
+    const mcp = m ? `<text class="nm" x="10" y="46"
+      fill="${m.creds_present ? 'var(--purple)' : 'var(--dim)'}"
+      >${esc(cut(mcpTxt, 20))}</text>
+      <rect x="6" y="36" width="118" height="14" fill="transparent"
+        style="cursor:pointer" onclick="event.stopPropagation();
+        openDrawer('mcp:${m.id}')"><title>inspect MCP server</title></rect>`
+      : `<text class="nm" x="10" y="46" fill="var(--dim)">${mcpTxt}</text>`;
+    parts.push(node(b.broker, gx + 10, y, 128, 54, b.broker,
+      `${b.adapter} · ${b.open_orders} open`,
+      b.adapter === 'mcp' ? 'ok' : 'det', mcp));
+  });
+
+  /* edges between bands */
+  const exX = L.stageX + 5 * L.pitch + L.stageW / 2;
+  const recX = L.stageX + 6 * L.pitch + L.stageW / 2;
+  const anX = L.stageX + 1 * L.pitch + L.stageW / 2;
+  edges.push(`<path class="medge" marker-end="url(#af)"
+    d="M ${exX} ${L.band + 20} V 246 H ${gx + gw / 2} V ${gy}"/>`);
+  edges.push(`<path class="medge info" marker-end="url(#ai)"
+    d="M ${recX} ${L.band + 20} V 232 H 704 V 300"/>`);
+  edges.push(`<path class="medge info" marker-end="url(#ai)"
+    d="M ${gx} ${gy + gh - 40} H 978 V 325 H 958"/>`);
+  edges.push(`<path class="medge info" marker-end="url(#ai)"
+    d="M 830 325 H 770"/>`);
+  edges.push(`<path class="medge info" marker-end="url(#ai)"
+    d="M 640 325 H 580"/>`);
+  edges.push(`<path class="medge info" marker-end="url(#ai)"
+    d="M 254 300 V 214 H ${anX} V 190"/>`);
+  edges.push(`<path class="medge loop" marker-end="url(#al)"
+    d="M 450 325 H ${L.gLoop} V ${L.band + 10} H ${L.stageX}"/>`);
+
+  document.getElementById('map').innerHTML = edges.join('') + parts.join('');
+}
+
+/* ── drawer ──────────────────────────────────────────────────────── */
 function closeDrawer() {
   document.getElementById('drawer').classList.remove('open');
-  selected = null; renderDesk();
+  selected = null; renderMap();
 }
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') closeDrawer(); });
 
 async function openDrawer(id) {
-  selected = id; renderDesk();
+  selected = id; renderMap();
   const d = document.getElementById('drawer');
   d.classList.add('open');
   document.getElementById('d-title').textContent = id;
@@ -344,10 +325,24 @@ async function openDrawer(id) {
       approval</p>
       <p class="muted">The durable business record: immutable executions,
       FIFO lots, every cash movement. Written only by the repository layer —
-      no LLM has ever written a row here. Views (v_positions, v_share_pl,
-      v_broker_metrics, v_thesis_outcomes) are derived, never stored.</p>
+      no LLM has ever written a row here.</p>
       <p><a href="/portfolio">Portfolio</a> ·
          <a href="/trading">Trading runs</a></p>`;
+    return;
+  }
+  if (['you', 'sched', 'claire'].includes(id)) {
+    const txt = {
+      you: ['You — Markets', 'Pick any stock on <a href="/markets">Markets</a>' +
+        ' and send it to the pipeline. You are also the only thing that can' +
+        ' approve a trade, at the amber gate.'],
+      sched: ['Schedule', 'Region scans and the hourly event scan launch runs' +
+        ' on their own. Times, cadence and the market-open rule are on' +
+        ' <a href="/agents">Agents &amp; Schedule</a>.'],
+      claire: ['Claire', 'Ask her to run a pipeline, or question the book, on' +
+        ' <a href="/claire">her page</a>. She can research and explain —' +
+        ' she holds no approve, execute or cash tools.']}[id];
+    document.getElementById('d-title').textContent = txt[0];
+    body.innerHTML = `<p class="muted">${txt[1]}</p>`;
     return;
   }
   if (g.agents[id]) {
@@ -404,7 +399,7 @@ async function openDrawer(id) {
         </pre></details>`;
     return;
   }
-  const b = g.brokers.find(x => x.broker === id);
+  const b = (g.brokers || []).find(x => x.broker === id);
   if (b) {
     body.innerHTML = `<p>account <b>${b.account}</b>
       <span class="pill">${b.environment}</span><br>
@@ -413,8 +408,7 @@ async function openDrawer(id) {
       ${b.mcp ? `<p class="muted">MCP: <code>${esc(b.mcp.command)}</code><br>
         creds (${b.mcp.env_refs.join(', ') || 'none'}):
         <b class="${b.mcp.creds_present ? 'ok' : 'bad'}">
-        ${b.mcp.creds_present ? 'present' : 'missing'}</b><br>
-        ${esc(b.mcp.note)}</p>` : ''}
+        ${b.mcp.creds_present ? 'present' : 'missing'}</b></p>` : ''}
       <p><a href="/portfolio">top up / withdraw on Portfolio</a></p>`;
     return;
   }
@@ -422,7 +416,7 @@ async function openDrawer(id) {
     prepare: 'Resolves the instrument: currency from the exchange suffix ' +
       '(GBp→GBP), venue lot size, desk.db registration. Deterministic.',
     gate: 'interrupt() — the run suspends here until you present the ' +
-      'single-use token from an approval card. No LLM can pass it.',
+      'single-use token from an approval card above. No LLM can pass it.',
     execute: 'Pre-placement guards, then session-aware order placement. ' +
       'Positive quantity required, cash must cover cost + fee, risk caps ' +
       'checked, exits capped at held quantity. No LLM in this file.',
@@ -432,10 +426,11 @@ async function openDrawer(id) {
     custodian: 'The asynchronous back half of execute: polls venues for ' +
       'fills and writes them to the book, places queued orders at the open, ' +
       'expires approvals at the gate, cancels orders past TTL, flags drift.',
-    market: 'Market data chain. Configure sources on Providers & MCP.'};
+    market: 'Market-data chain. Configure sources on Providers &amp; MCP.'};
   body.innerHTML = `<p class="muted">${desc[id] || ''}</p>` +
-    (id === 'watcher' || id === 'custodian' ? `<p><a href="/agents">
-      change its schedule</a></p>` : '');
+    (['watcher', 'custodian'].includes(id)
+      ? `<p><a href="/agents">change its schedule</a></p>` : '') +
+    (id === 'market' ? `<p><a href="/providers">data sources</a></p>` : '');
 }
 async function askAgent(id) {
   const q = document.getElementById('d-q').value.trim();
@@ -483,6 +478,23 @@ async function testProv() {
 }
 
 /* ── overview + SSE ──────────────────────────────────────────────── */
+function renderStrip() {
+  const o = OVERVIEW, h = o.health || {};
+  const pill = (label, val, cls) =>
+    `<div class="stat"><span>${label}</span><b class="${cls || ''}">${val}</b></div>`;
+  const hp = k => {
+    const v = (h[k] || {ok: 'never ran'}).ok;
+    return pill(k, v, v === 'ok' ? 'ok' : v === 'stale' ? 'warn' : 'bad');
+  };
+  const cash = o.cash.reduce((s, c) => s + c.cash, 0);
+  document.getElementById('strip').innerHTML =
+    pill('awaiting you', o.pending, o.pending ? 'warn' : '') +
+    pill('claire-api', o.claire_api ? 'up' : 'down',
+         o.claire_api ? 'ok' : 'bad') +
+    hp('watcher') + hp('custodian') +
+    pill('data', (GRAPH && GRAPH.market_data.source) || '—') +
+    pill('paper cash', fmt(cash, 0));
+}
 async function refresh() {
   [OVERVIEW, GRAPH, PROVIDERS, APPROVALS, SCHEDULES] = await Promise.all([
     api('/api/overview'), api('/api/agent-graph'), api('/api/providers'),
@@ -490,14 +502,12 @@ async function refresh() {
   document.getElementById('banner').innerHTML = OVERVIEW.flags.length
     ? `<div class="banner">${OVERVIEW.flags.map(f =>
         `<div>⚠ ${esc(f)}</div>`).join('')}</div>` : '';
+  renderStrip();
   renderApprovals();
-  renderDesk();
+  renderMap();
   document.getElementById('tiles').innerHTML =
     OVERVIEW.cash.map(c => `<div class="tile"><b>${fmt(c.cash)}</b>
-      <span>${c.account} (${c.ccy})</span></div>`).join('') +
-    `<div class="tile"><b>${OVERVIEW.pending}</b><span>pending</span></div>` +
-    `<div class="tile"><b class="${OVERVIEW.claire_api ? 'ok' : 'bad'}">
-      ${OVERVIEW.claire_api ? 'up' : 'down'}</b><span>claire-api</span></div>`;
+      <span>${c.account} (${c.ccy})</span></div>`).join('');
 }
 function connectSSE() {
   const dot = document.getElementById('conn');
