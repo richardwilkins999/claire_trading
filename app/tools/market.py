@@ -53,7 +53,13 @@ def normalize_price(price, currency: str):
 
 
 class Market:
-    def __init__(self, *, _get=None, clock=time.time, cache_ttl=300):
+    """Multi-source: Yahoo primary (paced, host-rotated, last-good cached),
+    TradingView scanner for quote fallback, ECB/Frankfurter for FX fallback.
+    Chart history is Yahoo-only — no honest free alternative — so it leans on
+    long caches + stale service instead."""
+
+    def __init__(self, *, _get=None, clock=time.time, cache_ttl=300,
+                 tv_quotes=None, fx_fallback=None):
         self.clock = clock
         self.cache_ttl = cache_ttl
         self._cache = {}
@@ -61,6 +67,20 @@ class Market:
         self._crumb = None
         self._client = None
         self._get = _get or self._http_get
+        self._tv_quotes = tv_quotes         # injected in tests
+        self._fx_fallback = fx_fallback
+        self._pace_lock = __import__("threading").Lock()
+        self._last_call = 0.0
+        self._host_i = 0
+
+    MIN_GAP = 0.7                           # be a polite Yahoo client
+
+    def _pace(self):
+        with self._pace_lock:
+            wait = self._last_call + self.MIN_GAP - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+            self._last_call = time.monotonic()
 
     def _http_get(self, url, params=None, need_crumb=False):
         if self._client is None:
@@ -69,9 +89,13 @@ class Market:
         if need_crumb:
             params = dict(params or {}, crumb=self._get_crumb())
         for attempt in (1, 2):
+            self._pace()
             r = self._client.get(url, params=params)
-            if r.status_code == 429 and attempt == 1:   # unofficial endpoints
-                time.sleep(2)                           # rate-limit: one retry
+            if r.status_code == 429 and attempt == 1:   # rotate host + retry
+                self._host_i ^= 1
+                url = url.replace("query1.", "query2.") if self._host_i \
+                    else url.replace("query2.", "query1.")
+                time.sleep(2)
                 continue
             r.raise_for_status()
             return r.json()
@@ -106,6 +130,22 @@ class Market:
 
     # ── quotes ───────────────────────────────────────────────────────────
     def spark(self, symbols: list[str]) -> dict:
+        try:
+            return self._spark_yahoo(symbols)
+        except Exception:                   # noqa: BLE001 — Yahoo throttled/down
+            tv = self._tv_quotes
+            if tv is None:
+                from . import tradingview
+                tv = tradingview.quotes
+            out = self._cached(("tvq", tuple(symbols)), 60,
+                               lambda: tv(symbols))
+            missing = [s for s in symbols if s not in out]
+            if missing:
+                raise MarketError(
+                    f"no quote from any source for {', '.join(missing)}")
+            return out
+
+    def _spark_yahoo(self, symbols: list[str]) -> dict:
         """Batch quotes. The v8 spark response is a FLAT dict
         {SYM: {close, previousClose, ...}} — not the nested spark.result shape
         older docs suggest. When a market is closed `close` can be null →
@@ -130,7 +170,7 @@ class Market:
             px, ccy = normalize_price(price, ccy)
             series = d.get("close") if isinstance(d.get("close"), list) else []
             out[sym] = {"symbol": sym, "price": px, "currency": ccy,
-                        "stale": stale,
+                        "stale": stale, "src": "yahoo",
                         "series": [x for x in series if x is not None][-40:],
                         "previous_close": d.get("previousClose")}
         return out
@@ -143,7 +183,8 @@ class Market:
         def fetch():
             return self._get(f"{BASE}/v8/finance/chart/{symbol}",
                              {"range": range_, "interval": interval})
-        data = self._cached(("chart", symbol, range_, interval), 300, fetch)
+        ttl = 900 if interval == "1d" else 300      # daily bars move slowly
+        data = self._cached(("chart", symbol, range_, interval), ttl, fetch)
         try:
             res = data["chart"]["result"][0]
             q = res["indicators"]["quote"][0]
@@ -234,7 +275,8 @@ class Market:
 
     # ── FX ───────────────────────────────────────────────────────────────
     def fx(self, from_ccy: str, to_ccy: str) -> Decimal:
-        """Live rate via the <FROM><TO>=X chart symbol, cached ~5 min."""
+        """Live rate via Yahoo's <FROM><TO>=X symbol, cached ~5 min; ECB
+        (Frankfurter, keyless) as fallback — daily rates, fine for paper."""
         if from_ccy == to_ccy:
             return Decimal(1)
         pair = f"{from_ccy}{to_ccy}=X"
@@ -245,4 +287,18 @@ class Market:
             if not closes:
                 raise MarketError(f"no FX data for {pair}")
             return str(closes[-1])
-        return Decimal(self._cached(("fx", pair), self.cache_ttl, fetch))
+        try:
+            return Decimal(self._cached(("fx", pair), self.cache_ttl, fetch))
+        except Exception:                   # noqa: BLE001 — fall back to ECB
+            fb = self._fx_fallback or self._frankfurter
+            return Decimal(self._cached(("fxecb", pair), 3600,
+                                        lambda: fb(from_ccy, to_ccy)))
+
+    def _frankfurter(self, from_ccy, to_ccy) -> str:
+        if self._client is None:
+            self._client = httpx.Client(headers=UA, timeout=15,
+                                        follow_redirects=True)
+        r = self._client.get("https://api.frankfurter.app/latest",
+                             params={"from": from_ccy, "to": to_ccy})
+        r.raise_for_status()
+        return str(r.json()["rates"][to_ccy])

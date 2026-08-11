@@ -164,7 +164,16 @@ def main():
         return StreamingResponse(claire.ask_stream(text, thread),
                                  media_type="application/x-ndjson")
 
-    app = create_app(desk, conn, secret, ask_handler=ask_handler)
+    from ..tools.files import Narratives
+    from .agent_ask import make_agent_ask
+    agent_ask_gen = make_agent_ask(conn, Narratives(ROOT / "var" / "narratives"))
+
+    def agent_ask_handler(body):
+        return StreamingResponse(agent_ask_gen(body),
+                                 media_type="application/x-ndjson")
+
+    app = create_app(desk, conn, secret, ask_handler=ask_handler,
+                     agent_ask_handler=agent_ask_handler)
     uvicorn.run(app, host="127.0.0.1", port=7788, log_level="info")
 
 

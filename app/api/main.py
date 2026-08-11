@@ -39,7 +39,7 @@ class RunBody(BaseModel):
 
 
 def create_app(desk, conn, secret: str, *, clock=time.time,
-               ask_handler=None) -> FastAPI:
+               ask_handler=None, agent_ask_handler=None) -> FastAPI:
     app = FastAPI(title="claire-api")
 
     def _guard(request: Request):
@@ -118,5 +118,12 @@ def create_app(desk, conn, secret: str, *, clock=time.time,
             raise HTTPException(503, "chat agent not configured")
         body = await request.json()
         return ask_handler(body)
+
+    @app.post("/agent/ask")
+    async def agent_ask(request: Request):
+        if agent_ask_handler is None:
+            raise HTTPException(503, "agent ask not configured")
+        body = await request.json()
+        return agent_ask_handler(body)
 
     return app

@@ -159,13 +159,13 @@ function sortBy(k) {
 function renderList() {
   const f = document.getElementById('filter').value.trim().toLowerCase();
   const cols = tab === 'tv'
-    ? [['ticker', 'ticker'], ['spark', ''], ['price', 'price'],
+    ? [['ticker', 'ticker'], ['name', 'name'], ['price', 'price'],
        ['change_pct', 'chg%'], ['rsi', 'RSI'], ['rating_label', 'rating']]
     : tab === 'search'
     ? [['symbol', 'symbol'], ['name', 'name'], ['exchange', 'exch']]
-    : [['symbol', 'symbol'], ['spark', ''], ['price', 'price'],
-       ['change_pct', 'chg%'], ['volume', 'vol'], ['mcap', 'mcap'],
-       ['pe', 'P/E']];
+    : [['symbol', 'symbol'], ['name', 'name'], ['spark', ''],
+       ['price', 'price'], ['change_pct', 'chg%'], ['volume', 'vol'],
+       ['mcap', 'mcap'], ['pe', 'P/E']];
   const data = rows
     .filter(r => !f || (r.symbol + ' ' + (r.name || '')).toLowerCase()
       .includes(f))
@@ -193,6 +193,8 @@ function renderList() {
         if (k === 'volume' || k === 'mcap') return `<td>${fmtBig(v)}</td>`;
         if (k === 'price' || k === 'pe' || k === 'rsi')
           return `<td>${fmt(v)}</td>`;
+        if (k === 'name') return `<td class="muted" title="${esc(v ?? '')}">
+          ${esc((v ?? '—').toString().slice(0, 24))}</td>`;
         return `<td>${esc(v ?? '—')}</td>`;
       }).join('') + '</tr>').join('') + '</table>';
 }

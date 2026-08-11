@@ -212,12 +212,15 @@ async function openDrawer(id) {
       ${act.current ? `<p class="ok">● running now on
         ${esc(act.current.ticker || act.current.work_item_id || '—')}</p>`
         : '<p class="muted">idle right now</p>'}
-      <h2>Ask about this agent</h2>
+      <h2>Ask ${id} directly</h2>
       <div class="row"><input id="d-q" style="flex:1" placeholder=
-        "e.g. what did ${id} conclude last, and why?"
+        "e.g. what did you conclude last, and why?"
         onkeydown="if(event.key==='Enter')askAgent('${id}')">
-        <button class="ghost" onclick="askAgent('${id}')">Ask Claire</button>
+        <button class="ghost" onclick="askAgent('${id}')">Ask</button>
       </div>
+      <p class="muted" style="font-size:.72rem">answers come from this
+        agent's own model + prompt, grounded in its run history — for
+        desk-wide questions use <a href="/claire">Claire</a></p>
       <div id="d-answer"></div>
       <h2>Recent runs</h2>
       ${act.runs.length === 0 ? `<p class="muted">Never run — launch a
@@ -277,10 +280,9 @@ async function askAgent(id) {
   const out = document.getElementById('d-answer');
   out.innerHTML = '<p class="muted">asking Claire…</p>';
   try {
-    const r = await fetch('/api/ask', {method: 'POST',
+    const r = await fetch('/api/agent-ask', {method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({thread: 'drawer',
-        text: `[question about the "${id}" agent] ${q}`})});
+      body: JSON.stringify({agent_id: id, text: q})});
     const reader = r.body.getReader(); const dec = new TextDecoder();
     let buf = '', text = '';
     for (;;) {

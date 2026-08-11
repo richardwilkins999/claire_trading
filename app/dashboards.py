@@ -185,7 +185,9 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
             try:
                 u = urlparse(self.path)
                 if u.path == "/api/ask":
-                    return self._ask_proxy(self._json_body())
+                    return self._ask_proxy(self._json_body(), "/ask")
+                if u.path == "/api/agent-ask":
+                    return self._ask_proxy(self._json_body(), "/agent/ask")
                 body = self._json_body()
                 if u.path == "/api/thesis-action":
                     if dash_key and not self._paired():
@@ -223,8 +225,8 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                 traceback.print_exc()
                 self._send(500, {"error": str(e)})
 
-        def _ask_proxy(self, body):
-            """Stream Claire's NDJSON straight through to the browser."""
+        def _ask_proxy(self, body, upstream="/ask"):
+            """Stream claire-api NDJSON straight through to the browser."""
             self.send_response(200)
             self.send_header("Content-Type", "application/x-ndjson")
             self.send_header("Cache-Control", "no-cache")
@@ -235,7 +237,7 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                 self.wfile.write(json.dumps(obj).encode() + b"\n")
                 self.wfile.flush()
             try:
-                with httpx.stream("POST", f"{api_base}/ask", json=body,
+                with httpx.stream("POST", f"{api_base}{upstream}", json=body,
                                   timeout=180) as r:
                     if r.status_code != 200:
                         detail = r.read().decode()[:300]

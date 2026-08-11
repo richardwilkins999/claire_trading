@@ -33,6 +33,66 @@ def rating_label(x) -> str:
     return "strong sell"
 
 
+SUFFIX_MARKET = {".SI": ("singapore", "SGX", "SGD"),
+                 ".HK": ("hongkong", "HKEX", "HKD"),
+                 ".T": ("japan", "TSE", "JPY"),
+                 ".AX": ("australia", "ASX", "AUD"),
+                 ".DE": ("germany", "XETR", "EUR"),
+                 ".PA": ("france", "EURONEXTPAR", "EUR"),
+                 ".NS": ("india", "NSE", "INR"),
+                 ".L": ("uk", "LSE", "GBp")}
+
+
+def _tv_ticker(yahoo_symbol: str) -> tuple[str, str, str]:
+    """yahoo symbol → (tv market, tv ticker, currency). HK quirk: Yahoo pads
+    to 0700.HK, TradingView wants bare 700."""
+    for suf, (mkt, _exch, ccy) in SUFFIX_MARKET.items():
+        if yahoo_symbol.upper().endswith(suf):
+            t = yahoo_symbol[: -len(suf)]
+            if suf == ".HK":
+                t = t.lstrip("0") or "0"
+            return mkt, t, ccy
+    return "america", yahoo_symbol, "USD"
+
+
+def quotes(symbols: list[str], *, _client=None) -> dict:
+    """Batch quotes via the scanner — the fallback when Yahoo rate-limits.
+    Delayed-ish but honest; series is empty (no sparkline from this source)."""
+    from decimal import Decimal
+
+    from .market import normalize_price
+    client = _client or httpx.Client(
+        timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+    by_market: dict = {}
+    for sym in symbols:
+        mkt, ticker, ccy = _tv_ticker(sym)
+        by_market.setdefault(mkt, []).append((sym, ticker, ccy))
+    out = {}
+    for mkt, entries in by_market.items():
+        r = client.post(
+            f"https://scanner.tradingview.com/{mkt}/scan",
+            json={"filter": [{"left": "name", "operation": "in_range",
+                              "right": [t for _, t, _ in entries]}],
+                  "columns": ["name", "close", "change", "volume"],
+                  "range": [0, len(entries) + 5]})
+        r.raise_for_status()
+        got = {}
+        for row in r.json().get("data", []):
+            d = dict(zip(["name", "close", "change", "volume"], row["d"]))
+            got[str(d["name"])] = d
+        for sym, ticker, ccy in entries:
+            d = got.get(ticker)
+            if d is None or d.get("close") is None:
+                continue
+            px, ccy2 = normalize_price(d["close"], ccy)
+            out[sym] = {"symbol": sym, "price": px, "currency": ccy2,
+                        "stale": False, "series": [],
+                        "change_pct": d.get("change"),
+                        "volume": d.get("volume"),
+                        "previous_close": None, "src": "tradingview"}
+    return out
+
+
 def recommendations(exchange: str, count: int = 30, *, _client=None) -> dict:
     if exchange not in MARKETS:
         raise TradingViewError(f"no TradingView mapping for {exchange}")
