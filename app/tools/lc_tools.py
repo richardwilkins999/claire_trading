@@ -11,21 +11,41 @@ from .search import fetch_page as _fetch_page
 from .search import web_search as _web_search
 
 
-def _safe(fn):
+MAX_TOOL_FAILURES = 3
+
+
+def _safe(fn, failures=None):
     """A tool that raises kills the whole agent node. A blocked page (403),
     a dead link (404) or a throttled feed is normal weather on the open web —
-    hand the failure BACK to the model as text so it can try another route."""
+    hand the failure BACK to the model as text so it can try another route.
+
+    But returning errors turned hard failures into retry loops (SBUX burned
+    its whole step budget that way), so after a few failures the same tool
+    stops being an option and says so.
+    """
     import functools
 
     @functools.wraps(fn)
     def wrapper(*a, **kw):
+        seen = failures if failures is not None else {}
+        name = fn.__name__
+        if seen.get(name, 0) >= MAX_TOOL_FAILURES:
+            return json.dumps({
+                "error": f"{name} has failed {MAX_TOOL_FAILURES} times and is "
+                         f"now disabled for this run",
+                "hint": "STOP calling this tool. Use another source, or "
+                        "finish your analysis with what you already have and "
+                        "state plainly what is missing."})
         try:
             return fn(*a, **kw)
         except Exception as e:              # noqa: BLE001 — deliberate
+            seen[name] = seen.get(name, 0) + 1
+            left = MAX_TOOL_FAILURES - seen[name]
             return json.dumps({
                 "error": f"{type(e).__name__}: {str(e)[:300]}",
-                "hint": "this source failed — try a different source, "
-                        "symbol or tool; do not retry it unchanged"})
+                "hint": f"this source failed ({left} attempt(s) left before "
+                        f"it is disabled) — try a DIFFERENT source or tool; "
+                        f"do not retry it unchanged"})
     return wrapper
 
 
@@ -34,16 +54,20 @@ def build_tool_registry(market, narratives, env=None):
 
     def tool_builder(names, state):
         wi = state.work_item_id
+        failures = {}                    # per-run, shared by every tool below
+
+        def _safe_run(fn):
+            return _safe(fn, failures)
 
         @tool
-        @_safe
+        @_safe_run
         def market_quote(symbol: str) -> str:
             """Live quote for a Yahoo symbol (e.g. NVDA, C07.SI)."""
             q = market.quote(symbol)
             return json.dumps(q, default=str)
 
         @tool
-        @_safe
+        @_safe_run
         def market_chart(symbol: str, range_: str = "6mo",
                          interval: str = "1d") -> str:
             """OHLCV history for a Yahoo symbol. range_: 1mo|3mo|6mo|1y|2y."""
@@ -51,13 +75,13 @@ def build_tool_registry(market, narratives, env=None):
             return json.dumps(c, default=str)[:40000]
 
         @tool
-        @_safe
+        @_safe_run
         def market_search(query: str) -> str:
             """Worldwide symbol search by company name or ticker."""
             return json.dumps(market.search(query), default=str)
 
         @tool
-        @_safe
+        @_safe_run
         def market_screener(exchange: str, sort: str = "intradaymarketcap",
                             start: int = 0) -> str:
             """Top listings for an exchange (NASDAQ, NYSE, LSE, SGX, HKEX,
@@ -66,19 +90,19 @@ def build_tool_registry(market, narratives, env=None):
                               default=str)[:40000]
 
         @tool
-        @_safe
+        @_safe_run
         def web_search(query: str) -> str:
             """Search the web (Tavily if configured, else DuckDuckGo)."""
             return json.dumps(_web_search(query, env=env or {}), default=str)
 
         @tool
-        @_safe
+        @_safe_run
         def fetch_page(url: str) -> str:
             """Fetch a web page as readable text (size-capped)."""
             return _fetch_page(url)
 
         @tool
-        @_safe
+        @_safe_run
         def run_python(code: str, symbol: str = "", range_: str = "6mo") -> str:
             """Run numpy/pandas analysis code in a sandbox. The tool fetches
             OHLCV for `symbol` into DATA (dict of open/high/low/close/volume
@@ -89,7 +113,7 @@ def build_tool_registry(market, narratives, env=None):
             return json.dumps(_run_python(code, data), default=str)[:20000]
 
         @tool
-        @_safe
+        @_safe_run
         def write_narrative(name: str, markdown: str) -> str:
             """Save your full written analysis (markdown) to the run's
             narrative folder. Returns the stored path."""

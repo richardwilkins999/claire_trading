@@ -93,6 +93,24 @@ class Market:
         self._pace_lock = __import__("threading").Lock()
         self._last_call = 0.0
         self._host_i = 0
+        self._primary_calls: list = []      # timestamps, for the rate gate
+
+    PRIMARY_PER_MIN = 7                     # Twelve Data free tier allows 8
+
+    def _primary_ok(self) -> bool:
+        """Three analysts researching at once will blow an 8-per-minute quota
+        and every one of those calls comes back 429. Check the budget BEFORE
+        spending it, and fall through to TradingView while it recovers."""
+        if self._primary is None:
+            return False
+        with self._pace_lock:
+            now = time.monotonic()
+            self._primary_calls = [t for t in self._primary_calls
+                                   if now - t < 60]
+            if len(self._primary_calls) >= self.PRIMARY_PER_MIN:
+                return False
+            self._primary_calls.append(now)
+            return True
 
     MIN_GAP = 0.7                           # be a polite Yahoo client
 
@@ -148,7 +166,8 @@ class Market:
             covered = tuple(s for s in symbols
                             if getattr(self._primary, "supports",
                                        lambda s: True)(s))
-            if covered:
+            if covered and (("pq", covered) in self._cache
+                            or self._primary_ok()):
                 try:
                     out = dict(self._cached(("pq", covered), 60,
                                             lambda: self._primary.quote(
@@ -221,12 +240,14 @@ class Market:
 
     # ── OHLCV ────────────────────────────────────────────────────────────
     def chart(self, symbol: str, range_="6mo", interval="1d") -> dict:
+        key = ("pchart", symbol, range_, interval)
         if self._primary is not None and not symbol.endswith("=X") \
                 and not symbol.startswith("^") \
-                and getattr(self._primary, "supports", lambda s: True)(symbol):
+                and getattr(self._primary, "supports", lambda s: True)(symbol) \
+                and (key in self._cache or self._primary_ok()):
             try:
-                return self._cached(("pchart", symbol, range_, interval),
-                                    900, lambda: self._primary.chart(
+                return self._cached(key, 900,
+                                    lambda: self._primary.chart(
                                         symbol, range_, interval))
             except Exception:               # noqa: BLE001 — fall through
                 pass
@@ -290,7 +311,8 @@ class Market:
             covered = tuple(s for s in symbols
                             if getattr(self._primary, "supports",
                                        lambda s: True)(s))
-            if covered:
+            if covered and (("m", covered) in self._cache
+                            or self._primary_ok()):
                 try:                            # batched: one request for all
                     out = dict(self._cached(
                         ("m", covered), 300,
@@ -330,7 +352,8 @@ class Market:
         if from_ccy == to_ccy:
             return Decimal(1)
         pair = f"{from_ccy}{to_ccy}=X"
-        if self._primary is not None:
+        if self._primary is not None and (("pfx", pair) in self._cache
+                                          or self._primary_ok()):
             try:
                 return Decimal(self._cached(
                     ("pfx", pair), self.cache_ttl,

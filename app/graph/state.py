@@ -23,6 +23,22 @@ def _clip(v):
     return v
 
 
+def _as_list(v):
+    """Accept prose where a list was asked for. A model returning its key
+    points as one string instead of a list is a formatting slip; rejecting it
+    threw away a paid-for bull case and left the arbiter judging a one-sided
+    debate. Split on newlines/bullets when they are there, else wrap."""
+    if v is None:
+        return []
+    if isinstance(v, str):
+        parts = [p.strip(" -•*\t") for p in v.splitlines()]
+        parts = [p for p in parts if p]
+        return parts if len(parts) > 1 else ([v.strip()] if v.strip() else [])
+    if isinstance(v, (list, tuple)):
+        return [x if isinstance(x, str) else str(x) for x in v]
+    return [str(v)]
+
+
 class Instrument(BaseModel):
     id: str                       # "SGX:C07", "NASDAQ:NVDA"
     ticker: str
@@ -48,6 +64,8 @@ class AnalystReport(BaseModel):
     sources: list[str] = []
 
     _clip_summary = field_validator("summary", mode="before")(_clip)
+    _lists = field_validator("key_findings", "sources",
+                             mode="before")(_as_list)
 
 
 class DebateCase(BaseModel):
@@ -56,6 +74,9 @@ class DebateCase(BaseModel):
     rebuttals: list[str] = []                   # bear: vs bull, point by point
     conviction: float = Field(ge=0.0, le=1.0)   # strength; `side` carries direction
     narrative_path: str = ""
+
+    _lists = field_validator("key_points", "rebuttals",
+                             mode="before")(_as_list)
 
 
 class Thesis(BaseModel):
@@ -69,6 +90,8 @@ class Thesis(BaseModel):
     currency: str
     conditions: list[str] = []                  # caveats live HERE, as text
     narrative_path: str = ""
+
+    _lists = field_validator("conditions", mode="before")(_as_list)
 
     @model_validator(mode="after")
     def _guards(self):

@@ -220,19 +220,43 @@ def make_analyst(conn, agent_id, narratives, tool_builder, *,
     return node
 
 
+RECURSION_LIMIT = 60
+
+
 def _run_agent(conn, agent_id, state, system, task, tools, agent_factory, env):
+    """Run the research loop, STREAMING so that a step-budget overrun still
+    leaves us the work done so far. Hitting the limit used to raise and throw
+    the whole analyst away (the SBUX fundamental run cost 40 steps and
+    produced nothing) — now it degrades to a partial report."""
     if agent_factory is not None:
         return agent_factory(agent_id, state, system, task, tools)
     from langchain.agents import create_agent
     model = registry.model_for(conn, agent_id, work_item_id=state.work_item_id,
                                env=env or __import__("os").environ)
+    meter = registry.MeterCallback(conn, agent_id, state.work_item_id)
     agent = create_agent(model=model, tools=tools, system_prompt=system)
-    result = agent.invoke({"messages": [("user", task)]},
-                          config={"recursion_limit": 40})
+    messages, truncated = [], None
+    try:
+        # callbacks on the INVOKE config, not the model — with_config on the
+        # model does not survive create_agent, which is why tool-loop calls
+        # were never metered and run costs read far too low
+        for update in agent.stream(
+                {"messages": [("user", task)]},
+                config={"recursion_limit": RECURSION_LIMIT,
+                        "callbacks": [meter]},
+                stream_mode="updates"):
+            for _node, data in (update or {}).items():
+                messages.extend((data or {}).get("messages", []) or [])
+    except Exception as e:                      # noqa: BLE001
+        truncated = str(e)[:200]
     lines = []
-    for m in result.get("messages", []):
+    for m in messages:
         role = getattr(m, "type", "?")
         content = m.content if isinstance(m.content, str) else json.dumps(
             m.content, default=str)[:2000]
         lines.append(f"[{role}] {content[:2000]}")
-    return "\n".join(lines[-40:])
+    if truncated:
+        lines.append(f"[system] RESEARCH CUT SHORT: {truncated}. Report on "
+                     f"what was gathered above and say plainly what is "
+                     f"missing.")
+    return "\n".join(lines[-60:])

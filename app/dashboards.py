@@ -525,7 +525,26 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                     "locked": not paired,
                     "session": session,
                     "expires_at": r["expires_at"]})
-            return {"cards": cards, "accounts": accounts}
+            # a PASS never reaches the gate, so an empty Approvals page used
+            # to be the only sign a run had concluded at all
+            decided = []
+            for r in conn.execute(
+                    "SELECT id, ticker, state, thesis_json, updated_at,"
+                    " trigger FROM work_items WHERE thesis_json IS NOT NULL"
+                    " AND state IN ('done','rejected','expired')"
+                    " AND updated_at > ? ORDER BY updated_at DESC LIMIT 12",
+                    (int(clock()) - 7 * 86400,)):
+                try:
+                    t = json.loads(r["thesis_json"])
+                except ValueError:
+                    continue
+                decided.append({
+                    "id": r["id"], "ticker": r["ticker"], "state": r["state"],
+                    "direction": t.get("direction"),
+                    "conviction": t.get("conviction"),
+                    "conditions": t.get("conditions") or [],
+                    "trigger": r["trigger"], "at": r["updated_at"]})
+            return {"cards": cards, "accounts": accounts, "decided": decided}
 
         def _portfolio(self):
             from . import portfolio

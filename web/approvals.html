@@ -7,6 +7,12 @@
   complete evidence the desk assembled — each agent's report, the debate, and
   the arbiter's verdict — so you approve on the record, not on a headline.</p>
   <div id="cards">loading…</div>
+
+  <h2>Recently decided — no action needed</h2>
+  <p class="muted" style="font-size:.75rem;margin-top:-.3rem">A PASS verdict
+  never reaches the approval gate, so these concluded without you. The desk
+  declining is a decision, not a failure — its reasoning is here.</p>
+  <div id="decided"></div>
 </main>
 <script>
 let DATA = {cards: [], accounts: []}, fxCache = {}, openEvidence = {};
@@ -28,6 +34,25 @@ function render() {
        send from <a href="/markets">Markets</a>.</p></div>`
     : DATA.cards.map(card).join('');
   DATA.cards.forEach(a => updEst(a.id));
+  renderDecided();
+}
+
+function renderDecided() {
+  const d = DATA.decided || [];
+  document.getElementById('decided').innerHTML = d.length === 0
+    ? '<p class="muted">Nothing concluded in the last 7 days.</p>'
+    : d.map(r => `<details class="card" style="padding:.6rem .9rem">
+        <summary><b>${esc(r.direction || '?').toUpperCase()}</b>
+          ${esc(r.ticker)} · conviction ${fmt(r.conviction)} ·
+          <span class="muted">${esc(r.state)} ${ago(r.at)}</span>
+          ${r.trigger ? `<span class="muted"> · ⟲ ${esc(r.trigger)}</span>`
+            : ''}</summary>
+        ${(r.conditions || []).length
+          ? `<ul style="margin:.4rem 0 0 1rem">${r.conditions.map(c =>
+              `<li>${esc(c)}</li>`).join('')}</ul>`
+          : '<p class="muted">No conditions recorded.</p>'}
+        <p style="margin-top:.4rem"><a href="/trading">full run detail →</a></p>
+      </details>`).join('');
 }
 
 function card(a) {
