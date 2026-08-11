@@ -69,6 +69,18 @@ function sparkline(series, w = 70, h = 22) {
     points="${pts}" fill="none" stroke-width="1.4"
     stroke="${up ? 'var(--good)' : 'var(--bad)'}"/></svg>`;
 }
+/* minimal markdown: headings, bold, italics, code, bullets — no library */
+function mdLite(t) {
+  return esc(t)
+    .replace(/^#{1,3} (.+)$/gm, '<h3>$1</h3>')
+    .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+    .replace(/(^|\s)_(.+?)_(?=\s|$)/g, '$1<i>$2</i>')
+    .replace(/`(.+?)`/g, '<code>$1</code>')
+    .replace(/^[-*] (.+)$/gm, '<li>$1</li>')
+    .replace(/(<li>[\s\S]*?<\/li>)(?!\s*<li>)/g, '<ul>$1</ul>')
+    .split(/\n{2,}/).map(p => p.match(/^\s*<(h3|ul)/) ? p
+      : `<p>${p.replace(/\n/g, '<br>')}</p>`).join('');
+}
 function feeFor(model, notional) {
   if (!model) return 0;
   if (model.type === 'pct')

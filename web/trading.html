@@ -30,17 +30,26 @@ async function launch() {
 }
 const cls = {done:'ok', executing:'warn', awaiting_approval:'warn',
              failed:'bad', rejected:'muted', expired:'muted', running:'warn'};
+let lastSig = null, DETAIL = {}, summaryOpen = false;
+
 async function refresh() {
   const runs = await api('/api/runs');
-  document.getElementById('runs').innerHTML = '<table><tr><th>id</th>' +
-    '<th>kind</th><th>ticker</th><th>state</th><th>updated</th></tr>' +
-    runs.map(r => `<tr class="clickable" onclick="toggle('${r.id}')">
-      <td>${r.id}</td><td>${r.kind}</td><td>${r.ticker}</td>
-      <td class="${cls[r.state] || ''}">${r.state}</td>
-      <td class="muted">${ts(r.updated_at)}</td></tr>
-      <tr id="d-${r.id}" style="display:${openId === r.id ? '' : 'none'}">
-      <td colspan="5" id="dc-${r.id}"></td></tr>`).join('') + '</table>';
-  if (openId) detail(openId);
+  // only rebuild the table when something actually changed — a blind
+  // re-render every 8s was collapsing whatever you had open
+  const sig = runs.map(r => r.id + r.state + r.updated_at).join('|');
+  if (sig !== lastSig) {
+    lastSig = sig;
+    document.getElementById('runs').innerHTML = '<table><tr><th>id</th>' +
+      '<th>kind</th><th>ticker</th><th>state</th><th>updated</th></tr>' +
+      runs.map(r => `<tr class="clickable ${openId === r.id ? 'sel' : ''}"
+        onclick="toggle('${r.id}')">
+        <td>${esc(r.id)}</td><td>${esc(r.kind)}</td><td>${esc(r.ticker)}</td>
+        <td class="${cls[r.state] || ''}">${esc(r.state)}</td>
+        <td class="muted">${ts(r.updated_at)}</td></tr>
+        <tr id="d-${r.id}" style="display:${openId === r.id ? '' : 'none'}">
+        <td colspan="5" id="dc-${r.id}"></td></tr>`).join('') + '</table>';
+    if (openId) render(openId);          // restore the open panel as it was
+  }
   const f = await api('/api/feed');
   document.getElementById('feed').textContent = f.events.slice(-60).reverse()
     .map(e => `${ts(e.ts)}  ${e.item_id}  ${e.actor}: ` +
@@ -48,6 +57,7 @@ async function refresh() {
 }
 function toggle(id) {
   openId = openId === id ? null : id;
+  lastSig = null;                        // force one rebuild for the highlight
   document.querySelectorAll('[id^="d-"]').forEach(el =>
     el.style.display = 'none');
   if (openId) {
@@ -56,33 +66,47 @@ function toggle(id) {
   }
 }
 async function detail(id) {
+  if (!DETAIL[id]) {
+    const el = document.getElementById('dc-' + id);
+    if (el) el.innerHTML = '<span class="muted">loading…</span>';
+    try { DETAIL[id] = await api('/api/run-detail?id=' +
+      encodeURIComponent(id)); }
+    catch (e) { if (el) el.innerHTML = `<p class="bad">${esc(e.message)}</p>`;
+      return; }
+  }
+  render(id);
+}
+function render(id) {
   const el = document.getElementById('dc-' + id);
-  if (!el || el.dataset.loaded) return;
-  el.innerHTML = '<span class="muted">loading…</span>';
-  const d = await api('/api/run-detail?id=' + encodeURIComponent(id));
-  el.dataset.loaded = '1';
+  const d = DETAIL[id];
+  if (!el || !d) return;
   let html = '';
-  const errEv = d.events.filter(e => e.payload &&
+  const errEv = (d.events || []).filter(e => e.payload &&
     e.payload.includes('error')).slice(-1)[0];
   if (d.state === 'failed' && errEv) {
     let why = errEv.payload;
     try { why = (JSON.parse(errEv.payload).errors || [why]).join('\n'); }
     catch {}
-    html += `<p class="bad">why it failed:</p><pre>${why}</pre>`;
+    html += `<p class="bad">why it failed:</p><pre>${esc(why)}</pre>`;
   }
-  if (d.thesis) html += `<p><b>Thesis</b>: ${d.thesis.direction} conviction
-    ${fmt(d.thesis.conviction)} · entry ${fmt(d.thesis.entry_low)}–
-    ${fmt(d.thesis.entry_high)} · stop ${fmt(d.thesis.stop_loss)} · target
-    ${fmt(d.thesis.take_profit)} ${d.thesis.currency}</p>`;
-  if (d.agent_runs.length) html += '<p><b>LLM calls</b>: ' +
-    d.agent_runs.map(a => `${a.agent_id}(${a.status},$${fmt(a.cost_usd, 4)})`)
+  if (d.thesis) html += `<p><b>Thesis</b>: ${esc(d.thesis.direction)}
+    · conviction ${fmt(d.thesis.conviction)} · entry
+    ${fmt(d.thesis.entry_low)}–${fmt(d.thesis.entry_high)} · stop
+    ${fmt(d.thesis.stop_loss)} · target ${fmt(d.thesis.take_profit)}
+    ${esc(d.thesis.currency || '')}</p>`;
+  if ((d.agent_runs || []).length) html += '<p><b>LLM calls</b>: ' +
+    d.agent_runs.map(a => `${esc(a.agent_id)} (${esc(a.status)}, $${
+      fmt(a.cost_usd, 4)})`).join(' · ') + '</p>';
+  if ((d.orders || []).length) html += '<p><b>Orders</b>: ' +
+    d.orders.map(o => `${esc(o.side)} ${fmt(o.qty)} — ${esc(o.status)}`)
       .join(' · ') + '</p>';
-  if (d.orders.length) html += '<p><b>Orders</b>: ' + d.orders.map(o =>
-    `${o.side} ${fmt(o.qty)} — ${o.status}`).join(' · ') + '</p>';
-  if (d.summary) html += `<details><summary class="muted">run summary</summary>
-    <pre style="white-space:pre-wrap">${d.summary}</pre></details>`;
-  html += `<p class="muted">events: ${d.events.map(e =>
-    `${e.from_state || ''}→${e.to_state}`).join(', ')}</p>`;
+  if (d.summary) html += `<details id="sum-${id}" ${summaryOpen ? 'open' : ''}
+    ontoggle="summaryOpen=this.open">
+    <summary class="muted">run summary</summary>
+    <div class="narr">${mdLite(d.summary)}</div></details>`;
+  html += `<p class="muted" style="font-size:.72rem">events: ${
+    (d.events || []).map(e => `${e.from_state || ''}→${e.to_state}`)
+      .join(', ')}</p>`;
   el.innerHTML = html || '<span class="muted">no detail</span>';
 }
 refresh(); setInterval(refresh, 8000);

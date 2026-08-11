@@ -476,18 +476,6 @@ async function pickRun(agentId, idx, workItem) {
     out.innerHTML = `<p class="bad">${esc(e.message)}</p>`;
   }
 }
-/* minimal markdown: bold, bullets, code, paragraphs — no library needed */
-function mdLite(t) {
-  return esc(t)
-    .replace(/^# (.+)$/gm, '<h3>$1</h3>')
-    .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
-    .replace(/_(.+?)_/g, '<i>$1</i>')
-    .replace(/`(.+?)`/g, '<code>$1</code>')
-    .replace(/^- (.+)$/gm, '<li>$1</li>')
-    .replace(/(<li>[\s\S]*?<\/li>)(?!\s*<li>)/g, '<ul>$1</ul>')
-    .split(/\n{2,}/).map(p => p.match(/^\s*<(h3|ul)/) ? p
-      : `<p>${p.replace(/\n/g, '<br>')}</p>`).join('');
-}
 async function askAgent(id) {
   const q = document.getElementById('d-q').value.trim();
   if (!q) return;
