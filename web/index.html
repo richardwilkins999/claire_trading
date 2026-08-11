@@ -467,11 +467,23 @@ async function pickRun(agentId, idx, workItem) {
   try {
     const n = await api(`/api/agent-narrative?agent=${
       encodeURIComponent(agentId)}&work_item=${encodeURIComponent(workItem)}`);
-    out.innerHTML = n.error
-      ? `<h2>Write-up</h2><p class="muted">${esc(n.error)} — this agent makes
-         a single structured call and does not always leave one.</p>`
-      : `<h2>What ${esc(agentId)} wrote · ${esc(workItem)}</h2>
-         <div class="narr">${mdLite(n.text)}</div>`;
+    if (n.error) {
+      out.innerHTML = `<h2>Output</h2><p class="muted">${esc(n.error)}</p>`;
+      return;
+    }
+    out.innerHTML = `
+      <h2>Report · ${esc(workItem)}</h2>
+      <p class="muted" style="font-size:.7rem;margin-top:-.3rem">the
+        conclusion — and the only part passed to the next agent</p>
+      ${n.report ? `<div class="narr">${mdLite(n.report)}</div>`
+        : `<p class="muted">No separate report file for this run${
+          n.legacy ? ' (recorded before reports and working notes were split'
+          + ' — the conclusion is inside the working notes below)' : ''}.</p>`}
+      ${n.transcript ? `<details style="margin-top:.6rem">
+        <summary class="muted">working notes — how it got there
+          (not passed on)</summary>
+        <div class="narr" style="margin-top:.4rem">${mdLite(n.transcript)}
+        </div></details>` : ''}`;
   } catch (e) {
     out.innerHTML = `<p class="bad">${esc(e.message)}</p>`;
   }

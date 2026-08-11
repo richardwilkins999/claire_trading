@@ -210,6 +210,57 @@ def test_factor_scan_parses_and_drops_preferred_lines():
     assert any(f.get("left") == "typespecs" for f in c.body["filter"])
 
 
+def test_agents_write_report_and_transcript_separately(conn, tmp_path):
+    """The conclusion and the working that produced it are different
+    artifacts: the report is what downstream agents receive, the transcript
+    is audit-only and never propagates."""
+    from datetime import datetime, timezone
+
+    from app.graph.nodes_analysis import (make_analyst, make_debater,
+                                          render_reports)
+    from app.graph.state import (AnalystReport, DebateCase, Instrument,
+                                 PipelineState)
+    from app.tools.files import Narratives
+    n = Narratives(tmp_path)
+    state = PipelineState(work_item_id="wi_x", ticker="NVDA",
+                          instrument=Instrument(id="NASDAQ:NVDA",
+                                                ticker="NVDA",
+                                                exchange="NASDAQ",
+                                                currency="USD"))
+
+    report = AnalystReport(ticker="NVDA", agent="technical", signal="bearish",
+                           conviction=0.45, summary="Below the 20 and 50 day.",
+                           data_asof=datetime(2026, 8, 11, tzinfo=timezone.utc),
+                           sources=["chart"])
+    factory = lambda a, s, w: (type("L", (), {  # noqa: E731
+        "invoke": lambda self, m: report})(), "sys")
+    node = make_analyst(conn, "technical", n, lambda names, st: [],
+                        structured_factory=factory,
+                        agent_factory=lambda *a: "[ai] I computed RSI 38.")
+    out = node(state)
+    files = n.list("wi_x")
+    assert "technical.report.md" in files
+    assert "technical.transcript.md" in files
+    assert out.narrative_path.endswith("technical.report.md")
+    rep = n.read("wi_x", "technical.report")
+    assert "**Signal: BEARISH**" in rep and "conviction 0.45" in rep
+    assert "Below the 20 and 50 day." in rep
+    assert "RSI 38" not in rep                      # working stays out of it
+    assert "RSI 38" in n.read("wi_x", "technical.transcript")
+
+    case = DebateCase(side="bull", key_points=["cheap"], conviction=0.7)
+    bull = make_debater(conn, "bull", n, structured_factory=lambda a, s, w: (
+        type("L", (), {"invoke": lambda self, m: case})(), "sys"))
+    bull(state)
+    assert "bull.report.md" in n.list("wi_x")
+    assert "**Bull case**" in n.read("wi_x", "bull.report")
+
+    # and what actually crosses to the next agent is the typed report only
+    passed = render_reports(state.model_copy(update={"reports": [out]}))
+    assert "Below the 20 and 50 day." in passed
+    assert "RSI 38" not in passed
+
+
 def test_schedule_rows_name_their_agent(conn):
     from app import scheduler
     scheduler.seed(conn)

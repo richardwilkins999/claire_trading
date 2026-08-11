@@ -65,6 +65,40 @@ SCHEMAS = {"bull": DebateCase, "bear": DebateCase, "arbiter": Thesis}
 PROMPTS = {"bull": bull_prompt, "bear": bear_prompt, "arbiter": arbiter_prompt}
 
 
+def report_md(agent_id: str, ticker: str, obj) -> str:
+    """The agent's CONCLUSION as markdown — this is the artifact downstream
+    agents actually consume (they never see the working notes), so it is
+    written as its own file rather than buried in a transcript."""
+    d = obj.model_dump()
+    lines = [f"# {agent_id} — {ticker}", ""]
+    if d.get("signal"):
+        lines.append(f"**Signal: {d['signal'].upper()}** · conviction "
+                     f"{d.get('conviction')}")
+    if d.get("side"):
+        lines.append(f"**{d['side'].title()} case** · conviction "
+                     f"{d.get('conviction')}")
+    if d.get("direction"):
+        lines.append(f"**Verdict: {str(d['direction']).upper()}** · "
+                     f"conviction {d.get('conviction')}")
+        levels = [(k.replace("_", " "), d.get(k)) for k in
+                  ("entry_low", "entry_high", "stop_loss", "take_profit")]
+        levels = [f"{k} {v}" for k, v in levels if v is not None]
+        if levels:
+            lines.append("· ".join(levels) + f" {d.get('currency') or ''}")
+    if d.get("summary"):
+        lines += ["", d["summary"]]
+    for key, title in (("key_points", "Key points"),
+                       ("rebuttals", "Rebuttals"),
+                       ("conditions", "Conditions & caveats"),
+                       ("sources", "Sources")):
+        items = d.get(key) or []
+        if items:
+            lines += ["", f"**{title}**"] + [f"- {i}" for i in items]
+    if d.get("data_asof"):
+        lines += ["", f"_data as of {d['data_asof']}_"]
+    return "\n".join(lines)
+
+
 # ── production factories ─────────────────────────────────────────────────
 def default_structured_factory(conn, env=None):
     """Structured calls get the SAME fallback protection as tool loops — an
@@ -96,9 +130,8 @@ def make_debater(conn, agent_id, narratives, *, structured_factory):
         obj = llm.invoke([("system", system), ("user", prompt_fn(state))])
         if isinstance(obj, dict):                   # some providers hand dicts
             obj = schema.model_validate(obj)
-        md = (f"# {agent_id} — {state.ticker}\n\n"
-              f"{json.dumps(obj.model_dump(), indent=2, default=str)}")
-        path = narratives.write(state.work_item_id, agent_id, md)
+        path = narratives.write(state.work_item_id, f"{agent_id}.report",
+                                report_md(agent_id, state.ticker, obj))
         return obj.model_copy(update={"narrative_path": path})
     return node
 
@@ -130,8 +163,18 @@ def make_analyst(conn, agent_id, narratives, tool_builder, *,
                      f"direction.")])
         if isinstance(obj, dict):
             obj = AnalystReport.model_validate(obj)
-        path = narratives.write(state.work_item_id, agent_id,
-                                f"# {agent_id} — {state.ticker}\n\n{transcript}")
+        # two artifacts, deliberately separate: the REPORT is the conclusion
+        # (and the only thing downstream agents receive), the TRANSCRIPT is
+        # the working that produced it — kept for audit, never propagated.
+        obj = obj.model_copy(update={"agent": agent_id,
+                                     "ticker": state.ticker})
+        path = narratives.write(state.work_item_id, f"{agent_id}.report",
+                                report_md(agent_id, state.ticker, obj))
+        narratives.write(
+            state.work_item_id, f"{agent_id}.transcript",
+            f"# {agent_id} — working notes for {state.ticker}\n\n"
+            f"_How the conclusion was reached. Downstream agents never see "
+            f"this; they receive the report only._\n\n{transcript}")
         return obj.model_copy(update={
             "narrative_path": path, "agent": agent_id,
             "ticker": state.ticker,

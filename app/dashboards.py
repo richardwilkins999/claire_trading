@@ -331,17 +331,33 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                         sse_clients.remove(q)
 
         def _narrative(self, agent_id, work_item):
-            """One run's write-up, formatted for a human (the file on disk
-            stays the raw audit record)."""
+            """One run's output, split the way a reader wants it: the REPORT
+            (the conclusion, and the only thing passed downstream) separate
+            from the TRANSCRIPT (how it got there). Older runs wrote a single
+            combined file — fall back to it so history stays readable."""
             from .narrative_format import format_narrative
             if not narratives or not work_item:
                 return None
-            try:
-                raw = narratives.read(work_item, agent_id)
-            except OSError:
-                return None
+
+            def read(name):
+                try:
+                    return narratives.read(work_item, name)
+                except OSError:
+                    return None
+
+            report, transcript = read(f"{agent_id}.report"), \
+                read(f"{agent_id}.transcript")
+            legacy = None
+            if report is None and transcript is None:
+                legacy = read(agent_id)
+                if legacy is None:
+                    return None
             return {"work_item": work_item, "agent": agent_id,
-                    "text": format_narrative(raw)[:12000]}
+                    "report": format_narrative(report)[:8000]
+                    if report else None,
+                    "transcript": format_narrative(transcript or legacy or "")
+                    [:12000] or None,
+                    "legacy": legacy is not None}
 
         def _exchanges(self):
             """The world-markets strip: pure session-calendar data — no Yahoo,
@@ -382,9 +398,12 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                 (agent_id,))]
             current = next((r for r in runs if r["status"] == "running"), None)
             for r in runs:
-                r["has_narrative"] = bool(
-                    r["work_item_id"] and narratives and
-                    f"{agent_id}.md" in narratives.list(r["work_item_id"]))
+                files = (narratives.list(r["work_item_id"])
+                         if r["work_item_id"] and narratives else [])
+                r["has_narrative"] = any(
+                    f in files for f in (f"{agent_id}.report.md",
+                                         f"{agent_id}.transcript.md",
+                                         f"{agent_id}.md"))
             narrative = None
             for r in runs:
                 if r.get("has_narrative"):
