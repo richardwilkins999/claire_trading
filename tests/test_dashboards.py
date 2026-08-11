@@ -258,6 +258,49 @@ def test_account_topup_withdraw_and_approve_balance_guard(web):
         assert row["token_state"] == "minted"       # nothing consumed
 
 
+def test_node_status_vocabulary(web):
+    """Every node type reports the same status vocabulary: active (glowing),
+    ok, warn, error, idle, disabled — computed from real conditions, not
+    just from an agent's last run."""
+    base, conn = web
+    with paired(base) as c:
+        g = c.get("/api/agent-graph").json()
+        # no ANTHROPIC_API_KEY in the test env → agents cannot run: error
+        tech = g["agents"]["technical"]
+        assert tech["state"] == "error"
+        assert "ANTHROPIC_API_KEY" in tech["detail"]
+
+        # a run in flight outranks everything → active (this is the glow)
+        conn.execute(
+            "INSERT INTO agent_runs (id, agent_id, provider_id, model,"
+            " started_at, status) VALUES ('r_live','technical','anthropic',"
+            "'m', ?, 'running')", (T0 - 5,))
+        g = c.get("/api/agent-graph").json()
+        assert g["agents"]["technical"]["state"] == "active"
+        assert g["agents"]["technical"]["detail"] == "running now"
+
+        # a disabled agent reads as disabled, not as an error
+        conn.execute("UPDATE agents SET enabled=0 WHERE id='news'")
+        assert c.get("/api/agent-graph").json()["agents"]["news"]["state"] \
+            == "disabled"
+
+        # venues: MCP rows exist but creds are missing → warn (not error:
+        # the paper sim is a working fallback by design)
+        byb = {b["broker"]: b for b in g["brokers"]}
+        assert byb["alpaca"]["state"] == "warn"
+        assert "creds missing" in byb["alpaca"]["detail"]
+
+        # services: a guard that stopped reporting is an ERROR, not a shrug
+        conn.execute("INSERT INTO service_health (service, checked_at, ok)"
+                     " VALUES ('watcher', ?, 'ok')", (T0 - 7200,))
+        assert c.get("/api/agent-graph").json()["health"]["watcher"]["state"] \
+            == "error"                                  # stale → error
+        conn.execute("INSERT INTO service_health (service, checked_at, ok)"
+                     " VALUES ('custodian', ?, 'degraded')", (T0 - 60,))
+        assert c.get("/api/agent-graph").json()["health"]["custodian"][
+            "state"] == "warn"
+
+
 def test_mission_control_map_is_one_svg(web):
     """The map must be a single SVG (nodes AND edges in one coordinate
     space) — the earlier overlay version had panels painting over the

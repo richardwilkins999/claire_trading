@@ -13,14 +13,23 @@
   <div class="mapwrap"><svg id="map" viewBox="0 0 1240 486"
     preserveAspectRatio="xMidYMin meet"></svg></div>
   <div class="legend">
+    <span><b class="sw" style="background:var(--good);
+      box-shadow:0 0 7px var(--good)"></b>glowing = running now</span>
+    <span><b class="sw" style="background:var(--good)"></b>configured
+      &amp; ready</span>
+    <span><b class="sw" style="background:var(--warn)"></b>degraded</span>
+    <span><b class="sw" style="background:var(--bad)"></b>error — needs
+      you</span>
+    <span><b class="sw" style="background:#3a4d63"></b>never run</span>
+  </div>
+  <div class="legend">
     <span><i style="border-color:#2c4560;border-top-style:solid"></i>run flow</span>
     <span><i style="border-color:#1d6b62;border-top-style:dashed"></i>book
       writes &amp; data</span>
     <span><i style="border-color:#8a6a2a;border-top-style:dashed"></i>stop
       breach → sell review</span>
-    <span style="color:var(--warn)">▢ amber = your approval gate</span>
     <span style="color:var(--purple)">⚙ MCP status sits inside each venue</span>
-    <span>click any box to inspect, question or configure it</span>
+    <span>hover for detail · click to inspect, question or configure</span>
   </div>
 
   <h2>Accounts</h2>
@@ -146,7 +155,7 @@ const STAGES = [
   {label: 'RECORD', ids: ['recorder']}];
 const DET = {
   prepare: ['prepare', 'instrument · no LLM'],
-  gate: ['approve', 'your token ⏸'],
+  gate: ['🔒 approve', 'your token ⏸'],
   execute: ['execute', 'guards · place']};
 
 function jobNext(prefix) {
@@ -162,15 +171,17 @@ function jobNext(prefix) {
 const cut = (s, n) => { s = String(s ?? '');
   return s.length > n ? s.slice(0, n - 1) + '…' : s; };
 
-function node(id, x, y, w, h, title, sub, cls, extra) {
+function node(id, x, y, w, h, title, sub, cls, extra, tip) {
   const sel = selected === id ? ' sel' : '';
-  const pulse = cls.includes('active') ? ' mpulse' : '';
-  return `<g class="mnode ${cls}${sel}${pulse}" transform="translate(${x},${y})"
+  const dot = /entry/.test(cls) ? ''
+    : `<circle class="dot" cx="${w - 11}" cy="12" r="3.5"/>`;
+  return `<g class="mnode ${cls}${sel}" transform="translate(${x},${y})"
     onclick="openDrawer('${id}')">
     <rect class="body" width="${w}" height="${h}" rx="7"/>
-    <text class="nt" x="10" y="17">${esc(cut(title, 18))}</text>
+    ${dot}
+    <text class="nt" x="10" y="17">${esc(cut(title, 17))}</text>
     <text class="ns" x="10" y="30">${esc(cut(sub, 22))}</text>
-    ${extra || ''}</g>`;
+    ${extra || ''}<title>${esc(tip || sub)}</title></g>`;
 }
 function renderMap() {
   const g = GRAPH, h = g.health || {}, parts = [], edges = [];
@@ -206,14 +217,17 @@ function renderMap() {
       const y = top + k * (L.nodeH + L.nodeGap);
       if (DET[id]) {
         const [t, s] = DET[id];
-        parts.push(node(id, x, y, L.stageW, L.nodeH, t, s,
-          id === 'gate' ? 'det gate' : 'det'));
+        parts.push(node(id, x, y, L.stageW, L.nodeH, t, s, 'det ok',
+          null, 'deterministic — always configured, no LLM'));
       } else {
         const a = g.agents[id];
         if (!a) return;
+        const sub = a.state === 'error' || a.state === 'active'
+          ? a.detail
+          : `${a.provider_id}/${(a.model || '').replace('claude-', '')}`;
         parts.push(node(id, x, y, L.stageW, L.nodeH, a.display_name || id,
-          `${a.provider_id}/${(a.model || '').replace('claude-', '')}`,
-          a.state === 'disabled' ? 'disabled' : a.state));
+          sub, a.state, null,
+          `${a.state} — ${a.detail}\n${a.provider_id}/${a.model}`));
       }
     });
     if (i < STAGES.length - 1)
@@ -224,20 +238,26 @@ function renderMap() {
   /* supporting systems */
   parts.push(`<text class="mlabel" x="190" y="292">SUPPORTING SYSTEMS</text>`);
   const md = g.market_data;
-  parts.push(node('market', 190, 300, 128, 50, md.source, 'data source',
-    md.stale_keys ? 'error' : 'ok',
-    `<text class="ns" x="10" y="43">${esc(cut('via ' + md.fallbacks, 22))}</text>`));
+  parts.push(node('market', 190, 300, 128, 50, md.source, md.detail,
+    md.state,
+    `<text class="ns" x="10" y="43">${esc(cut('via ' + md.fallbacks, 22))}</text>`,
+    `${md.state} — ${md.detail}`));
   const hs = k => (h[k] || {}).ok || 'never ran';
-  const hc = k => hs(k) === 'ok' ? 'ok' : 'error';
+  const hc = k => (h[k] || {}).state || 'idle';
   parts.push(node('watcher', 450, 300, 128, 50, 'watcher', hs('watcher'),
     hc('watcher'),
-    `<text class="ns" x="10" y="43">breach → sell review</text>`));
+    `<text class="ns" x="10" y="43">breach → sell review</text>`,
+    `watcher is ${hs('watcher')} — last checked ${
+      (h.watcher || {}).checked_at ? ago((h.watcher || {}).checked_at) : 'never'}`));
   parts.push(node('book', 640, 300, 128, 50, 'desk.db',
     `${g.book.positions} pos · ${g.book.open_orders} orders`, 'ok',
-    `<text class="ns" x="10" y="43">the book</text>`));
+    `<text class="ns" x="10" y="43">the book</text>`,
+    'the durable record — written only by the repository layer'));
   parts.push(node('custodian', 830, 300, 128, 50, 'custodian', hs('custodian'),
     hc('custodian'),
-    `<text class="ns" x="10" y="43">fills · TTLs · expiry</text>`));
+    `<text class="ns" x="10" y="43">fills · TTLs · expiry</text>`,
+    `custodian is ${hs('custodian')} — last checked ${
+      (h.custodian || {}).checked_at ? ago((h.custodian || {}).checked_at) : 'never'}`));
 
   /* venues group with MCP status inside each broker */
   const gx = 1000, gy = 262, gw = 148;
@@ -260,7 +280,7 @@ function renderMap() {
       : `<text class="nm" x="10" y="46" fill="var(--dim)">${mcpTxt}</text>`;
     parts.push(node(b.broker, gx + 10, y, 128, 54, b.broker,
       `${b.adapter} · ${b.open_orders} open`,
-      b.adapter === 'mcp' ? 'ok' : 'det', mcp));
+      b.state || 'idle', mcp, `${b.state} — ${b.detail}`));
   });
 
   /* edges between bands */
@@ -495,6 +515,12 @@ function renderStrip() {
     pill('data', (GRAPH && GRAPH.market_data.source) || '—') +
     pill('paper cash', fmt(cash, 0));
 }
+async function refreshGraph() {
+  try {
+    GRAPH = await api('/api/agent-graph');
+    renderMap(); renderStrip();
+  } catch {}
+}
 async function refresh() {
   [OVERVIEW, GRAPH, PROVIDERS, APPROVALS, SCHEDULES] = await Promise.all([
     api('/api/overview'), api('/api/agent-graph'), api('/api/providers'),
@@ -518,6 +544,9 @@ function connectSSE() {
   es.onmessage = ev => {
     try {
       const e = JSON.parse(ev.data);
+      // agent-run changes drive the glow — repaint the map alone (cheap),
+      // work-item transitions warrant a full refresh
+      if (e.kind === 'agents') return refreshGraph();
       if (['awaiting_approval', 'approved', 'rejected', 'expired', 'done',
            'failed', 'executing'].includes(e.to_state)) refresh();
     } catch {}

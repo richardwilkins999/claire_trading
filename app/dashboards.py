@@ -54,24 +54,36 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
     sse_clients: list = []
     sse_lock = threading.Lock()
 
+    def _push(payload):
+        with sse_lock:
+            clients = list(sse_clients)
+        for q in clients:
+            try:
+                q.put_nowait(payload)
+            except _queue.Full:
+                pass
+
     def sse_poller():
         row = conn.execute("SELECT COALESCE(MAX(id),0) m FROM events").fetchone()
         last = row["m"]
+        agent_sig = None
         while True:
             time.sleep(sse_interval)
             try:
-                rows = [dict(r) for r in conn.execute(
-                    "SELECT * FROM events WHERE id > ? ORDER BY id LIMIT 100",
-                    (last,))]
-                for r in rows:
+                for r in [dict(r) for r in conn.execute(
+                        "SELECT * FROM events WHERE id > ? ORDER BY id"
+                        " LIMIT 100", (last,))]:
                     last = r["id"]
-                    with sse_lock:
-                        clients = list(sse_clients)
-                    for q in clients:
-                        try:
-                            q.put_nowait(r)
-                        except _queue.Full:
-                            pass
+                    _push(r)
+                # agent activity drives the "glowing while running" state —
+                # work-item events alone are far too coarse for that
+                sig = tuple(conn.execute(
+                    "SELECT agent_id, status FROM agent_runs"
+                    " WHERE started_at > ? ORDER BY agent_id, id",
+                    (int(clock()) - 900,)).fetchall())
+                if agent_sig is not None and sig != agent_sig:
+                    _push({"kind": "agents"})
+                agent_sig = sig
             except Exception:                    # noqa: BLE001
                 pass
 
@@ -519,17 +531,35 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
             return out
 
         def _agent_graph(self):
+            """Every node carries a status the UI renders identically:
+            active (running now) · ok (configured and proven) · warn
+            (degraded) · error (cannot run / failing) · idle (configured,
+            never run) · disabled."""
             now = int(clock())
+            provs = {p["id"]: p for p in self._providers()}
             agents = {}
             for a in self._agents():
                 lr = a["last_run"] or {}
+                p = provs.get(a["provider_id"], {})
                 active = (lr.get("status") == "running" and
                           now - (lr.get("started_at") or 0) < 600)
-                state = ("disabled" if not a["enabled"] else
-                         "active" if active else
-                         "error" if lr.get("status") == "error" else
-                         "ok" if lr else "idle")
-                agents[a["id"]] = {**a, "state": state}
+                if not a["enabled"]:
+                    state, detail = "disabled", "disabled"
+                elif active:
+                    state, detail = "active", "running now"
+                elif p.get("key_ref") and not p.get("key_present"):
+                    # configured on paper but cannot actually run
+                    state, detail = "error", f"{p['key_ref']} not set"
+                elif not p.get("enabled", 1):
+                    state, detail = "error", f"provider {a['provider_id']} off"
+                elif lr.get("status") == "error":
+                    state, detail = "error", (lr.get("error") or
+                                              "last run failed")[:60]
+                elif lr:
+                    state, detail = "ok", "ready"
+                else:
+                    state, detail = "idle", "never run"
+                agents[a["id"]] = {**a, "state": state, "detail": detail}
             brokers = []
             for acct in conn.execute("SELECT * FROM broker_accounts"):
                 (open_orders,) = conn.execute(
@@ -541,24 +571,39 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                     (acct["broker"],)).fetchone()
                 refs = json.loads(mcp["env_refs"]) if mcp else []
                 creds = bool(refs) and all(env.get(r) for r in refs)
+                if mcp and refs and not creds:
+                    bstate, bdetail = "warn", "MCP configured, creds missing"
+                elif creds:
+                    bstate, bdetail = "ok", "MCP live"
+                else:
+                    bstate, bdetail = "idle", "paper sim (by design)"
                 brokers.append({
                     "broker": acct["broker"], "account": acct["id"],
                     "environment": acct["environment"],
                     "cash": repo.cash_balance(acct["id"]) / 1e6,
                     "ccy": acct["base_currency"],
                     "open_orders": open_orders,
+                    "state": bstate, "detail": bdetail,
                     "adapter": "mcp" if creds else "paper-sim",
                     "mcp": {"command": " ".join(json.loads(mcp["command"])),
                             "env_refs": refs,
                             "creds_present": creds,
                             "note": mcp["note"]} if mcp else None})
+            # a guard that stopped reporting is an ERROR, not a shrug: a dead
+            # safety net is worse than no safety net (v1 lesson §19.10)
+            state_of = {"ok": "ok", "degraded": "warn", "stale": "error"}
             health = {}
-            for r in conn.execute(
-                    "SELECT service, ok, MAX(checked_at) AS checked_at"
-                    " FROM service_health GROUP BY service"):
-                health[r["service"]] = {
-                    "ok": "stale" if clock() - r["checked_at"] > 1800
-                    else r["ok"], "checked_at": r["checked_at"]}
+            for svc in ("watcher", "custodian"):
+                r = conn.execute(
+                    "SELECT ok, MAX(checked_at) AS checked_at FROM"
+                    " service_health WHERE service=?", (svc,)).fetchone()
+                if r is None or r["checked_at"] is None:
+                    health[svc] = {"ok": "never ran", "state": "idle",
+                                   "checked_at": None}
+                    continue
+                ok = "stale" if clock() - r["checked_at"] > 1800 else r["ok"]
+                health[svc] = {"ok": ok, "state": state_of.get(ok, "warn"),
+                               "checked_at": r["checked_at"]}
             (open_orders,) = conn.execute(
                 "SELECT COUNT(*) FROM orders WHERE status IN"
                 " ('pending_session','placed','partially_filled')").fetchone()
@@ -570,15 +615,22 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                 " state='awaiting_approval'").fetchone()
             primary = market.primary_name() if hasattr(market, "primary_name") \
                 else None
+            stale = len(market._stale_keys) if hasattr(market, "_stale_keys") \
+                else 0
             return {"agents": agents, "edges": PIPELINE_EDGES,
                     "brokers": brokers, "claire_api": api_ok(),
                     "mcps": self._mcps(), "health": health,
                     "book": {"open_orders": open_orders,
                              "positions": positions, "pending": pending},
-                    "market_data": {"source": primary or "yahoo",
-                                    "fallbacks": "tradingview · ecb",
-                                    "stale_keys": len(market._stale_keys)
-                                    if hasattr(market, "_stale_keys") else 0}}
+                    "market_data": {
+                        "source": primary or "yahoo",
+                        "fallbacks": "tradingview · ecb",
+                        "stale_keys": stale,
+                        "state": "warn" if stale else "ok",
+                        "detail": (f"{stale} symbol(s) served stale"
+                                   if stale else
+                                   ("keyed provider" if primary
+                                    else "free source"))}}
 
         def _exchange_info(self, exchange):
             cal = cal_or_default()
