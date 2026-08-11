@@ -220,7 +220,13 @@ def make_analyst(conn, agent_id, narratives, tool_builder, *,
     return node
 
 
-RECURSION_LIMIT = 60
+# LangGraph counts supersteps, so a tool round-trip is worth about two. The
+# analysts that finish cleanly use 4-11 model calls, so 30 leaves real
+# headroom while capping the runaway case — and every step costs a re-send
+# of the whole transcript, so the ceiling is a cost control, not just a
+# safety net.
+RECURSION_LIMIT = 30
+STEP_BUDGET = 8                       # what we tell the agent it has
 
 
 def _run_agent(conn, agent_id, state, system, task, tools, agent_factory, env):
@@ -228,6 +234,15 @@ def _run_agent(conn, agent_id, state, system, task, tools, agent_factory, env):
     leaves us the work done so far. Hitting the limit used to raise and throw
     the whole analyst away (the SBUX fundamental run cost 40 steps and
     produced nothing) — now it degrades to a partial report."""
+    # Say the budget out loud, before anything dispatches. An agent that knows
+    # it has roughly eight calls spends them on distinct sources instead of
+    # re-querying one that came back empty, and finishes on evidence rather
+    # than on the ceiling.
+    task = (f"{task}\n\nYou have roughly {STEP_BUDGET} tool calls for this. "
+            f"Spend them on DIFFERENT sources rather than retrying one that "
+            f"failed or returned nothing, and stop as soon as you can support "
+            f"a view. An honest report that names its gaps beats an exhausted "
+            f"search.")
     if agent_factory is not None:
         return agent_factory(agent_id, state, system, task, tools)
     from langchain.agents import create_agent

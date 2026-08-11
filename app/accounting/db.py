@@ -52,6 +52,14 @@ def connect(path):
 MIGRATIONS = [
     "ALTER TABLE work_items ADD COLUMN archived_at INTEGER",
     "ALTER TABLE work_items ADD COLUMN trigger TEXT",
+    # price is per MODEL, not per provider: billing haiku at sonnet's rate
+    # overstated the news agent threefold while billing opus at sonnet's rate
+    # understated the arbiter fivefold, and both errors fed the same total
+    "ALTER TABLE provider_models ADD COLUMN cost_per_1k_in REAL",
+    "ALTER TABLE provider_models ADD COLUMN cost_per_1k_out REAL",
+    # cached input is billed at a different rate from fresh input
+    "ALTER TABLE agent_runs ADD COLUMN cache_write_tokens INTEGER",
+    "ALTER TABLE agent_runs ADD COLUMN cache_read_tokens INTEGER",
 ]
 
 

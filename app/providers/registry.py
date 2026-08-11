@@ -74,6 +74,51 @@ def assign(conn, agent_id, provider_id, model, *, fallback_provider_id=None,
          ts or int(time.time()), agent_id))
 
 
+# Anthropic list prices per 1k tokens, keyed by model. The providers table
+# carries ONE price per provider, which is wrong the moment a desk runs more
+# than one model on it — as this one always has. Rates as published
+# 2026-06-24; the sonnet-5 introductory rate lapses 2026-08-31, so re-check
+# these when a bill looks off. provider_models rows override this table.
+MODEL_PRICES = {
+    "claude-fable-5":   (0.010, 0.050),
+    "claude-mythos-5":  (0.010, 0.050),
+    "claude-opus-5":    (0.005, 0.025),
+    "claude-opus-4-8":  (0.005, 0.025),
+    "claude-opus-4-7":  (0.005, 0.025),
+    "claude-opus-4-6":  (0.005, 0.025),
+    "claude-sonnet-5":  (0.003, 0.015),
+    "claude-sonnet-4-6": (0.003, 0.015),
+    "claude-haiku-4-5": (0.001, 0.005),
+}
+CACHE_WRITE_MULTIPLIER = 1.25            # 5-minute TTL; a 1h write costs 2x
+CACHE_READ_MULTIPLIER = 0.10
+
+
+def price_for(conn, provider_id, model):
+    """(in, out) per 1k tokens. A per-model row wins, then the published
+    table, then the provider's blanket rate as a last resort."""
+    row = conn.execute(
+        "SELECT cost_per_1k_in, cost_per_1k_out FROM provider_models"
+        " WHERE provider_id=? AND model=?", (provider_id, model)).fetchone()
+    if row and row["cost_per_1k_in"] is not None:
+        return row["cost_per_1k_in"], row["cost_per_1k_out"] or 0.0
+    if model in MODEL_PRICES:
+        return MODEL_PRICES[model]
+    p = provider_row(conn, provider_id)
+    return (p["cost_per_1k_in"] or 0.0), (p["cost_per_1k_out"] or 0.0)
+
+
+def _cache_tokens(usage, which):
+    """Cache counts arrive under two different spellings depending on whether
+    langchain handed us the raw Anthropic usage or its own normalised
+    metadata — check both rather than guess which layer we are behind."""
+    raw = usage.get(f"cache_{which}_input_tokens")     # Anthropic's spelling
+    if raw:
+        return int(raw)
+    details = usage.get("input_token_details") or {}   # langchain's
+    return int(details.get(f"cache_{which}") or details.get(which) or 0)
+
+
 class MeterCallback(BaseCallbackHandler):
     """Every LLM call lands in agent_runs: tokens, cost, latency (§1.6)."""
 
@@ -81,9 +126,8 @@ class MeterCallback(BaseCallbackHandler):
         self.conn, self.agent_id, self.work_item_id = conn, agent_id, work_item_id
         a = agent_row(conn, agent_id)
         self.provider_id, self.model = a["provider_id"], a["model"]
-        p = provider_row(conn, self.provider_id)
-        self.cost_in = p["cost_per_1k_in"] or 0.0
-        self.cost_out = p["cost_per_1k_out"] or 0.0
+        self.cost_in, self.cost_out = price_for(conn, self.provider_id,
+                                                self.model)
         self._start = None
         self.run_id = None
 
@@ -111,15 +155,27 @@ class MeterCallback(BaseCallbackHandler):
                     meta = getattr(g, "message", None)
                     meta = getattr(meta, "usage_metadata", None)
                     if meta:
-                        usage = {"input_tokens": meta.get("input_tokens", 0),
-                                 "output_tokens": meta.get("output_tokens", 0)}
+                        usage = dict(meta)      # keep input_token_details too
         tin = usage.get("input_tokens", usage.get("prompt_tokens", 0)) or 0
         tout = usage.get("output_tokens", usage.get("completion_tokens", 0)) or 0
-        cost = tin / 1000 * self.cost_in + tout / 1000 * self.cost_out
+        cwrite = _cache_tokens(usage, "creation")
+        cread = _cache_tokens(usage, "read")
+        # The two layers disagree about what input_tokens means: Anthropic
+        # reports the UNCACHED remainder, langchain's usage_metadata reports
+        # the total. Adding the cached spans to a figure that already contains
+        # them would bill the same tokens twice, so derive the fresh count
+        # instead of trusting either convention.
+        fresh = tin - cwrite - cread if tin >= cwrite + cread else tin
+        tin = fresh + cwrite + cread            # store the true prompt size
+        cost = (fresh / 1000 * self.cost_in
+                + cwrite / 1000 * self.cost_in * CACHE_WRITE_MULTIPLIER
+                + cread / 1000 * self.cost_in * CACHE_READ_MULTIPLIER
+                + tout / 1000 * self.cost_out)
         self.conn.execute(
             "UPDATE agent_runs SET ended_at=?, tokens_in=?, tokens_out=?,"
-            " cost_usd=?, status='ok' WHERE id=?",
-            (int(time.time()), tin, tout, cost, self.run_id))
+            " cache_write_tokens=?, cache_read_tokens=?, cost_usd=?,"
+            " status='ok' WHERE id=?",
+            (int(time.time()), tin, tout, cwrite, cread, cost, self.run_id))
 
     def on_llm_error(self, error, **kw):
         self.conn.execute(
@@ -136,6 +192,13 @@ def supports_temperature(model: str) -> bool:
                         model or "")
 
 
+# Below this, a prompt is too short for Anthropic to cache at all — the
+# marker is accepted and silently ignored. haiku-4-5 needs 4k, so the news
+# agent only benefits once its context has grown; the others cache sooner.
+CACHE_MINIMUM_TOKENS = {"claude-opus-5": 512, "claude-fable-5": 512,
+                        "claude-haiku-4-5": 4096}
+
+
 def build_llm(conn, provider_id, model, temperature=None, max_tokens=None,
               env=os.environ):
     from langchain.chat_models import init_chat_model
@@ -150,6 +213,14 @@ def build_llm(conn, provider_id, model, temperature=None, max_tokens=None,
         if not key:
             raise ProviderError(
                 f"provider {provider_id!r} needs env {p['api_key_ref']} — not set")
+        # Automatic prompt caching. A research loop re-sends the whole
+        # conversation on every step, so by step 10 we were paying full price
+        # ten times for the same prefix — 93% of all tokens billed were input.
+        # The top-level marker caches the last cacheable block, which walks
+        # forward as the transcript grows: each step writes at 1.25x and the
+        # next reads at 0.1x. Anthropic prices this per model and it needs no
+        # placement decisions from us, unlike per-block cache_control.
+        kw["model_kwargs"] = {"cache_control": {"type": "ephemeral"}}
         return init_chat_model(model, model_provider="anthropic", api_key=key, **kw)
     if p["kind"] == "openai_compatible":
         return init_chat_model(model, model_provider="openai",
