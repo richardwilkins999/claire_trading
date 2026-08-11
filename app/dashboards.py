@@ -145,6 +145,9 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                     return self._send(200, self._mcps())
                 if u.path == "/api/data-sources":
                     return self._send(200, self._data_sources())
+                if u.path == "/api/watchlist":
+                    return self._send(200, [dict(r) for r in conn.execute(
+                        "SELECT * FROM watchlist ORDER BY exchange, ticker")])
                 if u.path == "/api/events":
                     return self._sse()
                 if u.path == "/api/fx":
@@ -231,6 +234,21 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                     return self._upsert_mcp(body)
                 if u.path == "/api/account-action":
                     return self._account_action(body)
+                if u.path == "/api/watchlist":
+                    t = str(body.get("ticker", "")).upper().strip()
+                    ex = str(body.get("exchange", "")).upper().strip()
+                    if not t or not ex:
+                        return self._send(400, {"error":
+                                                "ticker and exchange required"})
+                    if body.get("action") == "remove":
+                        conn.execute("DELETE FROM watchlist WHERE ticker=?"
+                                     " AND exchange=?", (t, ex))
+                    else:
+                        conn.execute(
+                            "INSERT OR REPLACE INTO watchlist (ticker,"
+                            " exchange, note, added_at) VALUES (?,?,?,?)",
+                            (t, ex, body.get("note"), int(clock())))
+                    return self._send(200, {"ok": True})
                 self._send(404, {"error": "not found"})
             except Exception as e:               # noqa: BLE001
                 traceback.print_exc()
@@ -534,9 +552,31 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                             "env_refs": refs,
                             "creds_present": creds,
                             "note": mcp["note"]} if mcp else None})
+            health = {}
+            for r in conn.execute(
+                    "SELECT service, ok, MAX(checked_at) AS checked_at"
+                    " FROM service_health GROUP BY service"):
+                health[r["service"]] = {
+                    "ok": "stale" if clock() - r["checked_at"] > 1800
+                    else r["ok"], "checked_at": r["checked_at"]}
+            (open_orders,) = conn.execute(
+                "SELECT COUNT(*) FROM orders WHERE status IN"
+                " ('pending_session','placed','partially_filled')").fetchone()
+            (positions,) = conn.execute(
+                "SELECT COUNT(DISTINCT instrument_id) FROM lots"
+                " WHERE qty_remaining > 0").fetchone()
+            (pending,) = conn.execute(
+                "SELECT COUNT(*) FROM work_items WHERE"
+                " state='awaiting_approval'").fetchone()
+            primary = market.primary_name() if hasattr(market, "primary_name") \
+                else None
             return {"agents": agents, "edges": PIPELINE_EDGES,
                     "brokers": brokers, "claire_api": api_ok(),
-                    "market_data": {"source": "Yahoo Finance",
+                    "mcps": self._mcps(), "health": health,
+                    "book": {"open_orders": open_orders,
+                             "positions": positions, "pending": pending},
+                    "market_data": {"source": primary or "yahoo",
+                                    "fallbacks": "tradingview · ecb",
                                     "stale_keys": len(market._stale_keys)
                                     if hasattr(market, "_stale_keys") else 0}}
 

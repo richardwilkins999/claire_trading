@@ -167,6 +167,12 @@ CREATE TABLE IF NOT EXISTS service_health ( -- every guard publishes its own
   detail TEXT
 );
 
+CREATE TABLE IF NOT EXISTS watchlist (      -- names YOU always want screened
+  ticker TEXT NOT NULL, exchange TEXT NOT NULL,
+  note TEXT, added_at INTEGER NOT NULL,
+  PRIMARY KEY (ticker, exchange)
+);
+
 CREATE TABLE IF NOT EXISTS chat_threads (   -- Claire's conversation memory —
   thread TEXT PRIMARY KEY,                  -- survives service restarts (§17)
   messages TEXT NOT NULL,                   -- JSON list of {role, content}

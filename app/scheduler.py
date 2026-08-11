@@ -34,6 +34,10 @@ DEFAULTS = [
                     "days": [1, 2, 3, 4, 5, 6, 7]}),
     ("watcher", "Price alerts on open positions", "dashboards",
      {"type": "interval", "minutes": 10}),
+    ("event_scan", "Intraday unusual-volume sweep on open markets "
+     "(no LLM; wakes the pipeline only on a real move)", "claire-api",
+     {"type": "interval", "minutes": 60, "require_open": True,
+      "threshold": 3.0, "max_runs": 1}),
 ]
 
 
@@ -47,6 +51,7 @@ JOB_INVOKES = {
     "custodian": {"agent": None, "then": None},
     "reconcile": {"agent": None, "then": None},
     "watcher": {"agent": None, "then": "sell_review pipeline on breach"},
+    "event_scan": {"agent": None, "then": "full pipeline on a volume spike"},
 }
 
 

@@ -9,13 +9,31 @@
   <div id="approvals" class="muted">loading…</div>
 
   <h2>The desk — click any component to inspect &amp; configure</h2>
-  <div class="lane"><span class="llabel">pipeline · scheduled screen →
-    LLMs propose → human decides</span>
-    <div class="desk" id="pipeline"></div></div>
-  <div class="lane"><span class="llabel">deterministic money path · no LLM</span>
-    <div class="desk" id="services"></div></div>
-  <div class="lane"><span class="llabel">venues &amp; data</span>
-    <div class="desk" id="venues"></div></div>
+  <div class="deskmap" id="deskmap">
+    <svg class="wires" id="wires"></svg>
+    <div class="lane" style="margin-bottom:1.4rem">
+      <span class="llabel">entry points — what starts a run</span>
+      <div class="row" id="entries" style="align-items:stretch"></div>
+    </div>
+    <div class="lane" style="margin-bottom:1.4rem">
+      <span class="llabel">pipeline — LLMs propose, you decide</span>
+      <div class="desk" id="pipeline"></div>
+    </div>
+    <div class="lane">
+      <span class="llabel">execution, venues &amp; the book</span>
+      <div class="row" id="venues" style="align-items:flex-start"></div>
+    </div>
+  </div>
+  <div class="legend">
+    <span><i style="border-color:var(--blue)"></i>run flow</span>
+    <span><i style="border-color:var(--good);border-top-style:dashed"></i>
+      fills &amp; book writes</span>
+    <span><i style="border-color:var(--warn)"></i>human approval</span>
+    <span><i style="border-color:var(--purple);border-top-style:dotted"></i>
+      MCP link</span>
+    <span><i style="border-color:var(--warn);border-top-style:dashed"></i>
+      breach → sell review</span>
+  </div>
 
   <h2>Accounts &amp; system</h2>
   <div class="tiles" id="tiles"></div>
@@ -39,7 +57,7 @@ const typing = () => ['INPUT', 'TEXTAREA', 'SELECT']
 /* ── approvals with live estimates (v1 pattern) ──────────────────── */
 function renderApprovals() {
   const el = document.getElementById('approvals');
-  if (typing() && el.querySelector('input')) return;  // never yank the field
+  if (typing() && el.querySelector('input')) return;
   const cards = APPROVALS.cards;
   el.innerHTML = cards.length === 0
     ? `<p class="muted">Nothing awaiting approval. Launch research from
@@ -126,9 +144,8 @@ async function act(id, action, token, sell) {
   refresh();
 }
 
-/* ── the desk: staged pipeline strip (v1 pattern) ─────────────────── */
+/* ── the desk map ────────────────────────────────────────────────── */
 const STAGES = [
-  // scheduled scans start here; prepare rides along (instrument resolution)
   {label: 'screen · prepare', agents: ['screener'], det: ['prepare']},
   {label: 'analyze', agents: ['fundamental', 'technical', 'news']},
   {label: 'debate', agents: ['bull', 'bear']},
@@ -139,7 +156,7 @@ const STAGES = [
 
 function acard(id, title, sub, cls, sub2) {
   return `<div class="acard ${cls} ${selected === id ? 'sel' : ''}"
-    onclick="openDrawer('${id}')"><b>${title}</b><br>
+    id="n-${id}" onclick="openDrawer('${id}')"><b>${title}</b><br>
     <span class="sub">${sub}</span>${sub2 ?
       `<br><span class="sub">${sub2}</span>` : ''}</div>`;
 }
@@ -150,46 +167,142 @@ function until(t) {
   if (s < 172800) return 'in ' + Math.round(s / 3600) + 'h';
   return 'in ' + Math.round(s / 86400) + 'd';
 }
-function nextScan() {
-  const times = SCHEDULES.filter(j => j.job.startsWith('analysis_') &&
-    j.enabled && j.next_run_at).map(j => j.next_run_at);
-  return times.length ? 'next scan ' + until(Math.min(...times)) : 'no scans';
+function jobNext(prefix) {
+  const t = SCHEDULES.filter(j => j.job.startsWith(prefix) && j.enabled &&
+    j.next_run_at).map(j => j.next_run_at);
+  return t.length ? until(Math.min(...t)) : 'disabled';
 }
+
 function renderDesk() {
-  const g = GRAPH;
+  const g = GRAPH, h = g.health || {};
+
+  /* entry points — everything that can start a run */
+  document.getElementById('entries').innerHTML = `
+    <div class="entrycard human" id="n-you" style="flex:1">
+      <b>👤 You — Markets</b>
+      <span>pick a stock → send to pipeline</span></div>
+    <div class="entrycard" id="n-sched" style="flex:1"
+      onclick="location.href='/agents'" title="opens Agents &amp; Schedule">
+      <b>🗓 Schedule</b>
+      <span>region scans ${jobNext('analysis_')} · event scan
+        ${jobNext('event_scan')}</span></div>
+    <div class="entrycard" id="n-claire" style="flex:1"
+      onclick="openDrawer('claire_chat')">
+      <b>💬 Claire</b>
+      <span>"run the pipeline on NVDA" · answers from the book</span></div>
+    <div class="entrycard" id="n-loop" style="flex:1"
+      onclick="openDrawer('watcher')">
+      <b>🔔 Watcher loop-back</b>
+      <span>stop breach → sell_review re-enters here</span></div>`;
+
+  /* pipeline */
   document.getElementById('pipeline').innerHTML = STAGES.map(s =>
     `<div class="stage"><div class="slabel">${s.label}</div>` +
     (s.agents || []).map(id => {
       const a = g.agents[id];
       return a ? acard(id, a.display_name || id,
         `${a.provider_id}/${(a.model || '').replace('claude-', '')}`,
-        a.state, id === 'screener' ? nextScan() : null) : '';
+        a.state, id === 'screener' ? 'next ' + jobNext('analysis_') : null)
+        : '';
     }).join('') +
     (s.det || []).map(id => acard(id, id,
       id === 'gate' ? 'human token ⏸' : 'no LLM', 'det')).join('') +
     '</div>').join('<div class="sep">›</div>');
 
-  const h = OVERVIEW.health || {};
-  const svc = (id, sub, state, sub2) => acard(id, id, sub, state, sub2);
-  document.getElementById('services').innerHTML = [
-    svc('watcher', (h.watcher || {}).ok || 'never ran',
+  /* venues, custodian, book, watcher */
+  const mcpFor = b => (g.mcps || []).find(m => m.broker === b.broker);
+  document.getElementById('venues').innerHTML = `
+    <div style="flex:2">
+      <div class="slabel" style="margin-bottom:.3rem">venues</div>
+      <div class="row">${g.brokers.map(b => {
+        const m = mcpFor(b);
+        return `<div>${acard(b.broker, b.broker,
+          `${b.adapter} · ${b.open_orders} open`,
+          b.mcp && b.mcp.creds_present ? 'ok' : 'det',
+          `${fmt(b.cash, 0)} ${b.ccy}`)}
+          ${m ? `<div class="mcpchip ${m.creds_present ? '' : 'off'}"
+            id="n-mcp-${m.id}" onclick="openDrawer('mcp:${m.id}')"
+            title="${esc(m.command.join(' '))}">
+            ⚙ mcp ${m.creds_present ? '●' : '○'} ${esc(m.id)}</div>` : ''}
+          </div>`;
+      }).join('')}</div>
+    </div>
+    <div style="flex:1">
+      <div class="slabel" style="margin-bottom:.3rem">async back-half</div>
+      ${acard('custodian', 'custodian',
+        (h.custodian || {}).ok || 'never ran',
+        (h.custodian || {}).ok === 'ok' ? 'ok' : 'error',
+        'fills · TTLs · expiry')}
+    </div>
+    <div style="flex:1">
+      <div class="slabel" style="margin-bottom:.3rem">the book</div>
+      <div class="booknode" id="n-book" onclick="openDrawer('book')">
+        <b>desk.db</b><br><span class="sub">${g.book.positions} positions ·
+        ${g.book.open_orders} open orders</span></div>
+      <div style="margin-top:.4rem">${acard('watcher', 'watcher',
+        (h.watcher || {}).ok || 'never ran',
         (h.watcher || {}).ok === 'ok' ? 'ok' : 'error',
-        'breach → sell_review'),
-    svc('custodian', (h.custodian || {}).ok || 'never ran',
-        (h.custodian || {}).ok === 'ok' ? 'ok' : 'error'),
-    (() => { const a = g.agents.claire_chat; return a ? acard('claire_chat',
-      'Claire chat', `${a.provider_id}/${(a.model || '')
-      .replace('claude-', '')}`, a.state) : ''; })(),
-  ].join('');
+        'breach → sell review')}</div>
+    </div>
+    <div style="flex:1">
+      <div class="slabel" style="margin-bottom:.3rem">market data</div>
+      ${acard('market', g.market_data.source,
+        'fallbacks: ' + g.market_data.fallbacks,
+        g.market_data.stale_keys ? 'error' : 'ok',
+        g.market_data.stale_keys ? g.market_data.stale_keys + ' stale' : null)}
+    </div>`;
 
-  document.getElementById('venues').innerHTML =
-    g.brokers.map(b => acard(b.broker, b.broker,
-      `${b.adapter} · ${b.open_orders} open · ${fmt(b.cash, 0)} ${b.ccy}`,
-      b.mcp && b.mcp.creds_present ? 'ok' : 'det')).join('') +
-    acard('market', 'market data',
-      'Yahoo' + (g.market_data.stale_keys ? ' · stale!' : ''),
-      g.market_data.stale_keys ? 'error' : 'ok');
+  requestAnimationFrame(drawWires);
 }
+
+/* measured SVG connectors — layout stays HTML, so the map survives
+   roster changes (no hand-placed coordinates like v1's diagram) */
+function drawWires() {
+  const map = document.getElementById('deskmap');
+  const svg = document.getElementById('wires');
+  if (!map || !svg) return;
+  const base = map.getBoundingClientRect();
+  svg.setAttribute('viewBox', `0 0 ${base.width} ${base.height}`);
+  const at = (id, sx, sy) => {
+    const el = document.getElementById('n-' + id);
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return [r.left - base.left + r.width * sx,
+            r.top - base.top + r.height * sy];
+  };
+  const paths = [];
+  const link = (a, b, cls, bow = 40) => {
+    if (!a || !b) return;
+    const [x1, y1] = a, [x2, y2] = b;
+    paths.push(`<path class="wire ${cls}" d="M ${x1} ${y1}
+      C ${x1} ${y1 + bow}, ${x2} ${y2 - bow}, ${x2} ${y2}"/>`);
+  };
+  const entryTarget = at('screener', 0.5, 0);
+  ['you', 'sched', 'claire', 'loop'].forEach(id =>
+    link(at(id, 0.5, 1), entryTarget, id === 'you' ? 'flow' : 'flow'));
+  // approval: you → gate (amber, the only path to execution)
+  link(at('you', 0.9, 1), at('gate', 0.5, 0), 'approve', 60);
+  // execute → each venue
+  (GRAPH.brokers || []).forEach(b =>
+    link(at('execute', 0.5, 1), at(b.broker, 0.5, 0), 'flow'));
+  // mcp links: broker → its mcp chip
+  (GRAPH.mcps || []).forEach(m => {
+    if (m.broker) link(at(m.broker, 0.5, 1), at('mcp-' + m.id, 0.5, 0),
+                       'mcp', 8);
+  });
+  // custodian: venues → custodian → book ; record → book
+  link(at('custodian', 0, 0.5), at('book', 0.5, 0), 'info', 20);
+  link(at('recorder', 0.5, 1), at('book', 0.5, 0), 'info', 50);
+  // book → watcher → back up to the entry lane
+  link(at('book', 0.5, 1), at('watcher', 0.5, 0), 'info', 10);
+  const w = at('watcher', 1, 0.5), l = at('loop', 0.5, 1);
+  if (w && l) paths.push(`<path class="wire loop" d="M ${w[0]} ${w[1]}
+    C ${w[0] + 70} ${w[1]}, ${l[0] + 40} ${l[1] + 30}, ${l[0]} ${l[1] + 4}"/>`);
+  // market data feeds the analysts and the watcher
+  link(at('market', 0.5, 0), at('technical', 0.5, 1), 'info', -40);
+  svg.innerHTML = paths.join('');
+}
+window.addEventListener('resize', () => requestAnimationFrame(drawWires));
 
 /* ── drawer: inspect, query, configure ───────────────────────────── */
 function closeDrawer() {
@@ -206,6 +319,37 @@ async function openDrawer(id) {
   document.getElementById('d-title').textContent = id;
   const body = document.getElementById('d-body');
   const g = GRAPH;
+
+  if (id.startsWith('mcp:')) {
+    const m = (g.mcps || []).find(x => x.id === id.slice(4));
+    document.getElementById('d-title').textContent = 'MCP · ' + m.id;
+    body.innerHTML = `<p>serves broker <b>${esc(m.broker || '—')}</b>
+      ${m.enabled ? '' : '<span class="pill bad">disabled</span>'}</p>
+      <p class="muted">command<br><code>${esc(m.command.join(' '))}</code></p>
+      <p>credentials (${m.env_refs.join(', ') || 'none needed'}):
+        <b class="${m.creds_present ? 'ok' : 'bad'}">
+        ${m.env_refs.length === 0 ? 'none needed'
+          : m.creds_present ? 'present'
+          : 'missing ' + m.missing_refs.join(', ')}</b></p>
+      <p class="muted">${esc(m.note || '')}</p>
+      <p class="muted">While credentials are missing this venue runs on the
+        deterministic paper sim. Edit servers on
+        <a href="/providers">Providers &amp; MCP</a>.</p>`;
+    return;
+  }
+  if (id === 'book') {
+    document.getElementById('d-title').textContent = 'desk.db — the book';
+    body.innerHTML = `<p>${g.book.positions} open positions ·
+      ${g.book.open_orders} live orders · ${g.book.pending} awaiting your
+      approval</p>
+      <p class="muted">The durable business record: immutable executions,
+      FIFO lots, every cash movement. Written only by the repository layer —
+      no LLM has ever written a row here. Views (v_positions, v_share_pl,
+      v_broker_metrics, v_thesis_outcomes) are derived, never stored.</p>
+      <p><a href="/portfolio">Portfolio</a> ·
+         <a href="/trading">Trading runs</a></p>`;
+    return;
+  }
   if (g.agents[id]) {
     const a = g.agents[id];
     document.getElementById('d-title').textContent =
@@ -230,8 +374,7 @@ async function openDrawer(id) {
       <div class="row"><input id="d-q" style="flex:1" placeholder=
         "e.g. what did you conclude last, and why?"
         onkeydown="if(event.key==='Enter')askAgent('${id}')">
-        <button class="ghost" onclick="askAgent('${id}')">Ask</button>
-      </div>
+        <button class="ghost" onclick="askAgent('${id}')">Ask</button></div>
       <p class="muted" style="font-size:.72rem">answers come from this
         agent's own model + prompt, grounded in its run history — for
         desk-wide questions use <a href="/claire">Claire</a></p>
@@ -271,38 +414,40 @@ async function openDrawer(id) {
         creds (${b.mcp.env_refs.join(', ') || 'none'}):
         <b class="${b.mcp.creds_present ? 'ok' : 'bad'}">
         ${b.mcp.creds_present ? 'present' : 'missing'}</b><br>
-        ${esc(b.mcp.note)}</p>` : ''}`;
+        ${esc(b.mcp.note)}</p>` : ''}
+      <p><a href="/portfolio">top up / withdraw on Portfolio</a></p>`;
     return;
   }
   const desc = {
     prepare: 'Resolves the instrument: currency from the exchange suffix ' +
-      '(GBp→GBP), venue lot size, desk.db registration. Deterministic — ' +
-      'every entry point gets identical instruments.',
+      '(GBp→GBP), venue lot size, desk.db registration. Deterministic.',
     gate: 'interrupt() — the run suspends here until you present the ' +
       'single-use token from an approval card. No LLM can pass it.',
     execute: 'Pre-placement guards, then session-aware order placement. ' +
-      'Before any venue sees an order: positive quantity required, cash ' +
-      'must cover cost + estimated fee, risk caps checked, exits capped ' +
-      'at held quantity. No LLM in this file.',
+      'Positive quantity required, cash must cover cost + fee, risk caps ' +
+      'checked, exits capped at held quantity. No LLM in this file.',
     watcher: 'LLM-free stop-loss monitor: session-aware, escalating ' +
-      're-alerts, launches sell-reviews. Publishes its own health.',
-    custodian: 'Fills, order TTLs, approval expiry, orphan checks, ' +
-      'reconciliation. Runs in-process (5 min) + systemd timer.',
-    market: 'Yahoo Finance module. All access isolated in one file; ' +
-      'last-good cache serves stale values under rate limits.'};
-  body.innerHTML = `<p class="muted">${desc[id] || ''}</p>`;
+      're-alerts, launches sell_reviews back into the pipeline. Publishes ' +
+      'its own health so a dead safety net is visible.',
+    custodian: 'The asynchronous back half of execute: polls venues for ' +
+      'fills and writes them to the book, places queued orders at the open, ' +
+      'expires approvals at the gate, cancels orders past TTL, flags drift.',
+    market: 'Market data chain. Configure sources on Providers & MCP.'};
+  body.innerHTML = `<p class="muted">${desc[id] || ''}</p>` +
+    (id === 'watcher' || id === 'custodian' ? `<p><a href="/agents">
+      change its schedule</a></p>` : '');
 }
 async function askAgent(id) {
   const q = document.getElementById('d-q').value.trim();
   if (!q) return;
   const out = document.getElementById('d-answer');
-  out.innerHTML = '<p class="muted">asking Claire…</p>';
+  out.innerHTML = '<p class="muted">asking…</p>';
   try {
     const r = await fetch('/api/agent-ask', {method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({agent_id: id, text: q})});
     const reader = r.body.getReader(); const dec = new TextDecoder();
-    let buf = '', text = '';
+    let buf = '';
     for (;;) {
       const {done, value} = await reader.read();
       if (done) break;
@@ -311,8 +456,8 @@ async function askAgent(id) {
       for (const line of lines) {
         if (!line.trim()) continue;
         let ev; try { ev = JSON.parse(line); } catch { continue; }
-        if (ev.kind === 'text') { text = ev.text;
-          out.innerHTML = `<pre style="white-space:pre-wrap">${esc(text)}</pre>`; }
+        if (ev.kind === 'text')
+          out.innerHTML = `<pre style="white-space:pre-wrap">${esc(ev.text)}</pre>`;
         if (ev.kind === 'error')
           out.innerHTML = `<p class="bad">${esc(ev.text)}</p>`;
       }
@@ -368,7 +513,7 @@ function connectSSE() {
     } catch {}
   };
 }
-refresh().then(() => {                 // deep-link from the Agents page
+refresh().then(() => {
   const want = localStorage.getItem('openDrawer');
   if (want) { localStorage.removeItem('openDrawer'); openDrawer(want); }
 });

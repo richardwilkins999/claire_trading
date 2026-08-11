@@ -250,6 +250,10 @@ function pick(i) {
       <label><input type="checkbox" id="t-rsi" onchange="loadChart(true)">
         RSI</label>
       <span style="flex:1"></span>
+      <button class="ghost" id="wl-btn" onclick="toggleWatch('${ex}')"
+        title="watchlisted names always enter the screener's universe">
+        ${onWatchlist(sel.ticker || sel.symbol, ex) ? '★ watching'
+          : '☆ watchlist'}</button>
       <button onclick="sendToPipeline('${ex}')">Send to pipeline</button>
     </div>
     <div id="chart"><p class="muted">loading…</p></div>
@@ -277,6 +281,27 @@ async function loadChart(rerenderOnly) {
     rsi: document.getElementById('t-rsi').checked, height: 440});
 }
 window.addEventListener('resize', () => loadChart(true));
+let WATCHLIST = [];
+function onWatchlist(ticker, ex) {
+  return WATCHLIST.some(w => w.ticker === (ticker || '').toUpperCase() &&
+    w.exchange === ex);
+}
+async function loadWatchlist() {
+  try { WATCHLIST = await api('/api/watchlist'); } catch { WATCHLIST = []; }
+}
+async function toggleWatch(ex) {
+  const ticker = (sel.ticker || sel.symbol).toUpperCase();
+  const on = onWatchlist(ticker, ex);
+  try {
+    await api('/api/watchlist', {ticker, exchange: ex,
+      note: sel.name || null, action: on ? 'remove' : 'add'});
+    await loadWatchlist();
+    document.getElementById('wl-btn').textContent =
+      on ? '☆ watchlist' : '★ watching';
+    toast(on ? 'removed from watchlist'
+      : 'watchlisted — the screener will always consider it');
+  } catch (e) { toast(e.message, false); }
+}
 async function sendToPipeline(ex) {
   try {
     const r = await api('/api/run', {ticker: sel.ticker || sel.symbol,
@@ -286,5 +311,6 @@ async function sendToPipeline(ex) {
   } catch (e) { toast(e.message, false); }
 }
 
+loadWatchlist();
 loadStrip().then(() => pickExchange('NASDAQ'));
 </script>

@@ -93,6 +93,86 @@ def quotes(symbols: list[str], *, _client=None) -> dict:
     return out
 
 
+# ── multi-factor discovery scans (screener phase 1) ─────────────────────
+# Market-cap sort has no signal — it proposes the same mega-caps forever.
+# These three presets are orthogonal: strength, something-is-happening-now,
+# and mean-reversion. Each returns WHY a name surfaced, with numbers.
+FACTOR_COLUMNS = ["name", "description", "close", "change", "volume",
+                  "market_cap_basic", "relative_volume_10d_calc",
+                  "price_52_week_high", "price_52_week_low", "Perf.1M",
+                  "Perf.W", "RSI", "sector", "Recommend.All"]
+
+SCANS = {
+    "momentum": {
+        "label": "near 52w high, 1-month strength",
+        "filter": [{"left": "Perf.1M", "operation": "greater", "right": 5},
+                   {"left": "RSI", "operation": "in_range",
+                    "right": [50, 72]}],
+        "sort": ("Perf.1M", "desc")},
+    "unusual_volume": {
+        "label": "unusual volume vs 10-day average",
+        "filter": [{"left": "relative_volume_10d_calc", "operation":
+                    "greater", "right": 2}],
+        "sort": ("relative_volume_10d_calc", "desc")},
+    "oversold": {
+        "label": "oversold large-cap (mean reversion)",
+        "filter": [{"left": "RSI", "operation": "less", "right": 32},
+                   {"left": "market_cap_basic", "operation": "greater",
+                    "right": 5_000_000_000}],
+        "sort": ("market_cap_basic", "desc")},
+}
+
+
+def factor_scan(exchange: str, preset: str, count: int = 12, *,
+                min_volume=500_000, min_mcap=1_000_000_000,
+                _client=None) -> list[dict]:
+    """One scan preset against one exchange. Common stock only — preferred
+    lines and depositary receipts (JPM/PM …) are not tradeable theses."""
+    if exchange not in MARKETS:
+        raise TradingViewError(f"no TradingView mapping for {exchange}")
+    if preset not in SCANS:
+        raise TradingViewError(f"unknown scan preset {preset!r}")
+    market, code = MARKETS[exchange]
+    scan = SCANS[preset]
+    client = _client or httpx.Client(
+        timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+    sort_by, sort_order = scan["sort"]
+    body = {
+        "filter": [
+            {"left": "exchange", "operation": "equal", "right": code},
+            {"left": "volume", "operation": "greater", "right": min_volume},
+            {"left": "market_cap_basic", "operation": "greater",
+             "right": min_mcap},
+            {"left": "typespecs", "operation": "has", "right": ["common"]},
+            *scan["filter"]],
+        "columns": FACTOR_COLUMNS,
+        "sort": {"sortBy": sort_by, "sortOrder": sort_order},
+        "range": [0, count]}
+    r = client.post(f"https://scanner.tradingview.com/{market}/scan", json=body)
+    r.raise_for_status()
+    out = []
+    for row in r.json().get("data") or []:
+        d = dict(zip(FACTOR_COLUMNS, row.get("d", [])))
+        ticker = str(d.get("name") or "")
+        if not ticker or "/" in ticker:         # preferred/rights lines
+            continue
+        hi = d.get("price_52_week_high")
+        close = d.get("close")
+        off_high = ((close - hi) / hi * 100) if hi and close else None
+        out.append({
+            "ticker": ticker, "exchange": exchange,
+            "name": d.get("description"), "price": close,
+            "change_pct": d.get("change"), "volume": d.get("volume"),
+            "mcap": d.get("market_cap_basic"),
+            "rel_volume": d.get("relative_volume_10d_calc"),
+            "off_52w_high_pct": off_high,
+            "perf_1m": d.get("Perf.1M"), "perf_w": d.get("Perf.W"),
+            "rsi": d.get("RSI"), "sector": d.get("sector"),
+            "tv_rating": rating_label(d.get("Recommend.All")),
+            "scan": preset, "scan_label": scan["label"]})
+    return out
+
+
 def recommendations(exchange: str, count: int = 30, *, _client=None) -> dict:
     if exchange not in MARKETS:
         raise TradingViewError(f"no TradingView mapping for {exchange}")

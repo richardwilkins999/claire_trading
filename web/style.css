@@ -72,6 +72,35 @@ pre { background:var(--bg); border:1px solid var(--line); border-radius:8px;
 .mchip .dot.open { color:var(--good); } .mchip .dot.closed { color:var(--bad); }
 .mchip .dot.lunch { color:var(--warn); }
 
+/* connected desk map */
+.deskmap { position:relative; }
+.deskmap svg.wires { position:absolute; inset:0; width:100%; height:100%;
+  pointer-events:none; z-index:0; }
+.deskmap .col { position:relative; z-index:1; }
+.wire { fill:none; stroke-width:1.6; }
+.wire.flow { stroke:var(--blue); }
+.wire.info { stroke:var(--good); stroke-dasharray:5 4; }
+.wire.approve { stroke:var(--warn); stroke-width:2.2; }
+.wire.mcp { stroke:var(--purple); stroke-dasharray:2 3; }
+.wire.loop { stroke:var(--warn); stroke-dasharray:6 4; }
+.legend { display:flex; gap:1rem; flex-wrap:wrap; font-size:.7rem;
+  color:var(--muted); margin-top:.4rem; }
+.legend i { display:inline-block; width:18px; height:0; vertical-align:middle;
+  border-top-width:2px; border-top-style:solid; margin-right:.3rem; }
+.mcpchip { font-size:.62rem; color:var(--purple);
+  border:1px dashed var(--purple); border-radius:6px; padding:.05rem .3rem;
+  margin-top:.2rem; display:inline-block; cursor:pointer; }
+.mcpchip.off { color:var(--dim); border-color:var(--line); }
+.entrycard { background:var(--panel); border:1px solid var(--line);
+  border-left:3px solid var(--blue); border-radius:8px; padding:.4rem .6rem;
+  font-size:.75rem; margin-bottom:.4rem; }
+.entrycard.human { border-left-color:var(--warn); }
+.entrycard b { display:block; }
+.entrycard span { color:var(--dim); font-size:.68rem; }
+.booknode { background:var(--panel2); border:1px solid var(--good);
+  border-radius:10px; padding:.5rem .7rem; font-size:.75rem;
+  text-align:center; }
+
 /* staged pipeline strip (v1 trading.html pattern) */
 .desk { display:flex; gap:.4rem; align-items:stretch; overflow-x:auto;
   padding:.4rem 0; }

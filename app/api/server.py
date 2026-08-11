@@ -149,12 +149,41 @@ def start_scheduler(conn, repo, desk, market, custodian):
         conn.execute("VACUUM INTO ?", (str(backup),))
         return {**report, "backup": str(backup)}
 
+    def run_event_scan(spec):
+        """Cheap hourly sweep across every open market; wakes the pipeline
+        only when relative volume crosses the threshold (no LLM in the scan
+        itself)."""
+        from ..screener import event_scan
+        cal = sessions.load(conn) or None
+        now = datetime.now(timezone.utc)
+        open_ex = [ex for region in REGIONS.values() for ex in region
+                   if sessions.is_open(ex, now, cal)]
+        if not open_ex:
+            return {"skipped": "all markets closed"}
+        held = {r["ticker"] for r in conn.execute(
+            "SELECT DISTINCT i.ticker FROM lots l JOIN instruments i"
+            " ON i.id=l.instrument_id WHERE l.qty_remaining > 0")}
+        hits = event_scan(conn, open_ex, held,
+                          threshold=float(spec.get("threshold", 3.0)))
+        started = []
+        for c in hits[:int(spec.get("max_runs", 1))]:
+            inst = Instrument(id=f"{c['exchange']}:{c['ticker']}",
+                              ticker=c["ticker"], exchange=c["exchange"],
+                              currency=CCY[c["exchange"]],
+                              lot_size=100 if c["exchange"] == "SGX" else 1)
+            started.append({"work_item": desk.start_run(inst),
+                            "ticker": c["ticker"], "exchange": c["exchange"],
+                            "reason": f"rel-vol {c['rel_volume']:.1f}x"})
+        return {"scanned": open_ex, "hits": len(hits), "started": started,
+                "picker": "event scan (unusual volume)"}
+
     sched = scheduler.Scheduler(conn, {
         "custodian": lambda spec: custodian.run_once(),
         "reconcile": run_reconcile,
         "analysis_asia": run_analysis,
         "analysis_eu": run_analysis,
         "analysis_us": run_analysis,
+        "event_scan": run_event_scan,
     })
     sched.start()
     return sched
