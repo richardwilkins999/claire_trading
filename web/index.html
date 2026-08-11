@@ -476,9 +476,7 @@ async function pickRun(agentId, idx, workItem) {
       <p class="muted" style="font-size:.7rem;margin-top:-.3rem">the
         conclusion — and the only part passed to the next agent</p>
       ${n.report ? `<div class="narr">${mdLite(n.report)}</div>`
-        : `<p class="muted">No separate report file for this run${
-          n.legacy ? ' (recorded before reports and working notes were split'
-          + ' — the conclusion is inside the working notes below)' : ''}.</p>`}
+        : '<p class="muted">This run left no report.</p>'}
       ${n.transcript ? `<details style="margin-top:.6rem">
         <summary class="muted">working notes — how it got there
           (not passed on)</summary>
