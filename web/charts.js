@@ -78,6 +78,38 @@ function drawChart(el, data, opts) {
   };
   if (opts.sma20) s += line(sma(c, 20), '#e0b050', y);
   if (opts.sma50) s += line(sma(c, 50), '#4da3ff', y);
+
+  /* your own levels: average cost, thesis stop/target, watcher alert */
+  (opts.levels || []).forEach(lv => {
+    if (lv.value == null || lv.value < lo || lv.value > hi) return;
+    const yy = y(lv.value);
+    s += `<line x1="${padL}" y1="${yy}" x2="${W - padR}" y2="${yy}"
+      stroke="${lv.color}" stroke-width="1.2"
+      stroke-dasharray="${lv.dash || '6 4'}"/>
+      <text x="${padL + 4}" y="${yy - 3}" fill="${lv.color}"
+        font-size="9.5">${lv.label}</text>`;
+  });
+
+  /* your fills: where you actually bought or sold */
+  (opts.fills || []).forEach(f => {
+    if (f.price == null || !ts_ || !ts_.length) return;
+    let k = 0, best = Infinity;
+    idx.forEach((i, kk) => {
+      const d = Math.abs((ts_[i] || 0) - f.ts);
+      if (d < best) { best = d; k = kk; }
+    });
+    if (f.price < lo || f.price > hi) return;
+    const cx = x(k), cy = y(f.price);
+    const buy = f.side === 'buy';
+    const col = buy ? 'var(--good)' : 'var(--bad)';
+    s += buy
+      ? `<path d="M ${cx} ${cy - 7} L ${cx + 6} ${cy + 4} L ${cx - 6} ${cy + 4} Z"
+          fill="${col}" stroke="#06090f" stroke-width="1"><title>bought ${
+          f.qty} @ ${f.price}</title></path>`
+      : `<path d="M ${cx} ${cy + 7} L ${cx + 6} ${cy - 4} L ${cx - 6} ${cy - 4} Z"
+          fill="${col}" stroke="#06090f" stroke-width="1"><title>sold ${
+          f.qty} @ ${f.price}</title></path>`;
+  });
   if (opts.rsi) {
     const r = rsi(c);
     [30, 70].forEach(g => s += `<line x1="${padL}" y1="${yr(g)}"

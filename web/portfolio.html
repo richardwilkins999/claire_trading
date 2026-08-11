@@ -1,41 +1,250 @@
 <meta charset="utf-8"><title>Claire — Portfolio</title>
 <link rel="stylesheet" href="/style.css"><script src="/nav.js"></script>
+<script src="/charts.js"></script>
 <script>nav('/portfolio')</script>
-<main><h1>Portfolio</h1><div id="out">loading…</div>
-<h2>Alerts</h2><div id="alerts"></div></main>
+<main>
+  <h1>Portfolio</h1>
+  <div class="statstrip" id="strip"></div>
+  <div class="exchcols" id="cols"></div>
+  <div id="empty"></div>
+
+  <h2>Accounts</h2>
+  <div id="accounts"></div>
+
+  <h2>Closed in the last 30 days</h2>
+  <div id="closed"></div>
+
+  <h2>Price alerts</h2>
+  <div id="alerts"></div>
+</main>
 <script>
+let DATA = null, RANGE = {}, CHARTS = {}, clockTimer = null;
+const DEFAULT_RANGE = '5d';          // one week, as asked
+const RANGES = [['5d', '1W'], ['1mo', '1M'], ['3mo', '3M'], ['1y', '1Y']];
+const typing = () => ['INPUT', 'SELECT']
+  .includes((document.activeElement || {}).tagName);
+
 async function refresh() {
-  const p = await api('/api/portfolio');
-  document.getElementById('out').innerHTML = p.accounts.map(a => `
-    <div class="card"><h3>${a.id}
-      <span class="pill">${a.broker}</span></h3>
-    <p>cash <b>${fmt(a.cash)}</b> ${a.ccy} ·
-       realized P&amp;L <b class="${a.realized_pl >= 0 ? 'ok' : 'bad'}">
-       ${fmt(a.realized_pl)}</b></p>
-    <div class="row" style="margin:.4rem 0">
-      <input id="amt-${a.id}" type="number" min="0" placeholder="amount"
-        style="width:110px">
-      <button class="ghost" onclick="acct('${a.id}','deposit')">Top up</button>
-      <button class="ghost" onclick="acct('${a.id}','withdraw')">Withdraw
-        </button>
+  if (typing()) return;
+  DATA = await api('/api/portfolio');
+  renderStrip(); renderCols(); renderRest();
+  startClocks();
+}
+
+function renderStrip() {
+  const d = DATA;
+  const unreal = Object.values(d.exchanges).flat()
+    .reduce((s, p) => s + (p.unrealized_base || 0), 0);
+  const equity = d.accounts.reduce((s, a) => s + a.equity, 0);
+  const pill = (l, v, cls) =>
+    `<div class="stat"><span>${l}</span><b class="${cls || ''}">${v}</b></div>`;
+  document.getElementById('strip').innerHTML =
+    pill('positions', d.position_count) +
+    pill('market value', fmt(d.total_value)) +
+    pill('unrealized', (unreal >= 0 ? '+' : '') + fmt(unreal),
+         unreal >= 0 ? 'ok' : 'bad') +
+    pill('equity', fmt(equity)) +
+    pill('accounts', d.accounts.length);
+}
+
+function renderCols() {
+  const ex = DATA.exchanges;
+  const names = Object.keys(ex).sort();
+  document.getElementById('empty').innerHTML = names.length ? '' :
+    `<p class="muted">No open positions yet. When a thesis is approved on
+     <a href="/">Mission Control</a> and the order fills, the stock appears
+     here automatically — with its chart, your entry price and your stop.</p>`;
+  document.getElementById('cols').innerHTML = names.map(name => {
+    const items = ex[name];
+    const open = items[0].is_open;
+    return `<div class="exchcol">
+      <div class="exchhead">
+        <b>${esc(name)}</b>
+        <span>${open ? '<span class="pill ok">● open</span>'
+          : '<span class="pill bad">closed</span>'}
+          <span class="clk" data-tz="${esc(items[0].exchange)}"
+            id="clk-${esc(name)}"></span></span>
+      </div>
+      ${items.map(posCard).join('')}</div>`;
+  }).join('');
+  // charts load after the cards exist
+  Object.values(ex).flat().forEach(p => loadChart(p.instrument_id));
+}
+
+function pct(v) { return v == null ? '—' : (v >= 0 ? '+' : '') + fmt(v) + '%'; }
+
+function posCard(p) {
+  const m = p.market || {}, lv = p.levels || {};
+  const up = (p.unrealized_base || 0) >= 0;
+  const id = p.instrument_id;
+  const rng = RANGE[id] || DEFAULT_RANGE;
+  // where today's price sits inside the 52-week range
+  let bar = '';
+  if (m.week52_low != null && m.week52_high != null && m.price != null) {
+    const span = m.week52_high - m.week52_low || 1;
+    const at = Math.max(0, Math.min(100, (m.price - m.week52_low) / span * 100));
+    const cost = lv.avg_cost_native != null
+      ? Math.max(0, Math.min(100,
+          (lv.avg_cost_native - m.week52_low) / span * 100)) : null;
+    bar = `<div class="rangebar"><i style="left:${at}%"
+      title="now ${fmt(m.price)}"></i>${cost != null
+      ? `<u style="left:${cost}%" title="your average cost"></u>` : ''}</div>
+      <div class="rangelbl"><span>52w low ${fmt(m.week52_low)}</span>
+      <span>${fmt(m.week52_high)} high</span></div>`;
+  }
+  const volRatio = m.volume && m.avg_volume ? m.volume / m.avg_volume : null;
+  return `<div class="poscard ${p.is_open ? '' : 'closedmkt'}" id="pc-${id}">
+    <div class="poshead">
+      <div><span class="tk">${esc(p.ticker)}</span>
+        <span class="nm">${esc(m.name || p.instrument_id)}</span><br>
+        <span class="nm">${fmt(p.qty, 4)} shares · ${fmt(p.weight_pct, 1)}%
+          of book · held ${p.holding_days}d</span></div>
+      <div style="text-align:right">
+        <div class="pl ${up ? 'ok' : 'bad'}">${p.unrealized_base == null
+          ? '—' : (up ? '+' : '') + fmt(p.unrealized_base)}</div>
+        <span class="nm">${pct(p.unrealized_pct)} unrealized</span></div>
     </div>
-    ${a.positions.length === 0 ? '<p class="muted">no open positions</p>' :
-    `<table><tr><th>instrument</th><th>qty</th><th>cost basis</th>
-       <th>avg (incl fees)</th></tr>` +
-      a.positions.map(x => `<tr><td>${x.instrument_id}</td>
-        <td>${fmt(x.qty, 4)}</td><td>${fmt(x.cost + x.comm)}</td>
-        <td>${fmt((x.cost + x.comm) / x.qty)}</td></tr>`).join('') +
-      '</table>'}</div>`).join('');
-  const al = p.alerts;
-  document.getElementById('alerts').innerHTML = al.length === 0
-    ? '<p class="muted">no alert rules yet (auto down-8% rules appear with positions)</p>'
+
+    ${p.price_unavailable
+      ? `<p class="warn" style="font-size:.75rem">price unavailable right now
+         — the position and your cost basis below are still exact</p>`
+      : `<div class="mgrid">
+        <div><span>last</span><b>${fmt(m.price)} ${m.currency || ''}</b></div>
+        <div><span>today</span><b class="${(m.change_pct || 0) >= 0 ? 'ok'
+          : 'bad'}">${pct(m.change_pct)}</b></div>
+        <div><span>day range</span><b>${fmt(m.day_low)}–${fmt(m.day_high)}</b>
+          </div>
+        <div><span>volume</span><b>${fmtBig(m.volume)}${volRatio
+          ? ` <span class="${volRatio > 1.5 ? 'warn' : 'muted'}">${
+            fmt(volRatio, 1)}×</span>` : ''}</b></div>
+      </div>${bar}`}
+
+    <div class="yours">
+      you bought <b>${fmt(p.qty, 4)}</b> @ avg
+      <b>${fmt(lv.avg_cost_native)} ${p.currency}</b>
+      · cost <b>${fmt(p.cost_base)} ${p.base_currency}</b>
+      · fees ${fmt(p.commissions)}
+      ${p.realized_base ? ` · realized <b class="${p.realized_base >= 0
+        ? 'ok' : 'bad'}">${fmt(p.realized_base)}</b>` : ''}
+      ${lv.stop_loss ? `<br>thesis stop <b class="bad">${fmt(lv.stop_loss)}</b>`
+        : ''}${lv.take_profit ? ` · target <b class="ok">${
+        fmt(lv.take_profit)}</b>` : ''}${lv.alert ? ` · ${lv.alert_rule
+        } at <b class="warn">${fmt(lv.alert)}</b>` : ''}
+    </div>
+
+    <div class="row" style="justify-content:space-between;margin-bottom:.3rem">
+      <div class="tabs" style="margin:0">${RANGES.map(([r, lbl]) =>
+        `<button class="${rng === r ? 'on' : ''}"
+          onclick="setRange('${id}','${r}')">${lbl}</button>`).join('')}</div>
+      <span class="muted" style="font-size:.68rem" id="src-${id}"></span>
+    </div>
+    <div id="ch-${id}" style="min-height:150px"><p class="muted">loading
+      chart…</p></div>
+  </div>`;
+}
+
+async function loadChart(id, force) {
+  const rng = RANGE[id] || DEFAULT_RANGE;
+  const key = id + rng;
+  const el = document.getElementById('ch-' + id);
+  if (!el) return;
+  if (!CHARTS[key] || force) {
+    try {
+      const iv = rng === '5d' ? '60m' : '1d';
+      CHARTS[key] = await api(`/api/position-chart?instrument=` +
+        encodeURIComponent(id) + `&range=${rng}&interval=${iv}`);
+    } catch (e) {
+      el.innerHTML = `<p class="bad" style="font-size:.75rem">${esc(e.message)}</p>`;
+      return;
+    }
+  }
+  drawPosChart(id, CHARTS[key]);
+}
+function drawPosChart(id, d) {
+  const el = document.getElementById('ch-' + id);
+  if (!el || !d) return;
+  if (!d.chart) {
+    el.innerHTML = `<p class="muted" style="font-size:.75rem">chart
+      unavailable${d.chart_error ? ' — ' + esc(d.chart_error) : ''}</p>`;
+    return;
+  }
+  const lv = d.levels || {};
+  const levels = [];
+  if (lv.avg_cost_native != null) levels.push({value: lv.avg_cost_native,
+    color: 'var(--accent)', label: 'your avg cost', dash: '5 3'});
+  if (lv.stop_loss != null) levels.push({value: lv.stop_loss,
+    color: 'var(--bad)', label: 'thesis stop', dash: '7 4'});
+  if (lv.take_profit != null) levels.push({value: lv.take_profit,
+    color: 'var(--good)', label: 'target', dash: '7 4'});
+  if (lv.alert != null) levels.push({value: lv.alert,
+    color: 'var(--warn)', label: lv.alert_rule || 'alert', dash: '2 3'});
+  drawChart(el, d.chart, {height: 210, volume: true, sma20: false,
+    levels, fills: (d.fills || []).map(f => ({ts: f.ts, price: f.price_native,
+      side: f.side, qty: f.qty}))});
+  const s = document.getElementById('src-' + id);
+  if (s) s.textContent = 'source: ' + (d.chart.src || 'yahoo');
+}
+function setRange(id, r) {
+  RANGE[id] = r;
+  document.querySelectorAll(`#pc-${CSS.escape(id)} .tabs button`)
+    .forEach(b => b.className = b.textContent.trim() ===
+      RANGES.find(x => x[0] === r)[1] ? 'on' : '');
+  loadChart(id);
+}
+
+function startClocks() {
+  clearInterval(clockTimer);
+  const tick = () => {
+    for (const [name, items] of Object.entries(DATA.exchanges)) {
+      const el = document.getElementById('clk-' + name);
+      if (el) el.textContent = new Date().toLocaleTimeString('en-GB',
+        {timeZone: TZ[name] || 'UTC', hour: '2-digit', minute: '2-digit'});
+    }
+  };
+  tick(); clockTimer = setInterval(tick, 30000);
+}
+const TZ = {NASDAQ: 'America/New_York', NYSE: 'America/New_York',
+  LSE: 'Europe/London', SGX: 'Asia/Singapore', HKEX: 'Asia/Hong_Kong',
+  TSE: 'Asia/Tokyo', ASX: 'Australia/Sydney', XETRA: 'Europe/Berlin',
+  PARIS: 'Europe/Paris', NSE: 'Asia/Kolkata'};
+
+function renderRest() {
+  const d = DATA;
+  document.getElementById('accounts').innerHTML =
+    '<table><tr><th>account</th><th>cash</th><th>positions</th>' +
+    '<th>equity</th><th>realized P&amp;L</th><th></th></tr>' +
+    d.accounts.map(a => `<tr><td><b>${esc(a.id)}</b></td>
+      <td>${fmt(a.cash)} ${a.ccy}</td><td>${fmt(a.positions_value)}</td>
+      <td><b>${fmt(a.equity)}</b></td>
+      <td class="${a.realized_pl >= 0 ? 'ok' : 'bad'}">${fmt(a.realized_pl)}</td>
+      <td class="row"><input id="amt-${a.id}" type="number" placeholder="amount"
+        style="width:100px">
+        <button class="ghost" onclick="acct('${a.id}','deposit')">top up</button>
+        <button class="ghost" onclick="acct('${a.id}','withdraw')">withdraw
+        </button></td></tr>`).join('') + '</table>';
+
+  document.getElementById('closed').innerHTML = d.closed.length === 0
+    ? '<p class="muted">Nothing closed in the last 30 days.</p>'
+    : '<table><tr><th>ticker</th><th>qty</th><th>realized</th><th>held</th>' +
+      '<th>closed</th></tr>' + d.closed.map(c => `<tr>
+      <td>${esc(c.ticker)} <span class="muted">${esc(c.exchange)}</span></td>
+      <td>${fmt(c.qty, 4)}</td>
+      <td class="${c.realized >= 0 ? 'ok' : 'bad'}">${fmt(c.realized)}</td>
+      <td>${c.holding_days ?? '—'}d</td>
+      <td class="muted">${ts(c.closed_at)}</td></tr>`).join('') + '</table>';
+
+  document.getElementById('alerts').innerHTML = d.alerts.length === 0
+    ? `<p class="muted">No alert rules yet — every position automatically
+       gets a down-8%-from-entry rule once it fills.</p>`
     : '<table><tr><th>instrument</th><th>rule</th><th>threshold</th>' +
       '<th>fires today</th><th>last fired</th></tr>' +
-      al.map(a => `<tr><td>${a.instrument_id}</td><td>${a.rule}</td>
-        <td>${a.threshold}</td><td>${a.fire_count_today || 0}</td>
+      d.alerts.map(a => `<tr><td>${esc(a.instrument_id)}</td>
+        <td>${esc(a.rule)}</td><td>${a.threshold}</td>
+        <td>${a.fire_count_today || 0}</td>
         <td class="muted">${ts(a.last_fired_at)}</td></tr>`).join('') +
       '</table>';
 }
+
 async function acct(id, action) {
   const amount = Number(document.getElementById('amt-' + id).value);
   if (!amount || amount <= 0) return toast('enter an amount', false);
@@ -48,7 +257,21 @@ async function acct(id, action) {
   } catch (e) { toast(e.message, false); }
   refresh();
 }
-const typing = () => ['INPUT', 'SELECT']
-  .includes((document.activeElement || {}).tagName);
-refresh(); setInterval(() => { if (!typing()) refresh(); }, 15000);
+
+/* positions appear and disappear as trades fill — SSE tells us when */
+function connectSSE() {
+  const es = new EventSource('/api/events');
+  es.onmessage = ev => {
+    try {
+      const e = JSON.parse(ev.data);
+      if (['executing', 'done'].includes(e.to_state)) { CHARTS = {}; refresh(); }
+    } catch {}
+  };
+}
+refresh(); connectSSE(); setInterval(refresh, 60000);
+window.addEventListener('resize', () => {
+  if (DATA) Object.values(DATA.exchanges).flat()
+    .forEach(p => drawPosChart(p.instrument_id,
+      CHARTS[p.instrument_id + (RANGE[p.instrument_id] || DEFAULT_RANGE)]));
+});
 </script>

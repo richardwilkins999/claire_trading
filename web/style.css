@@ -117,6 +117,42 @@ pre { background:var(--bg); border:1px solid var(--line); border-radius:8px;
   color:var(--muted); margin-top:.5rem; }
 .legend i { display:inline-block; width:20px; height:0; vertical-align:middle;
   border-top-width:1.6px; margin-right:.35rem; }
+/* portfolio: exchanges side by side, a card (with chart) per holding */
+.exchcols { display:grid; gap:1rem; align-items:start;
+  grid-template-columns:repeat(auto-fit, minmax(430px, 1fr)); }
+.exchhead { display:flex; justify-content:space-between; align-items:baseline;
+  padding:.35rem .1rem .45rem; border-bottom:2px solid var(--line);
+  margin-bottom:.7rem; }
+.exchhead b { letter-spacing:.1em; font-size:.9rem; }
+.exchhead .clk { font-family:var(--mono); font-size:.75rem;
+  color:var(--dim); }
+.poscard { background:var(--panel); border:1px solid var(--line);
+  border-radius:12px; padding:.8rem .9rem; margin-bottom:.8rem; }
+.poscard.closedmkt { opacity:.82; }
+.poshead { display:flex; justify-content:space-between; align-items:baseline;
+  gap:.5rem; }
+.poshead .tk { font-size:1rem; font-weight:700; }
+.poshead .nm { color:var(--dim); font-size:.72rem; }
+.pl { font-size:1.05rem; font-weight:700; }
+.mgrid { display:grid; grid-template-columns:repeat(4, 1fr); gap:.4rem;
+  margin:.5rem 0; }
+.mgrid div { background:var(--bg); border:1px solid var(--line);
+  border-radius:7px; padding:.3rem .45rem; }
+.mgrid span { display:block; color:var(--dim); font-size:.62rem;
+  text-transform:uppercase; letter-spacing:.06em; }
+.mgrid b { font-size:.8rem; font-family:var(--mono); }
+.rangebar { position:relative; height:5px; background:#16233b;
+  border-radius:3px; margin:.45rem 0 .2rem; }
+.rangebar i { position:absolute; top:-3px; width:2px; height:11px;
+  background:var(--accent); }
+.rangebar u { position:absolute; top:-3px; width:2px; height:11px;
+  background:var(--warn); opacity:.8; }
+.rangelbl { display:flex; justify-content:space-between; color:var(--dim);
+  font-size:.62rem; font-family:var(--mono); }
+.yours { background:#0c1626; border:1px solid #1b2b3d; border-radius:8px;
+  padding:.4rem .55rem; margin:.5rem 0; font-size:.74rem;
+  font-family:var(--mono); }
+.yours b { color:var(--text); }
 .statstrip { display:flex; gap:.5rem; flex-wrap:wrap; margin-bottom:1rem; }
 .stat { background:var(--panel); border:1px solid var(--line);
   border-radius:8px; padding:.35rem .75rem; font-size:.8rem; }

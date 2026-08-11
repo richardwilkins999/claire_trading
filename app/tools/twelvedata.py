@@ -71,12 +71,53 @@ class Client:
                         "src": "twelvedata"}
         return out
 
-    RANGE_SIZE = {"1mo": 22, "3mo": 66, "6mo": 130, "1y": 260, "2y": 520}
+    def metrics(self, symbols: list[str]) -> dict:
+        """The full trader set from /quote — day OHLC, volume vs its average,
+        and the 52-week range. Batched: one request for many symbols."""
+        from .market import normalize_price
+        us = [s for s in symbols if _split(s)[1] is None]
+        out = {}
+        if not us:
+            return out
+        d = self._get("quote", symbol=",".join(us))
+        rows = d if len(us) > 1 else {us[0]: d}
+        for sym in us:
+            q = rows.get(sym) or rows.get(_split(sym)[0])
+            if not isinstance(q, dict) or q.get("close") is None:
+                continue
+            ccy = q.get("currency") or "USD"
+            ccy = "GBp" if ccy == "GBX" else ccy
+            num = lambda k: (normalize_price(q[k], ccy)[0]  # noqa: E731
+                             if q.get(k) not in (None, "") else None)
+            wk = q.get("fifty_two_week") or {}
+            w = lambda k: (normalize_price(wk[k], ccy)[0]   # noqa: E731
+                           if wk.get(k) not in (None, "") else None)
+            px, ccy2 = normalize_price(q["close"], ccy)
+            out[sym] = {
+                "symbol": sym, "name": q.get("name"), "price": px,
+                "currency": ccy2,
+                "change_pct": float(q["percent_change"])
+                if q.get("percent_change") else None,
+                "day_open": num("open"), "day_high": num("high"),
+                "day_low": num("low"),
+                "volume": int(q["volume"]) if q.get("volume") else None,
+                "avg_volume": int(q["average_volume"])
+                if q.get("average_volume") else None,
+                "week52_high": w("high"), "week52_low": w("low"),
+                "rsi": None, "mcap": None,
+                "is_market_open": q.get("is_market_open"),
+                "src": "twelvedata"}
+        return out
+
+    RANGE_SIZE = {"1d": 8, "5d": 40, "1mo": 22, "3mo": 66, "6mo": 130,
+                  "1y": 260, "2y": 520}
+    INTERVALS = {"1d": "1day", "1day": "1day", "1h": "1h", "60m": "1h",
+                 "30m": "30min", "15m": "15min", "5m": "5min"}
 
     def chart(self, yahoo_symbol: str, range_="6mo", interval="1d") -> dict:
         ticker, exch = _split(yahoo_symbol)
         params = {"symbol": ticker,
-                  "interval": "1day" if interval == "1d" else "5min",
+                  "interval": self.INTERVALS.get(interval, "1day"),
                   "outputsize": self.RANGE_SIZE.get(range_, 130)}
         if exch:
             params["exchange"] = exch
@@ -98,6 +139,20 @@ class Client:
                 "volume": [int(v.get("volume") or 0) for v in values],
                 "currency": (d.get("meta") or {}).get("currency"),
                 "src": "twelvedata"}
+
+    def symbol_search(self, q: str, limit: int = 12) -> list[dict]:
+        """Worldwide reference search — available on the free tier and not
+        billed as a quote credit."""
+        d = self._get("symbol_search", symbol=q, outputsize=limit)
+        out = []
+        for r in d.get("data") or []:
+            out.append({"symbol": r.get("symbol"),
+                        "name": r.get("instrument_name"),
+                        "exchange": r.get("exchange"),
+                        "currency": r.get("currency"),
+                        "country": r.get("country"),
+                        "type": r.get("instrument_type"), "src": "twelvedata"})
+        return out
 
     def fx(self, from_ccy: str, to_ccy: str) -> str:
         d = self._get("exchange_rate", symbol=f"{from_ccy}/{to_ccy}")

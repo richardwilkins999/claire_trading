@@ -157,6 +157,12 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                     return self._send(200, self._mcps())
                 if u.path == "/api/data-sources":
                     return self._send(200, self._data_sources())
+                if u.path == "/api/position-chart":
+                    from . import portfolio
+                    return self._send(200, portfolio.chart_for(
+                        conn, market, q.get("instrument", ""),
+                        range_=q.get("range", "5d"),
+                        interval=q.get("interval", "60m")))
                 if u.path == "/api/watchlist":
                     return self._send(200, [dict(r) for r in conn.execute(
                         "SELECT * FROM watchlist ORDER BY exchange, ticker")])
@@ -454,30 +460,13 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
             return {"cards": cards, "accounts": accounts}
 
         def _portfolio(self):
-            accounts = []
-            for a in conn.execute("SELECT * FROM broker_accounts"):
-                positions = []
-                for p in conn.execute(
-                        "SELECT l.instrument_id, i.ticker, i.exchange,"
-                        " SUM(CASE WHEN l.qty_opened<0 THEN -l.qty_remaining"
-                        "     ELSE l.qty_remaining END)/1e6 qty,"
-                        " SUM(l.qty_remaining*l.cost_per_share_base/1e12)"
-                        "  cost,"
-                        " SUM(l.commission_allocated)/1e6 comm"
-                        " FROM lots l JOIN instruments i ON"
-                        "  i.id=l.instrument_id"
-                        " WHERE l.account_id=? AND l.qty_remaining>0"
-                        " GROUP BY l.instrument_id", (a["id"],)):
-                    positions.append(dict(p))
-                accounts.append({
-                    "id": a["id"], "broker": a["broker"],
-                    "ccy": a["base_currency"],
-                    "cash": repo.cash_balance(a["id"]) / 1e6,
-                    "realized_pl": repo.realized_pl(a["id"]) / 1e6,
-                    "positions": positions})
-            alerts = [dict(r) for r in conn.execute(
+            from . import portfolio
+            data = portfolio.build(conn, market, clock=clock, cal=cal)
+            data["alerts"] = [dict(r) for r in conn.execute(
                 "SELECT * FROM price_alerts ORDER BY instrument_id")]
-            return {"accounts": accounts, "alerts": alerts}
+            for a in data["accounts"]:
+                a["realized_pl"] = repo.realized_pl(a["id"]) / 1e6
+            return data
 
         def _runs(self):
             rows = []

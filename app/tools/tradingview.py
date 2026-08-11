@@ -55,14 +55,18 @@ def _tv_ticker(yahoo_symbol: str) -> tuple[str, str, str]:
     return "america", yahoo_symbol, "USD"
 
 
-def quotes(symbols: list[str], *, _client=None) -> dict:
-    """Batch quotes via the scanner — the fallback when Yahoo rate-limits.
-    Delayed-ish but honest; series is empty (no sparkline from this source)."""
-    from decimal import Decimal
+QUOTE_COLS = ["name", "close", "change", "volume"]
+METRIC_COLS = ["name", "description", "close", "change", "volume",
+               "average_volume_10d_calc", "price_52_week_high",
+               "price_52_week_low", "high", "low", "open", "RSI",
+               "market_cap_basic", "currency"]
 
-    from .market import normalize_price
+
+def _scan_symbols(symbols, columns, _client=None) -> dict:
+    """yahoo symbol -> column dict, batched one request per TradingView
+    market. Works for every exchange the desk trades, no key required."""
     client = _client or httpx.Client(
-        timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        timeout=20, headers={"User-Agent": "Mozilla/5.0"})
     by_market: dict = {}
     for sym in symbols:
         mkt, ticker, ccy = _tv_ticker(sym)
@@ -73,24 +77,134 @@ def quotes(symbols: list[str], *, _client=None) -> dict:
             f"https://scanner.tradingview.com/{mkt}/scan",
             json={"filter": [{"left": "name", "operation": "in_range",
                               "right": [t for _, t, _ in entries]}],
-                  "columns": ["name", "close", "change", "volume"],
-                  "range": [0, len(entries) + 5]})
+                  "columns": columns, "range": [0, len(entries) + 5]})
         r.raise_for_status()
         got = {}
         for row in r.json().get("data", []):
-            d = dict(zip(["name", "close", "change", "volume"], row["d"]))
-            got[str(d["name"])] = d
+            d = dict(zip(columns, row.get("d", [])))
+            got[str(d.get("name"))] = d
         for sym, ticker, ccy in entries:
             d = got.get(ticker)
-            if d is None or d.get("close") is None:
-                continue
-            px, ccy2 = normalize_price(d["close"], ccy)
-            out[sym] = {"symbol": sym, "price": px, "currency": ccy2,
-                        "stale": False, "series": [],
-                        "change_pct": d.get("change"),
-                        "volume": d.get("volume"),
-                        "previous_close": None, "src": "tradingview"}
+            if d is not None:
+                out[sym] = (d, ccy)
     return out
+
+
+def quotes(symbols: list[str], *, _client=None) -> dict:
+    """Batch quotes via the scanner — the fallback when Yahoo rate-limits.
+    Delayed-ish but honest; series is empty (no sparkline from this source)."""
+    from .market import normalize_price
+    out = {}
+    for sym, (d, ccy) in _scan_symbols(symbols, QUOTE_COLS, _client).items():
+        if d.get("close") is None:
+            continue
+        px, ccy2 = normalize_price(d["close"], ccy)
+        out[sym] = {"symbol": sym, "price": px, "currency": ccy2,
+                    "stale": False, "series": [],
+                    "change_pct": d.get("change"), "volume": d.get("volume"),
+                    "previous_close": None, "src": "tradingview"}
+    return out
+
+
+def metrics(symbols: list[str], *, _client=None) -> dict:
+    """The trader metric set for any exchange: day OHLC, volume vs its
+    10-day average, and the 52-week range."""
+    from .market import normalize_price
+    out = {}
+    for sym, (d, ccy) in _scan_symbols(symbols, METRIC_COLS, _client).items():
+        if d.get("close") is None:
+            continue
+        native = d.get("currency") or ccy
+        conv = lambda v: (normalize_price(v, native)[0] if v is not None  # noqa: E731
+                          else None)
+        px, ccy2 = normalize_price(d["close"], native)
+        out[sym] = {"symbol": sym, "name": d.get("description"),
+                    "price": px, "currency": ccy2,
+                    "change_pct": d.get("change"),
+                    "day_open": conv(d.get("open")),
+                    "day_high": conv(d.get("high")),
+                    "day_low": conv(d.get("low")),
+                    "volume": d.get("volume"),
+                    "avg_volume": d.get("average_volume_10d_calc"),
+                    "week52_high": conv(d.get("price_52_week_high")),
+                    "week52_low": conv(d.get("price_52_week_low")),
+                    "rsi": d.get("RSI"), "mcap": d.get("market_cap_basic"),
+                    "src": "tradingview"}
+    return out
+
+
+# ── full exchange listings (replaces the Yahoo screener + its crumb dance) ─
+LISTING_COLS = ["name", "description", "close", "change", "volume",
+                "market_cap_basic", "price_earnings_ttm", "RSI", "sector"]
+SORT_FIELDS = {"price": "close", "mcap": "market_cap_basic",
+               "volume": "volume", "change": "change",
+               # backward-compatible aliases from the old Yahoo screener
+               "intradayprice": "close", "intradaymarketcap": "market_cap_basic"}
+
+
+def listing(exchange: str, sort: str = "mcap", start: int = 0,
+            count: int = 100, *, _client=None) -> dict:
+    if exchange not in MARKETS:
+        raise TradingViewError(f"no TradingView mapping for {exchange}")
+    market, code = MARKETS[exchange]
+    client = _client or httpx.Client(
+        timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+    r = client.post(
+        f"https://scanner.tradingview.com/{market}/scan",
+        json={"filter": [
+                  {"left": "exchange", "operation": "equal", "right": code},
+                  {"left": "typespecs", "operation": "has",
+                   "right": ["common"]}],
+              "columns": LISTING_COLS,
+              "sort": {"sortBy": SORT_FIELDS.get(sort, "market_cap_basic"),
+                       "sortOrder": "desc"},
+              "range": [start, start + count]})
+    r.raise_for_status()
+    data = r.json()
+    rows = []
+    for row in data.get("data") or []:
+        d = dict(zip(LISTING_COLS, row.get("d", [])))
+        ticker = str(d.get("name") or "")
+        if not ticker or "/" in ticker:
+            continue
+        suffix = next((s for s, (_m, e, _c) in SUFFIX_MARKET.items()
+                       if e == code), "")
+        rows.append({"ticker": ticker, "symbol": ticker + suffix,
+                     "name": d.get("description"), "price": d.get("close"),
+                     "change_pct": d.get("change"), "volume": d.get("volume"),
+                     "mcap": d.get("market_cap_basic"),
+                     "pe": d.get("price_earnings_ttm"), "rsi": d.get("RSI"),
+                     "sector": d.get("sector")})
+    return {"total": data.get("totalCount"), "rows": rows,
+            "src": "tradingview"}
+
+
+# ── benchmark indices (TVC feed via the global scanner) ──────────────────
+INDEX_TICKER = {"NASDAQ": "NASDAQ:IXIC", "NYSE": "TVC:NYA",
+                "LSE": "TVC:UKX", "SGX": "TVC:STI", "HKEX": "TVC:HSI",
+                "TSE": "TVC:NI225", "ASX": "TVC:AS51", "XETRA": "XETR:DAX",
+                "PARIS": "TVC:CAC40", "NSE": "TVC:NIFTY"}
+
+
+def index_quote(exchange: str, *, _client=None) -> dict | None:
+    tick = INDEX_TICKER.get(exchange)
+    if not tick:
+        return None
+    client = _client or httpx.Client(
+        timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+    r = client.post("https://scanner.tradingview.com/global/scan",
+                    json={"symbols": {"tickers": [tick]},
+                          "columns": ["name", "description", "close",
+                                      "change", "volume"]})
+    r.raise_for_status()
+    rows = r.json().get("data") or []
+    if not rows:
+        return None
+    d = dict(zip(["name", "description", "close", "change", "volume"],
+                 rows[0].get("d", [])))
+    return {"symbol": tick, "name": d.get("description"),
+            "level": d.get("close"), "change_pct": d.get("change"),
+            "day_volume": d.get("volume"), "src": "tradingview"}
 
 
 # ── multi-factor discovery scans (screener phase 1) ─────────────────────

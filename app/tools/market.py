@@ -249,81 +249,78 @@ class Market:
                     "open": q.get("open", []), "high": q.get("high", []),
                     "low": q.get("low", []), "close": q.get("close", []),
                     "volume": q.get("volume", []),
-                    "currency": res.get("meta", {}).get("currency")}
+                    "currency": res.get("meta", {}).get("currency"),
+                    "src": "yahoo"}
         except (KeyError, IndexError, TypeError) as e:
             raise MarketError(f"chart shape changed for {symbol}: {e}") from e
 
-    # ── search & screener ────────────────────────────────────────────────
+    # ── search & listings ────────────────────────────────────────────────
     def search(self, q: str) -> list[dict]:
-        data = self._get(f"{BASE}/v1/finance/search",
-                         {"q": q, "quotesCount": 10, "newsCount": 0})
-        return [{"symbol": r.get("symbol"), "name": r.get("shortname"),
-                 "exchange": r.get("exchDisp"), "type": r.get("quoteType")}
-                for r in data.get("quotes", [])]
-
-    def screener(self, exchange: str, sort="intradaymarketcap", start=0,
-                 count=100) -> dict:
-        code = SCREENER_EXCH.get(exchange)
-        if not code:
-            raise MarketError(f"no screener code for {exchange}")
+        """Twelve Data's reference search (free tier, worldwide, not billed
+        as a quote credit); Yahoo only if that is unavailable."""
+        if self._primary is not None and hasattr(self._primary,
+                                                 "symbol_search"):
+            try:
+                return self._cached(("search", q), 600,
+                                    lambda: self._primary.symbol_search(q))
+            except Exception:                   # noqa: BLE001 — fall through
+                pass
 
         def fetch():
-            body = {"size": min(count, 250), "offset": start,
-                    "sortField": sort, "sortType": "DESC",
-                    "quoteType": "EQUITY",
-                    "query": {"operator": "EQ",
-                              "operands": ["exchange", code]}}
-            if self._client is None:
-                self._client = httpx.Client(headers=UA, timeout=20,
-                                            follow_redirects=True)
-            r = self._client.post(
-                f"{BASE}/v1/finance/screener",
-                params={"crumb": self._get_crumb()}, json=body)
-            r.raise_for_status()
-            return r.json()
-        data = self._cached(("scr", exchange, sort, start, count), 600, fetch)
+            data = self._get(f"{BASE}/v1/finance/search",
+                             {"q": q, "quotesCount": 10, "newsCount": 0})
+            return [{"symbol": r.get("symbol"), "name": r.get("shortname"),
+                     "exchange": r.get("exchDisp"), "type": r.get("quoteType"),
+                     "src": "yahoo"}
+                    for r in data.get("quotes", [])]
+        return self._cached(("searchy", q), 600, fetch)
 
-        def num(r, key):
-            v = r.get(key)
-            return v.get("raw") if isinstance(v, dict) else v
-        try:
-            res = data["finance"]["result"][0]
-            rows = [{"symbol": r.get("symbol"), "name": r.get("shortName"),
-                     "price": num(r, "regularMarketPrice"),
-                     "change_pct": num(r, "regularMarketChangePercent"),
-                     "volume": num(r, "regularMarketVolume"),
-                     "mcap": num(r, "marketCap"),
-                     "pe": num(r, "trailingPE")}
-                    for r in res.get("quotes", [])]
-            return {"total": res.get("total"), "rows": rows}
-        except (KeyError, IndexError, TypeError) as e:
-            raise MarketError(f"screener shape changed: {e}") from e
+    def screener(self, exchange: str, sort="mcap", start=0,
+                 count=100) -> dict:
+        """Full exchange listing from the TradingView scanner — no key, no
+        cookie/crumb dance, and it carries more columns than Yahoo's did."""
+        from . import tradingview
+        return self._cached(
+            ("listing", exchange, sort, start, count), 300,
+            lambda: tradingview.listing(exchange, sort, start, count))
 
-    # ── exchange overview (index + breadth), best-effort per §1.7 ────────
-    def exchange_metrics(self, exchange: str) -> dict:
-        out = {"exchange": exchange, "index": None, "listings": None}
-        idx = INDEX.get(exchange)
-        if idx:
+    def metrics(self, symbols: list[str]) -> dict:
+        """Full trader metric set per symbol: day OHLC, volume vs average,
+        52-week range. Keyed provider where its plan covers the symbol,
+        TradingView (all exchanges) otherwise."""
+        from . import tradingview
+        out, rest = {}, list(symbols)
+        if self._primary is not None and hasattr(self._primary, "metrics"):
+            covered = tuple(s for s in symbols
+                            if getattr(self._primary, "supports",
+                                       lambda s: True)(s))
+            if covered:
+                try:                            # batched: one request for all
+                    out = dict(self._cached(
+                        ("m", covered), 300,
+                        lambda: self._primary.metrics(list(covered))))
+                except Exception:               # noqa: BLE001
+                    out = {}
+            rest = [s for s in symbols if s not in out]
+        if rest:
             try:
-                c = self.chart(idx, range_="1d", interval="5m")
-                closes = [x for x in c["close"] if x is not None]
-                vols = [v for v in c["volume"] if v]
-                prev = None
-                try:
-                    d = self.chart(idx, range_="5d", interval="1d")
-                    dc = [x for x in d["close"] if x is not None]
-                    prev = dc[-2] if len(dc) >= 2 else None
-                except MarketError:
-                    pass
-                if closes:
-                    last = closes[-1]
-                    out["index"] = {
-                        "symbol": idx, "level": round(last, 2),
-                        "change_pct": round((last - prev) / prev * 100, 2)
-                        if prev else None,
-                        "day_volume": sum(vols) or None}
-            except Exception as e:              # noqa: BLE001 — best-effort
-                out["index"] = {"symbol": idx, "error": str(e)[:120]}
+                out.update(self._cached(("tvm", tuple(rest)), 300,
+                                        lambda: tradingview.metrics(rest)))
+            except Exception:                   # noqa: BLE001
+                pass
+        return out
+
+    # ── exchange overview (index + listings), best-effort per §1.7 ───────
+    def exchange_metrics(self, exchange: str) -> dict:
+        from . import tradingview
+        out = {"exchange": exchange, "index": None, "listings": None,
+               "src": "tradingview"}
+        try:
+            out["index"] = self._cached(
+                ("idx", exchange), 120,
+                lambda: tradingview.index_quote(exchange))
+        except Exception as e:                  # noqa: BLE001 — best-effort
+            out["index"] = {"error": str(e)[:120]}
         try:
             out["listings"] = self.screener(exchange, count=1)["total"]
         except Exception:                       # noqa: BLE001
