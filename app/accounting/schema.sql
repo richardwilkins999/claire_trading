@@ -167,6 +167,17 @@ CREATE TABLE IF NOT EXISTS service_health ( -- every guard publishes its own
   detail TEXT
 );
 
+CREATE TABLE IF NOT EXISTS agent_reports (  -- the typed output each agent
+  id INTEGER PRIMARY KEY AUTOINCREMENT,     -- produced, so the record survives
+  work_item_id TEXT NOT NULL,               -- checkpoint loss (checkpoints.db
+  agent_id TEXT NOT NULL,                   -- is disposable by design, §2)
+  kind TEXT NOT NULL,                       -- analyst | debate | thesis
+  payload TEXT NOT NULL,                    -- JSON of the validated object
+  created_at INTEGER NOT NULL,
+  UNIQUE(work_item_id, agent_id)
+);
+CREATE INDEX IF NOT EXISTS idx_reports_wi ON agent_reports(work_item_id);
+
 CREATE TABLE IF NOT EXISTS watchlist (      -- names YOU always want screened
   ticker TEXT NOT NULL, exchange TEXT NOT NULL,
   note TEXT, added_at INTEGER NOT NULL,

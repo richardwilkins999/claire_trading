@@ -16,9 +16,16 @@ from .state import AnalystReport, DebateCase, Thesis
 def render_reports(state) -> str:
     parts = []
     for r in state.reports:
+        findings = "\n".join(f"- {f}" for f in (r.key_findings or []))
         parts.append(f"### {r.agent} — {r.signal} (conviction {r.conviction})\n"
-                     f"{r.summary}\nsources: {', '.join(r.sources) or 'n/a'}")
+                     f"{r.summary}"
+                     + (f"\nfindings:\n{findings}" if findings else "")
+                     + f"\nsources: {', '.join(r.sources) or 'n/a'}")
     return "\n\n".join(parts) or "(no analyst reports)"
+
+
+def render_trigger(state) -> str:
+    return f"Why this run exists: {state.trigger}\n" if state.trigger else ""
 
 
 def render_case(c) -> str:
@@ -32,14 +39,16 @@ def render_case(c) -> str:
 
 def bull_prompt(state) -> str:
     return (f"Ticker: {state.ticker} ({state.instrument.exchange}, "
-            f"{state.instrument.currency}). Run kind: {state.kind}.\n\n"
+            f"{state.instrument.currency}). Run kind: {state.kind}.\n"
+            f"{render_trigger(state)}\n"
             f"Analyst reports:\n{render_reports(state)}\n\n"
             "Make the strongest honest BULL case as a structured DebateCase "
             "(side='bull').")
 
 
 def bear_prompt(state) -> str:
-    return (f"Ticker: {state.ticker}. Run kind: {state.kind}.\n\n"
+    return (f"Ticker: {state.ticker}. Run kind: {state.kind}.\n"
+            f"{render_trigger(state)}\n"
             f"Analyst reports:\n{render_reports(state)}\n\n"
             f"The bull argues:\n{render_case(state.bull)}\n\n"
             "Rebut the bull point by point, then make the BEAR case as a "
@@ -51,7 +60,8 @@ def arbiter_prompt(state) -> str:
                  "'sell' means exit; size is decided at approval in shares.\n"
                  if state.kind == "sell_review" else "")
     return (f"Ticker: {state.ticker} ({state.instrument.exchange}, "
-            f"{state.instrument.currency}).\n{sell_note}\n"
+            f"{state.instrument.currency}).\n{sell_note}"
+            f"{render_trigger(state)}\n"
             f"Analyst reports:\n{render_reports(state)}\n\n"
             f"BULL:\n{render_case(state.bull)}\n\n"
             f"BEAR:\n{render_case(state.bear)}\n\n"
@@ -87,7 +97,8 @@ def report_md(agent_id: str, ticker: str, obj) -> str:
             lines.append("· ".join(levels) + f" {d.get('currency') or ''}")
     if d.get("summary"):
         lines += ["", d["summary"]]
-    for key, title in (("key_points", "Key points"),
+    for key, title in (("key_findings", "Key findings"),
+                       ("key_points", "Key points"),
                        ("rebuttals", "Rebuttals"),
                        ("conditions", "Conditions & caveats"),
                        ("sources", "Sources")):
@@ -122,6 +133,23 @@ def default_structured_factory(conn, env=None):
     return factory
 
 
+def record_report(conn, work_item_id, agent_id, kind, obj):
+    """desk.db is the durable record; checkpoints.db is disposable (§2).
+    Without this the analyst reports and debate cases lived only in the
+    checkpoint and in prose."""
+    import time
+    try:
+        conn.execute(
+            "INSERT INTO agent_reports (work_item_id, agent_id, kind,"
+            " payload, created_at) VALUES (?,?,?,?,?)"
+            " ON CONFLICT(work_item_id, agent_id) DO UPDATE SET"
+            " payload=excluded.payload, created_at=excluded.created_at",
+            (work_item_id, agent_id, kind, obj.model_dump_json(),
+             int(time.time())))
+    except Exception:                           # noqa: BLE001 — never fail a
+        pass                                    # run over bookkeeping
+
+
 def make_debater(conn, agent_id, narratives, *, structured_factory):
     schema, prompt_fn = SCHEMAS[agent_id], PROMPTS[agent_id]
 
@@ -132,7 +160,10 @@ def make_debater(conn, agent_id, narratives, *, structured_factory):
             obj = schema.model_validate(obj)
         path = narratives.write(state.work_item_id, f"{agent_id}.report",
                                 report_md(agent_id, state.ticker, obj))
-        return obj.model_copy(update={"narrative_path": path})
+        obj = obj.model_copy(update={"narrative_path": path})
+        record_report(conn, state.work_item_id, agent_id,
+                      "thesis" if agent_id == "arbiter" else "debate", obj)
+        return obj
     return node
 
 
@@ -145,7 +176,8 @@ def make_analyst(conn, agent_id, narratives, tool_builder, *,
         a = registry.agent_row(conn, agent_id)
         system = a["system_prompt"].replace("{ticker}", state.ticker)
         task = (f"Research {state.ticker} ({state.instrument.exchange}) now. "
-                f"Run kind: {state.kind}.")
+                f"Run kind: {state.kind}."
+                + (f"\n{render_trigger(state)}" if state.trigger else ""))
         tools = tool_builder(json.loads(a["tools"]), state)
         transcript = _run_agent(conn, agent_id, state, system, task, tools,
                                 agent_factory, env)
@@ -160,7 +192,11 @@ def make_analyst(conn, agent_id, narratives, tool_builder, *,
                      f"plain sentence under 300 characters — no markdown, no "
                      f"tables; your full reasoning belongs in the narrative. "
                      f"`conviction` is strength 0..1; the signal carries "
-                     f"direction.")])
+                     f"direction. `key_findings` MUST list 4-8 concrete facts "
+                     f"WITH NUMBERS and dates that a colleague could act on "
+                     f"(valuations, growth rates, levels, catalysts) — this "
+                     f"is what the debate and the arbiter actually receive, "
+                     f"so anything you leave out is lost.")])
         if isinstance(obj, dict):
             obj = AnalystReport.model_validate(obj)
         # two artifacts, deliberately separate: the REPORT is the conclusion
@@ -175,10 +211,12 @@ def make_analyst(conn, agent_id, narratives, tool_builder, *,
             f"# {agent_id} — working notes for {state.ticker}\n\n"
             f"_How the conclusion was reached. Downstream agents never see "
             f"this; they receive the report only._\n\n{transcript}")
-        return obj.model_copy(update={
+        obj = obj.model_copy(update={
             "narrative_path": path, "agent": agent_id,
             "ticker": state.ticker,
             "data_asof": obj.data_asof or datetime.now(timezone.utc)})
+        record_report(conn, state.work_item_id, agent_id, "analyst", obj)
+        return obj
     return node
 
 

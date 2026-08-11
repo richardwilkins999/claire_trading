@@ -51,6 +51,7 @@ def connect(path):
 # "duplicate column" just means it's already applied
 MIGRATIONS = [
     "ALTER TABLE work_items ADD COLUMN archived_at INTEGER",
+    "ALTER TABLE work_items ADD COLUMN trigger TEXT",
 ]
 
 

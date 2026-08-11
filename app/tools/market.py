@@ -1,8 +1,15 @@
-"""Yahoo Finance market data (DESIGN.md §14). ALL Yahoo access lives here —
-the endpoints are unofficial; a breakage is one file.
+"""Market data (DESIGN.md §14) — one module, several sources, one policy.
 
-Network is injectable (`_get`) so unit tests run offline; live smoke tests
-exercise the real endpoints when services are up.
+Order of preference, per symbol and per call:
+  1. the keyed provider (Twelve Data, or IBKR when the gateway is up)
+  2. TradingView's scanner — no key, covers every desk exchange
+  3. Yahoo — LAST RESORT ONLY. It rate-limits this machine aggressively, so
+     it is reached for exactly one thing the others cannot do: OHLCV history
+     for symbols outside the keyed provider's plan.
+FX falls back to the ECB. All Yahoo access lives in this file, so a breakage
+stays in one place.
+
+Network is injectable (`_get`) so unit tests run offline.
 """
 import json
 import time
@@ -20,13 +27,6 @@ SUFFIX = {"SGX": ".SI", "HKEX": ".HK", "TSE": ".T", "ASX": ".AX",
 # suffix → native currency; .L is GBp — PENCE, divide by 100 before FX
 SUFFIX_CCY = {".SI": "SGD", ".HK": "HKD", ".T": "JPY", ".AX": "AUD",
               ".DE": "EUR", ".PA": "EUR", ".NS": "INR", ".L": "GBp"}
-SCREENER_EXCH = {"NASDAQ": "NMS", "NYSE": "NYQ", "LSE": "LSE", "SGX": "SES",
-                 "HKEX": "HKG", "TSE": "JPX", "ASX": "ASX", "XETRA": "GER",
-                 "PARIS": "PAR", "NSE": "NSI"}
-# benchmark index per exchange — the number a trader glances at first
-INDEX = {"NASDAQ": "^IXIC", "NYSE": "^NYA", "LSE": "^FTSE", "SGX": "^STI",
-         "HKEX": "^HSI", "TSE": "^N225", "ASX": "^AXJO", "XETRA": "^GDAXI",
-         "PARIS": "^FCHI", "NSE": "^NSEI"}
 
 
 class MarketError(Exception):
@@ -76,10 +76,8 @@ def normalize_price(price, currency: str):
 
 
 class Market:
-    """Multi-source: Yahoo primary (paced, host-rotated, last-good cached),
-    TradingView scanner for quote fallback, ECB/Frankfurter for FX fallback.
-    Chart history is Yahoo-only — no honest free alternative — so it leans on
-    long caches + stale service instead."""
+    """Keyed provider > TradingView > Yahoo, with a last-good cache so a
+    throttled source degrades to a stale value rather than an error."""
 
     def __init__(self, *, _get=None, clock=time.time, cache_ttl=300,
                  tv_quotes=None, fx_fallback=None, primary=None):
@@ -87,7 +85,6 @@ class Market:
         self.cache_ttl = cache_ttl
         self._cache = {}
         self._stale_keys = set()
-        self._crumb = None
         self._client = None
         self._get = _get or self._http_get
         self._tv_quotes = tv_quotes         # injected in tests
@@ -106,12 +103,10 @@ class Market:
                 time.sleep(wait)
             self._last_call = time.monotonic()
 
-    def _http_get(self, url, params=None, need_crumb=False):
+    def _http_get(self, url, params=None):
         if self._client is None:
             self._client = httpx.Client(headers=UA, timeout=15,
                                         follow_redirects=True)
-        if need_crumb:
-            params = dict(params or {}, crumb=self._get_crumb())
         for attempt in (1, 2):
             self._pace()
             r = self._client.get(url, params=params)
@@ -123,15 +118,6 @@ class Market:
                 continue
             r.raise_for_status()
             return r.json()
-
-    def _get_crumb(self):
-        """The screener cookie+crumb dance (§14)."""
-        if self._crumb:
-            return self._crumb
-        self._client.get("https://finance.yahoo.com/", headers=UA)
-        r = self._client.get(f"{BASE}/v1/test/getcrumb", headers=UA)
-        self._crumb = r.text.strip()
-        return self._crumb
 
     def _cached(self, key, ttl, fn):
         """TTL cache with a last-good fallback: when the unofficial endpoints
@@ -175,20 +161,30 @@ class Market:
         return out
 
     def _spark_free(self, symbols: list[str]) -> dict:
+        """TradingView first, Yahoo only as the last resort — Yahoo rate-limits
+        this machine aggressively and TradingView covers every desk exchange."""
+        tv = self._tv_quotes
+        if tv is None:
+            from . import tradingview
+            tv = tradingview.quotes
+        out = {}
         try:
-            return self._spark_yahoo(symbols)
-        except Exception:                   # noqa: BLE001 — Yahoo throttled/down
-            tv = self._tv_quotes
-            if tv is None:
-                from . import tradingview
-                tv = tradingview.quotes
-            out = self._cached(("tvq", tuple(symbols)), 60,
-                               lambda: tv(symbols))
-            missing = [s for s in symbols if s not in out]
-            if missing:
-                raise MarketError(
-                    f"no quote from any source for {', '.join(missing)}")
+            out = dict(self._cached(("tvq", tuple(symbols)), 60,
+                                    lambda: tv(symbols)))
+        except Exception:                   # noqa: BLE001 — fall through
+            pass
+        missing = [s for s in symbols if s not in out]
+        if not missing:
             return out
+        try:
+            out.update(self._spark_yahoo(missing))
+        except Exception:                   # noqa: BLE001
+            pass
+        still = [s for s in symbols if s not in out]
+        if still:
+            raise MarketError(
+                f"no quote from any source for {', '.join(still)}")
+        return out
 
     def _spark_yahoo(self, symbols: list[str]) -> dict:
         """Batch quotes. The v8 spark response is a FLAT dict

@@ -201,9 +201,12 @@ def test_watcher_escalating_alerts_launch_one_sell_review():
     w.execute(w.state())                        # buy 10 @ ~101 instantly
     w.custodian.run_once()                      # record fills
     reviews = []
+    triggers = []
     watcher = Watcher(w.conn, w.repo, w.market,
-                      lambda inst: (reviews.append(inst["id"]) or
-                                    f"wi_sr_{len(reviews)}"),
+                      lambda inst, trigger=None: (
+                          reviews.append(inst["id"]) or
+                          triggers.append(trigger) or
+                          f"wi_sr_{len(reviews)}"),
                       clock=w.clock)
     r = watcher.tick()                          # price 100 ≈ entry: no breach
     assert r["fired"] == []
@@ -211,6 +214,8 @@ def test_watcher_escalating_alerts_launch_one_sell_review():
     r = watcher.tick()
     assert len(r["fired"]) == 1
     assert reviews == ["NASDAQ:NVDA"]
+    # the exit review is told WHY it was ordered (it used to start blind)
+    assert "watcher" in triggers[0] and "breached" in triggers[0]
     r = watcher.tick()                          # same price: escalation gate
     assert r["fired"] == []                     # needs a further 3% decline
     w.market.price = Decimal("86")
@@ -229,7 +234,8 @@ def test_watcher_respects_closed_market():
     w.execute(w.state())
     w.custodian.run_once()
     w.t["now"] = SAT_TS                         # Saturday
-    watcher = Watcher(w.conn, w.repo, w.market, lambda inst: "wi_x",
+    watcher = Watcher(w.conn, w.repo, w.market,
+                      lambda inst, trigger=None: "wi_x",
                       clock=w.clock)
     w.market.price = Decimal("50")              # huge drop, but market shut
     r = watcher.tick()

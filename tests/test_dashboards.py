@@ -101,6 +101,40 @@ def test_pages_and_apis_serve(web):
         assert c.get("/api/quote?symbols=NVDA").json()["NVDA"]["price"] == "101"
 
 
+def test_approvals_page_carries_the_whole_case(web):
+    """The decision page must show the evidence, not just a headline: every
+    agent's typed report, the trigger, and the cost that produced it."""
+    base, conn = web
+    conn.execute(
+        "INSERT INTO agent_reports (work_item_id, agent_id, kind, payload,"
+        " created_at) VALUES ('wi_1','technical','analyst',?,?)",
+        (json.dumps({"agent": "technical", "signal": "bearish",
+                     "conviction": 0.45, "summary": "Below the 50 day.",
+                     "key_findings": ["RSI 38", "support 424"]}), T0))
+    conn.execute(
+        "INSERT INTO agent_reports (work_item_id, agent_id, kind, payload,"
+        " created_at) VALUES ('wi_1','arbiter','thesis',?,?)",
+        (json.dumps({"direction": "buy", "conviction": 0.6,
+                     "conditions": ["thin volume"]}), T0))
+    conn.execute("UPDATE work_items SET trigger='event scan: rel-vol 4.1x'"
+                 " WHERE id='wi_1'")
+    with paired(base) as c:
+        assert c.get("/approvals").status_code == 200
+        # and Mission Control no longer hosts the approval controls
+        home = c.get("/").text
+        assert "renderApprovals" not in home
+        assert "/approvals" in home              # it links out instead
+
+        card = c.get("/api/approvals").json()["cards"][0]
+        assert card["trigger"] == "event scan: rel-vol 4.1x"
+        assert card["exchange"] is None or isinstance(card["exchange"], str)
+        agents = {r["agent"]: r for r in card["reports"]}
+        assert agents["technical"]["data"]["key_findings"] == \
+            ["RSI 38", "support 424"]
+        assert agents["arbiter"]["data"]["direction"] == "buy"
+        assert "llm_cost" in card and "llm_calls" in card
+
+
 def test_token_release_requires_pairing(web):
     base, conn = web
     with httpx.Client(base_url=base, timeout=5) as anon:

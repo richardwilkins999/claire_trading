@@ -6,8 +6,7 @@
   <div class="statstrip" id="strip"></div>
   <div id="banner"></div>
 
-  <h2>Needs your decision</h2>
-  <div id="approvals" class="muted">loading…</div>
+  <div id="pending"></div>
 
   <h2>System map</h2>
   <div class="mapwrap"><svg id="map" viewBox="0 0 1240 486"
@@ -45,101 +44,11 @@
 </div>
 
 <script>
-let GRAPH = null, PROVIDERS = [], APPROVALS = {cards: [], accounts: []};
-let OVERVIEW = null, SCHEDULES = [], selected = null, fxCache = {};
+let GRAPH = null, PROVIDERS = [];
+let OVERVIEW = null, SCHEDULES = [], selected = null;
 
 const typing = () => ['INPUT', 'TEXTAREA', 'SELECT']
   .includes((document.activeElement || {}).tagName);
-
-/* ── approvals with live estimates ───────────────────────────────── */
-function renderApprovals() {
-  const el = document.getElementById('approvals');
-  if (typing() && el.querySelector('input')) return;
-  const cards = APPROVALS.cards;
-  el.innerHTML = cards.length === 0
-    ? `<p class="muted">Nothing awaiting approval. Launch research from
-       <a href="/markets">Markets</a> or ask <a href="/claire">Claire</a> —
-       verdicts land here for your decision.</p>`
-    : cards.map(card).join('');
-  cards.forEach(a => updEst(a.id));
-}
-function card(a) {
-  const t = a.thesis || {};
-  const sell = t.direction === 'sell';
-  const lock = a.locked ? `<p class="warn">🔒 locked — click 🔑 in the nav and
-    paste the dashboard key from etc/claire.env</p>` : '';
-  const closed = a.session && a.session.is_open === false
-    ? `<p class="muted">⏸ ${a.session.exchange} is closed — an approved order
-       queues until ${new Date(a.session.next_open).toLocaleString()}</p>` : '';
-  return `<div class="card">
-    <h3>${(t.direction || '?').toUpperCase()} ${esc(a.ticker)}
-      <span class="pill">${a.kind}</span>
-      <span class="pill">conviction ${fmt(t.conviction)}</span></h3>
-    <p class="muted">entry ${fmt(t.entry_low)}–${fmt(t.entry_high)}
-      · stop ${fmt(t.stop_loss)} · target ${fmt(t.take_profit)}
-      · ${t.currency || ''} · expires ${ts(a.expires_at)}</p>
-    ${(t.conditions || []).map(c => `<p>⚠ ${esc(c)}</p>`).join('')}
-    ${closed}${lock}
-    <div class="row">
-      ${sell ? `<label>qty <input id="qty-${a.id}" type="number" value="0"
-          style="width:90px" oninput="updEst('${a.id}')"></label>`
-        : `<label>size <input id="size-${a.id}" type="number" value="1000"
-          style="width:90px" oninput="updEst('${a.id}')"></label>`}
-      <select id="broker-${a.id}" onchange="updEst('${a.id}')">
-        <option>alpaca</option><option>saxo</option><option>moomoo</option>
-      </select>
-      <button ${a.locked ? 'disabled' : ''}
-        onclick="act('${a.id}','approve','${a.token}',${sell})">✔ Approve</button>
-      <button class="reject" ${a.locked ? 'disabled' : ''}
-        onclick="act('${a.id}','reject','${a.token}')">✖ Reject</button>
-    </div>
-    <p class="muted" id="est-${a.id}" style="font-family:var(--mono);
-      font-size:.78rem;margin-top:.4rem"></p></div>`;
-}
-async function updEst(id) {
-  const a = APPROVALS.cards.find(x => x.id === id);
-  const est = document.getElementById('est-' + id);
-  if (!a || !est) return;
-  const t = a.thesis || {};
-  const broker = (document.getElementById('broker-' + id) || {}).value;
-  const acct = APPROVALS.accounts.find(x => x.broker === broker);
-  if (!acct) return;
-  if (t.direction === 'sell') {
-    est.textContent = 'exit sized in shares — proceeds credit ' + acct.id;
-    return;
-  }
-  const size = Number((document.getElementById('size-' + id) || {}).value) || 0;
-  const entry = t.entry_high || t.entry_low;
-  let fx = 1, fxNote = '';
-  if (entry && t.currency && t.currency !== acct.ccy) {
-    const key = t.currency + acct.ccy;
-    if (!(key in fxCache)) {
-      try { fxCache[key] = Number((await api(`/api/fx?from=${t.currency}` +
-        `&to=${acct.ccy}`)).rate); } catch { fxCache[key] = null; }
-    }
-    fx = fxCache[key];
-    fxNote = fx ? ` · fx ${fmt(fx, 4)}` : ' · fx unavailable';
-  }
-  const entryBase = entry && fx ? entry * fx : null;
-  const shares = entryBase ? Math.floor(size / entryBase) : null;
-  const fee = feeFor(acct.fee_model, size);
-  est.innerHTML = `≈ <b>${shares ?? '—'} shares</b> @ ~${fmt(entry)}
-    ${t.currency || ''} · est fee <b>${fmt(fee)} ${acct.ccy}</b>
-    · ${fmt(size / (acct.cash || 1) * 100, 1)}% of ${acct.id} cash
-    (${fmt(acct.cash)} ${acct.ccy})${fxNote}
-    ${size > acct.cash ? ' · <b class="bad">exceeds cash!</b>' : ''}`;
-}
-async function act(id, action, token, sell) {
-  const body = {work_item_id: id, action, token};
-  if (action === 'approve') {
-    body.broker = document.getElementById('broker-' + id).value;
-    if (sell) body.qty = Number(document.getElementById('qty-' + id).value);
-    else body.size_base = Number(document.getElementById('size-' + id).value);
-  }
-  try { await api('/api/thesis-action', body); toast(action + 'd ✓'); }
-  catch (e) { toast(e.message, false); }
-  refresh();
-}
 
 /* ── system map ──────────────────────────────────────────────────── */
 const L = {railX: 12, railW: 152, railH: 44, railGap: 14, railTop: 46,
@@ -419,6 +328,7 @@ async function openDrawer(id) {
       <details style="margin-top:.6rem"><summary class="muted">system prompt
         </summary><pre style="white-space:pre-wrap">${esc(a.system_prompt)}
         </pre></details>`;
+    window._runs = act.runs;
     const first = act.runs.findIndex(r => r.has_narrative);
     if (first >= 0) pickRun(id, first, act.runs[first].work_item_id);
     return;
@@ -471,12 +381,31 @@ async function pickRun(agentId, idx, workItem) {
       out.innerHTML = `<h2>Output</h2><p class="muted">${esc(n.error)}</p>`;
       return;
     }
-    out.innerHTML = `
+    const run = (window._runs || []).find(r => r.work_item_id === workItem)
+    || {};
+  const d = run.report || {};
+  const list = (k, label) => (d[k] || []).length
+    ? `<div style="margin-top:.3rem"><span class="muted" style="font-size:.66rem;
+       text-transform:uppercase;letter-spacing:.07em">${label}</span>
+       <ul style="margin:.15rem 0 0 1rem">${d[k].map(i =>
+         `<li>${esc(i)}</li>`).join('')}</ul></div>` : '';
+  const typed = (d.signal || d.side || d.direction) ? `
+    <div class="narr" style="margin-bottom:.5rem">
+      <b>${esc(d.signal || d.side || d.direction)}</b> · conviction
+      ${fmt(d.conviction)}
+      ${d.summary ? `<p style="margin:.35rem 0">${esc(d.summary)}</p>` : ''}
+      ${list('key_findings', 'key findings — what gets passed on')}
+      ${list('key_points', 'key points')}${list('rebuttals', 'rebuttals')}
+      ${list('conditions', 'conditions')}</div>` : '';
+  out.innerHTML = `
+      ${run.trigger ? `<p class="muted" style="font-size:.72rem">⟲ run
+        triggered by: ${esc(run.trigger)}</p>` : ''}
       <h2>Report · ${esc(workItem)}</h2>
       <p class="muted" style="font-size:.7rem;margin-top:-.3rem">the
         conclusion — and the only part passed to the next agent</p>
+      ${typed}
       ${n.report ? `<div class="narr">${mdLite(n.report)}</div>`
-        : '<p class="muted">This run left no report.</p>'}
+        : (typed ? '' : '<p class="muted">This run left no report.</p>')}
       ${n.transcript ? `<details style="margin-top:.6rem">
         <summary class="muted">working notes — how it got there
           (not passed on)</summary>
@@ -532,6 +461,16 @@ async function testProv() {
 }
 
 /* ── overview + SSE ──────────────────────────────────────────────── */
+function renderPending() {
+  const n = OVERVIEW.pending;
+  document.getElementById('pending').innerHTML = n
+    ? `<div class="banner" style="border-color:var(--accent);
+        background:rgba(53,214,255,.07);color:var(--accent)">
+        <b>${n} decision${n > 1 ? 's' : ''} waiting for you</b> —
+        <a href="/approvals">review the evidence and approve →</a></div>`
+    : `<p class="muted" style="margin-bottom:1rem">No decisions pending.
+       Verdicts appear on <a href="/approvals">Approvals</a>.</p>`;
+}
 function renderStrip() {
   const o = OVERVIEW, h = o.health || {};
   const pill = (label, val, cls) =>
@@ -556,14 +495,14 @@ async function refreshGraph() {
   } catch {}
 }
 async function refresh() {
-  [OVERVIEW, GRAPH, PROVIDERS, APPROVALS, SCHEDULES] = await Promise.all([
+  [OVERVIEW, GRAPH, PROVIDERS, SCHEDULES] = await Promise.all([
     api('/api/overview'), api('/api/agent-graph'), api('/api/providers'),
-    api('/api/approvals'), api('/api/schedules')]);
+    api('/api/schedules')]);
   document.getElementById('banner').innerHTML = OVERVIEW.flags.length
     ? `<div class="banner">${OVERVIEW.flags.map(f =>
         `<div>⚠ ${esc(f)}</div>`).join('')}</div>` : '';
   renderStrip();
-  renderApprovals();
+  renderPending();
   renderMap();
   document.getElementById('tiles').innerHTML =
     OVERVIEW.cash.map(c => `<div class="tile"><b>${fmt(c.cash)}</b>

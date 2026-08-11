@@ -1,5 +1,6 @@
 function nav(active) {
-  const items = [["/", "Mission Control"], ["/markets", "Markets"],
+  const items = [["/", "Mission Control"], ["/approvals", "Approvals"],
+    ["/markets", "Markets"],
     ["/claire", "Claire"], ["/trading", "Trading"],
     ["/portfolio", "Portfolio"], ["/agents", "Agents & Schedule"],
     ["/providers", "Providers & MCP"]];

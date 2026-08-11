@@ -14,12 +14,21 @@ from ..accounting.repo import InsufficientCash
 from ..tools.market import yahoo_symbol
 
 
-def position_qty(size_base: Decimal, price_base: Decimal, lot_size: int) -> Decimal:
-    """Shares purchasable for `size_base`, floored to the venue lot size."""
+FRACTION_STEP = Decimal("0.1")   # venues that allow fractions: 1/10th share
+
+
+def position_qty(size_base: Decimal, price_base: Decimal, lot_size: int,
+                 step: Decimal = FRACTION_STEP) -> Decimal:
+    """Shares purchasable for `size_base`. Board-lot venues (SGX etc.) floor
+    to whole lots; elsewhere fractional trading is allowed down to `step`, so
+    a small budget still buys something instead of rounding to zero."""
     if price_base <= 0:
         raise ValueError("price must be positive")
-    shares = int(size_base / price_base)
-    return Decimal(shares - shares % max(lot_size, 1))
+    raw = size_base / price_base
+    if lot_size > 1:
+        lots = int(raw / lot_size)
+        return Decimal(lots * lot_size)
+    return (raw / step).to_integral_value(rounding="ROUND_FLOOR") * step
 
 
 def build_execute(repo, brokers: dict, market, *, account_for,
@@ -47,6 +56,7 @@ def build_execute(repo, brokers: dict, market, *, account_for,
                 status="pending_session", work_item_id=state.work_item_id,
                 expires_at=int(sessions.close_of(inst.exchange, now,
                                                  cal).timestamp()), ts=ts)
+            _set_trailing_floor(repo, inst, ap)
             return {"order_ids": [oid]}             # custodian places at next open
 
         qty, price_base = _intended_qty(ap, th, inst, market, symbol,
@@ -68,6 +78,7 @@ def build_execute(repo, brokers: dict, market, *, account_for,
             broker_order_id=placed.broker_order_id,
             expires_at=int(sessions.close_of(inst.exchange, now,
                                              cal).timestamp()), ts=ts)
+        _set_trailing_floor(repo, inst, ap)
         return {"order_ids": [oid]}                 # fills arrive ASYNC (§12)
 
     def _intended_qty(ap, th, inst, market, symbol, account_id, repo_, kind):
@@ -87,6 +98,20 @@ def build_execute(repo, brokers: dict, market, *, account_for,
                             inst.lot_size), price_base
 
     return execute
+
+
+def _set_trailing_floor(repo, inst, ap):
+    """The trailing floor you chose at approval becomes the watcher's rule
+    for this instrument, replacing the default 8%."""
+    if not ap.trail_pct or ap.status != "approved":
+        return
+    repo.conn.execute(
+        "INSERT INTO price_alerts (instrument_id, rule, threshold, armed)"
+        " VALUES (?, 'drop_pct_from_entry', ?, 1)"
+        " ON CONFLICT DO NOTHING", (inst.id, float(ap.trail_pct)))
+    repo.conn.execute(
+        "UPDATE price_alerts SET threshold=?, armed=1 WHERE instrument_id=?"
+        " AND rule='drop_pct_from_entry'", (float(ap.trail_pct), inst.id))
 
 
 def _pre_checks(repo, account_id, inst, th, qty, price_base, ts):

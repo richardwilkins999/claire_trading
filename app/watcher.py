@@ -122,7 +122,9 @@ class Watcher:
             "'executing')", (inst["ticker"],)).fetchone()
         wi = None
         if not open_review:                     # don't stack reviews
-            wi = self.start_sell_review(inst)
+            trig = (f"watcher: {rule['rule']} breached — last {price_base:.2f} "
+                    f"vs threshold {rule['threshold']}")
+            wi = self.start_sell_review(inst, trigger=trig)
         count = self._count_today(rule, today)
         self.conn.execute(
             "UPDATE price_alerts SET last_fired_at=?, fire_count_today=?,"

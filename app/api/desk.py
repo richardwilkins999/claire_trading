@@ -30,12 +30,16 @@ class Desk:
         return {"configurable": {"thread_id": wi}}
 
     # ── starting runs ────────────────────────────────────────────────────
-    def start_run(self, instrument, kind="pipeline", *, background=True):
+    def start_run(self, instrument, kind="pipeline", *, background=True,
+                  trigger=None):
         ts = int(self.clock())
         day = time.strftime("%Y-%m-%d", time.gmtime(ts))
         wi = f"wi_{day}_{instrument.ticker}_{secrets.token_hex(2)}"
         self.repo.create_work_item(wi, kind, instrument.ticker, ts=ts)
-        state = PipelineState(work_item_id=wi, kind=kind,
+        if trigger:
+            self.conn.execute("UPDATE work_items SET trigger=? WHERE id=?",
+                              (trigger, wi))
+        state = PipelineState(work_item_id=wi, kind=kind, trigger=trigger,
                               ticker=instrument.ticker, instrument=instrument)
         if background:
             threading.Thread(target=self._run, args=(wi, state),

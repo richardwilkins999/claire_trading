@@ -135,7 +135,8 @@ def start_scheduler(conn, repo, desk, market, custodian):
             inst = Instrument(id=f"{ex}:{ticker}", ticker=ticker, exchange=ex,
                               currency=CCY[ex],
                               lot_size=100 if ex == "SGX" else 1)
-            started.append({"work_item": desk.start_run(inst),
+            started.append({"work_item": desk.start_run(
+                                inst, trigger=f"{picker}: {reason}"),
                             "ticker": ticker, "exchange": ex,
                             "reason": reason})
         return {"started": started, "picker": picker,
@@ -171,7 +172,9 @@ def start_scheduler(conn, repo, desk, market, custodian):
                               ticker=c["ticker"], exchange=c["exchange"],
                               currency=CCY[c["exchange"]],
                               lot_size=100 if c["exchange"] == "SGX" else 1)
-            started.append({"work_item": desk.start_run(inst),
+            trig = (f"event scan: relative volume {c['rel_volume']:.1f}x its "
+                    f"10-day average today")
+            started.append({"work_item": desk.start_run(inst, trigger=trig),
                             "ticker": c["ticker"], "exchange": c["exchange"],
                             "reason": f"rel-vol {c['rel_volume']:.1f}x"})
         return {"scanned": open_ex, "hits": len(hits), "started": started,

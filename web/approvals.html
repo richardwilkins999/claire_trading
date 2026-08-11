@@ -1,0 +1,210 @@
+<meta charset="utf-8"><title>Claire — Approvals</title>
+<link rel="stylesheet" href="/style.css"><script src="/nav.js"></script>
+<script>nav('/approvals')</script>
+<main>
+  <h1>Approvals <span id="conn" class="pill">connecting…</span></h1>
+  <p class="muted">Nothing trades without you. Every decision below shows the
+  complete evidence the desk assembled — each agent's report, the debate, and
+  the arbiter's verdict — so you approve on the record, not on a headline.</p>
+  <div id="cards">loading…</div>
+</main>
+<script>
+let DATA = {cards: [], accounts: []}, fxCache = {}, openEvidence = {};
+const typing = () => ['INPUT', 'SELECT']
+  .includes((document.activeElement || {}).tagName);
+
+async function refresh() {
+  if (typing()) return;
+  DATA = await api('/api/approvals');
+  render();
+}
+function pct(v) { return v == null ? '—' : fmt(v) + '%'; }
+
+function render() {
+  const el = document.getElementById('cards');
+  el.innerHTML = DATA.cards.length === 0
+    ? `<div class="card"><p class="muted">Nothing awaiting your decision.
+       Verdicts arrive here from scheduled scans, the watcher, or anything you
+       send from <a href="/markets">Markets</a>.</p></div>`
+    : DATA.cards.map(card).join('');
+  DATA.cards.forEach(a => updEst(a.id));
+}
+
+function card(a) {
+  const t = a.thesis || {};
+  const sell = t.direction === 'sell';
+  const lock = a.locked ? `<p class="warn">🔒 locked — click 🔑 in the nav and
+    paste the dashboard key from etc/claire.env</p>` : '';
+  const closed = a.session && a.session.is_open === false
+    ? `<span class="pill warn">${esc(a.session.exchange)} closed — an approved
+       order queues until ${new Date(a.session.next_open).toLocaleString()}</span>`
+    : (a.session ? `<span class="pill ok">${esc(a.session.exchange)} open</span>`
+       : '');
+  return `<div class="card" id="c-${a.id}">
+    <div class="row" style="justify-content:space-between;align-items:start">
+      <div>
+        <h3 style="font-size:1.15rem">${(t.direction || '?').toUpperCase()}
+          ${esc(a.ticker)}
+          <span class="pill">${esc(a.exchange || '—')}</span>
+          <span class="pill">${esc(a.kind)}</span>
+          <span class="pill">conviction ${fmt(t.conviction)}</span>
+          ${closed}</h3>
+        <p class="muted" style="font-size:.75rem">
+          ${a.trigger ? '⟲ ' + esc(a.trigger) + ' · ' : ''}
+          ${a.llm_calls} agent calls · $${fmt(a.llm_cost, 4)} ·
+          expires ${ts(a.expires_at)}</p>
+      </div>
+    </div>
+
+    <div class="mgrid" style="grid-template-columns:repeat(5,1fr)">
+      <div><span>entry</span><b>${fmt(t.entry_low)}–${fmt(t.entry_high)}</b></div>
+      <div><span>floor (stop)</span><b class="bad">${fmt(t.stop_loss)}</b></div>
+      <div><span>target</span><b class="ok">${fmt(t.take_profit)}</b></div>
+      <div><span>currency</span><b>${esc(t.currency || '')}</b></div>
+      <div><span>exchange</span><b>${esc(a.exchange || '—')}</b></div>
+    </div>
+    ${(t.conditions || []).length ? `<p class="muted" style="font-size:.78rem">
+      ${(t.conditions || []).map(c => '⚠ ' + esc(c)).join('<br>')}</p>` : ''}
+
+    <h2 style="margin-top:.8rem">Your order</h2>
+    <div class="row">
+      ${sell
+        ? `<label>quantity <input id="qty-${a.id}" type="number" step="0.1"
+             min="0.1" value="0" style="width:110px"
+             oninput="updEst('${a.id}')"></label>`
+        : `<label>size <input id="size-${a.id}" type="number" step="1"
+             value="1000" style="width:110px"
+             oninput="updEst('${a.id}')"></label>`}
+      <label>trailing floor
+        <input id="trail-${a.id}" type="number" step="0.5" min="0.5" max="90"
+          value="8" style="width:80px" oninput="updEst('${a.id}')">%</label>
+      <select id="broker-${a.id}" onchange="updEst('${a.id}')">
+        ${DATA.accounts.map(x => `<option value="${x.broker}">${x.broker}
+          (${fmt(x.cash, 0)} ${x.ccy})</option>`).join('')}
+      </select>
+      <span style="flex:1"></span>
+      <button ${a.locked ? 'disabled' : ''}
+        onclick="act('${a.id}','approve','${a.token}',${sell})">✔ Approve</button>
+      <button class="reject" ${a.locked ? 'disabled' : ''}
+        onclick="act('${a.id}','reject','${a.token}')">✖ Reject</button>
+    </div>
+    ${lock}
+    <p class="yours" id="est-${a.id}"></p>
+
+    <h2>Evidence — everything that led to this</h2>
+    <div id="ev-${a.id}">${evidence(a)}</div>
+  </div>`;
+}
+
+/* the full formatted output of every agent that contributed */
+function evidence(a) {
+  if (!a.reports || !a.reports.length)
+    return `<p class="muted">No stored agent reports for this run (it may
+      predate report persistence).</p>`;
+  const order = {fundamental: 1, technical: 2, news: 3, bull: 4, bear: 5,
+                 arbiter: 6};
+  const reps = [...a.reports].sort(
+    (x, y) => (order[x.agent] || 9) - (order[y.agent] || 9));
+  return reps.map(r => {
+    const d = r.data || {};
+    const head = d.signal
+      ? `<b class="${d.signal === 'bullish' ? 'ok' : d.signal === 'bearish'
+          ? 'bad' : ''}">${d.signal}</b> · conviction ${fmt(d.conviction)}`
+      : d.side ? `<b>${d.side} case</b> · conviction ${fmt(d.conviction)}`
+      : d.direction ? `<b class="warn">verdict ${d.direction}</b> ·
+          conviction ${fmt(d.conviction)}` : '';
+    const list = (k, label) => (d[k] || []).length
+      ? `<div style="margin-top:.3rem"><span class="muted"
+          style="font-size:.68rem;text-transform:uppercase">${label}</span>
+         <ul style="margin:.15rem 0 0 1rem">${d[k].map(i =>
+           `<li>${esc(i)}</li>`).join('')}</ul></div>` : '';
+    return `<details class="card" style="margin:.4rem 0;padding:.6rem .8rem"
+      ${r.agent === 'arbiter' ? 'open' : ''}>
+      <summary><b>${esc(r.agent)}</b> — ${head}</summary>
+      ${d.summary ? `<p style="margin:.4rem 0">${esc(d.summary)}</p>` : ''}
+      ${list('key_findings', 'key findings')}
+      ${list('key_points', 'key points')}
+      ${list('rebuttals', 'rebuttals')}
+      ${list('conditions', 'conditions & caveats')}
+      ${list('sources', 'sources')}
+    </details>`;
+  }).join('');
+}
+
+async function updEst(id) {
+  const a = DATA.cards.find(x => x.id === id);
+  const est = document.getElementById('est-' + id);
+  if (!a || !est) return;
+  const t = a.thesis || {};
+  const broker = (document.getElementById('broker-' + id) || {}).value;
+  const acct = DATA.accounts.find(x => x.broker === broker);
+  const trail = Number((document.getElementById('trail-' + id) || {}).value) || 0;
+  if (!acct) return;
+  const entry = t.entry_high || t.entry_low;
+  const floor = entry ? entry * (1 - trail / 100) : null;
+  if (t.direction === 'sell') {
+    const q = Number((document.getElementById('qty-' + id) || {}).value) || 0;
+    est.innerHTML = `exit <b>${fmt(q, 2)}</b> shares · proceeds credit
+      <b>${esc(acct.id)}</b>`;
+    return;
+  }
+  const size = Number((document.getElementById('size-' + id) || {}).value) || 0;
+  let fx = 1, fxNote = '';
+  if (entry && t.currency && t.currency !== acct.ccy) {
+    const key = t.currency + acct.ccy;
+    if (!(key in fxCache)) {
+      try { fxCache[key] = Number((await api(`/api/fx?from=${t.currency}` +
+        `&to=${acct.ccy}`)).rate); } catch { fxCache[key] = null; }
+    }
+    fx = fxCache[key];
+    fxNote = fx ? ` · fx ${fmt(fx, 4)}` : ' · fx unavailable';
+  }
+  const entryBase = entry && fx ? entry * fx : null;
+  // fractional venues fill to 0.1 of a share; board-lot venues round down
+  const raw = entryBase ? size / entryBase : null;
+  const shares = raw == null ? null : Math.floor(raw * 10) / 10;
+  const fee = feeFor(acct.fee_model, size);
+  est.innerHTML = `≈ <b>${shares ?? '—'} shares</b> @ ~${fmt(entry)}
+    ${esc(t.currency || '')} · est fee <b>${fmt(fee)} ${acct.ccy}</b>
+    · ${fmt(size / (acct.cash || 1) * 100, 1)}% of ${esc(acct.id)} cash
+    (${fmt(acct.cash)} ${acct.ccy})${fxNote}
+    <br>trailing floor <b class="warn">${pct(trail)}</b> → alert near
+    <b>${fmt(floor)}</b> ${esc(t.currency || '')}
+    ${t.stop_loss ? ` · thesis stop <b class="bad">${fmt(t.stop_loss)}</b>` : ''}
+    ${size > acct.cash ? ' · <b class="bad">exceeds cash!</b>' : ''}`;
+}
+
+async function act(id, action, token, sell) {
+  const body = {work_item_id: id, action, token};
+  if (action === 'approve') {
+    body.broker = document.getElementById('broker-' + id).value;
+    body.trail_pct = Number(document.getElementById('trail-' + id).value) || null;
+    if (sell) body.qty = Number(document.getElementById('qty-' + id).value);
+    else body.size_base = Number(document.getElementById('size-' + id).value);
+    const a = DATA.cards.find(x => x.id === id);
+    if (!confirm(`${action.toUpperCase()} ${a.ticker} on ${body.broker}` +
+      `${sell ? ' — ' + body.qty + ' shares' : ' — ' + body.size_base +
+        ' ' + (DATA.accounts.find(x => x.broker === body.broker) || {}).ccy}` +
+      `, trailing floor ${body.trail_pct}%? (paper)`)) return;
+  }
+  try { await api('/api/thesis-action', body); toast(action + 'd ✓'); }
+  catch (e) { toast(e.message, false); }
+  refresh();
+}
+
+function connectSSE() {
+  const dot = document.getElementById('conn');
+  const es = new EventSource('/api/events');
+  es.onopen = () => { dot.textContent = '● live'; dot.className = 'pill ok'; };
+  es.onerror = () => { dot.textContent = '○ polling';
+    dot.className = 'pill warn'; };
+  es.onmessage = ev => {
+    try {
+      const e = JSON.parse(ev.data);
+      if (['awaiting_approval', 'approved', 'rejected', 'expired']
+          .includes(e.to_state)) refresh();
+    } catch {}
+  };
+}
+refresh(); connectSSE(); setInterval(refresh, 30000);
+</script>

@@ -78,12 +78,13 @@ def thesis_action(conn, payload: dict, resume_post, *, clock=time.time):
         " VALUES (?,?,?,?,?,?)",
         (wi, now, "human", "awaiting_approval", f"authorize:{action}",
          json.dumps({k: payload.get(k) for k in
-                     ("size_base", "qty", "broker")})))
+                     ("size_base", "qty", "trail_pct", "broker")})))
 
     body = {"work_item_id": wi,
             "status": "approved" if action == "approve" else "rejected",
             "token": token, "actor": "human",
             "size_base": payload.get("size_base"), "qty": payload.get("qty"),
+            "trail_pct": payload.get("trail_pct"),
             "broker": payload.get("broker")}
     try:
         code, resp = resume_post(body)      # idempotent server-side; retryable

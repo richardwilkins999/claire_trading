@@ -36,7 +36,9 @@ def make_market(responses, clock=None):
                 return data
         raise AssertionError(f"unexpected URL {url}")
     t = {"now": 1000}
-    m = Market(_get=fake_get, clock=lambda: t["now"])
+    # TradingView is tried first now; an empty result falls through to Yahoo
+    m = Market(_get=fake_get, clock=lambda: t["now"],
+               tv_quotes=lambda syms: {})
     return m, calls, t
 
 

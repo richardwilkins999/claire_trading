@@ -28,7 +28,8 @@ WEB = ROOT / "web"
 PAGES = {"/": "index.html", "/portfolio": "portfolio.html",
          "/markets": "markets.html", "/trading": "trading.html",
          "/agents": "agents.html", "/providers": "providers.html",
-         "/claire": "claire.html", "/schedule": "agents.html"}  # merged page
+         "/claire": "claire.html", "/schedule": "agents.html",  # merged
+         "/approvals": "approvals.html"}
 STATIC = {"/style.css": ("style.css", "text/css"),
           "/nav.js": ("nav.js", "text/javascript"),
           "/charts.js": ("charts.js", "text/javascript")}
@@ -387,7 +388,8 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
             """What is this agent doing? Recent LLM runs, the work items they
             belong to, and which of them left a narrative to read."""
             runs = [dict(r) for r in conn.execute(
-                "SELECT r.*, w.ticker, w.state AS wi_state FROM agent_runs r"
+                "SELECT r.*, w.ticker, w.state AS wi_state, w.trigger"
+                " FROM agent_runs r"
                 " LEFT JOIN work_items w ON w.id = r.work_item_id"
                 " WHERE r.agent_id=? ORDER BY r.started_at DESC LIMIT 5",
                 (agent_id,))]
@@ -407,6 +409,16 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                 "SELECT COALESCE(SUM(cost_usd),0) FROM agent_runs"
                 " WHERE agent_id=? AND started_at > ?",
                 (agent_id, int(clock()) - 86400)).fetchone()
+            reports = {}
+            for rep in conn.execute(
+                    "SELECT work_item_id, payload FROM agent_reports"
+                    " WHERE agent_id=?", (agent_id,)):
+                try:
+                    reports[rep["work_item_id"]] = json.loads(rep["payload"])
+                except ValueError:
+                    pass
+            for r in runs:
+                r["report"] = reports.get(r["work_item_id"])
             return {"agent_id": agent_id, "current": current, "runs": runs,
                     "narrative": narrative, "cost_24h": cost_today}
 
@@ -478,8 +490,25 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                                                            cal),
                                "next_open": sessions.next_open(
                                    exchange, nowdt, cal).isoformat()}
+                reports = []
+                for rep in conn.execute(
+                        "SELECT agent_id, kind, payload FROM agent_reports"
+                        " WHERE work_item_id=? ORDER BY id", (r["id"],)):
+                    try:
+                        reports.append({"agent": rep["agent_id"],
+                                        "kind": rep["kind"],
+                                        "data": json.loads(rep["payload"])})
+                    except ValueError:
+                        pass
+                costs = conn.execute(
+                    "SELECT COALESCE(SUM(cost_usd),0) c, COUNT(*) n FROM"
+                    " agent_runs WHERE work_item_id=?", (r["id"],)).fetchone()
                 cards.append({
                     "id": r["id"], "kind": r["kind"], "ticker": r["ticker"],
+                    "exchange": exchange, "trigger": r["trigger"],
+                    "reports": reports,
+                    "llm_cost": costs["c"], "llm_calls": costs["n"],
+                    "created_at": r["created_at"],
                     "thesis": json.loads(r["thesis_json"] or "{}"),
                     # tokens ONLY for a paired browser (§10 rev2)
                     "token": r["approval_token"] if paired else None,
@@ -843,7 +872,17 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
     def cal_or_default():
         return cal or sessions.DEFAULTS
 
-    return ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    class Server(ThreadingHTTPServer):
+        def handle_error(self, request, client_address):
+            """A browser closing an SSE stream is normal, not an error — it
+            was filling the log with tracebacks and hiding the real ones."""
+            import sys
+            if isinstance(sys.exc_info()[1], (BrokenPipeError,
+                                              ConnectionResetError)):
+                return
+            super().handle_error(request, client_address)
+
+    return Server(("127.0.0.1", port), Handler)
 
 
 def start_watcher_thread(conn, repo, market, *, api_base, interval=600,
@@ -852,13 +891,14 @@ def start_watcher_thread(conn, repo, market, *, api_base, interval=600,
     through claire-api's HTTP seam with a SHORT timeout (§15 lesson 8)."""
     from .watcher import Watcher
 
-    def start_sell_review(inst):
+    def start_sell_review(inst, trigger=None):
         try:
             r = httpx.post(f"{api_base}/api/run",
                            json={"ticker": inst["ticker"],
                                  "exchange": inst["exchange"],
                                  "currency": inst["currency"],
                                  "instrument_id": inst["id"],
+                                 "trigger": trigger,
                                  "kind": "sell_review"}, timeout=10)
             return r.json().get("work_item_id")
         except Exception:                        # noqa: BLE001

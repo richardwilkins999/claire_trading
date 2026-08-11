@@ -26,6 +26,7 @@ class ResumeBody(BaseModel):
     actor: str
     size_base: float | None = None
     qty: float | None = None
+    trail_pct: float | None = None
     broker: Literal["alpaca", "saxo", "moomoo"] | None = None
 
 
@@ -36,6 +37,7 @@ class RunBody(BaseModel):
     instrument_id: str | None = None
     kind: Literal["pipeline", "sell_review"] = "pipeline"
     lot_size: int = 1
+    trigger: str | None = None
 
 
 def create_app(desk, conn, secret: str, *, clock=time.time,
@@ -75,7 +77,8 @@ def create_app(desk, conn, secret: str, *, clock=time.time,
             raise HTTPException(410, "approval expired")
 
         payload = {"status": body.status, "size_base": body.size_base,
-                   "qty": body.qty, "broker": body.broker, "actor": body.actor,
+                   "qty": body.qty, "trail_pct": body.trail_pct,
+                   "broker": body.broker, "actor": body.actor,
                    "token": body.token,
                    "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))}
         if body.status == "approved":
@@ -96,7 +99,7 @@ def create_app(desk, conn, secret: str, *, clock=time.time,
             id=body.instrument_id or f"{body.exchange}:{body.ticker}",
             ticker=body.ticker, exchange=body.exchange,
             currency=body.currency, lot_size=body.lot_size)
-        wi = desk.start_run(inst, body.kind)
+        wi = desk.start_run(inst, body.kind, trigger=body.trigger)
         return {"work_item_id": wi}
 
     @app.get("/status")

@@ -39,6 +39,10 @@ class AnalystReport(BaseModel):
     conviction: float = Field(ge=0.0, le=1.0)   # strength only — the signal
                                                 # carries direction; 0 = abstain
     summary: str = Field(max_length=SUMMARY_MAX)
+    # concrete facts WITH numbers — the summary alone was too thin a hand-off
+    # for the debaters to reason over (the arbiter kept asking for figures
+    # the analyst had actually found but had no room to pass on)
+    key_findings: list[str] = []
     narrative_path: str = ""
     data_asof: datetime
     sources: list[str] = []
@@ -82,6 +86,8 @@ class Approval(BaseModel):
     size_base: float | None = Field(default=None, gt=0)  # buys: spend, in the
                                                          # account's base currency
     qty: float | None = Field(default=None, gt=0)        # sells: shares to close
+    trail_pct: float | None = Field(default=None, gt=0, le=90)
+    """Trailing floor: how far below entry the watcher's stop-alert sits."""
     broker: Literal["alpaca", "saxo", "moomoo"] | None = None
     actor: str                                           # "human" | "reaper"
     token: str
@@ -93,6 +99,10 @@ class PipelineState(BaseModel):
     kind: Literal["pipeline", "sell_review"] = "pipeline"
     ticker: str
     instrument: Instrument
+    # why this run exists — the screener's rationale or the watcher's breach.
+    # Analysts used to start blind; an exit review in particular had no idea
+    # it was ordered because a stop was hit.
+    trigger: str | None = None
     reports: Annotated[list[AnalystReport], operator.add] = []
     bull: DebateCase | None = None
     bear: DebateCase | None = None
