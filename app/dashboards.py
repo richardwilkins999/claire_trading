@@ -143,6 +143,8 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                         conn, clock=clock))
                 if u.path == "/api/mcps":
                     return self._send(200, self._mcps())
+                if u.path == "/api/data-sources":
+                    return self._send(200, self._data_sources())
                 if u.path == "/api/events":
                     return self._sse()
                 if u.path == "/api/fx":
@@ -450,8 +452,8 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
         def _runs(self):
             rows = []
             for r in conn.execute(
-                    "SELECT * FROM work_items ORDER BY created_at DESC"
-                    " LIMIT 50"):
+                    "SELECT * FROM work_items WHERE archived_at IS NULL"
+                    " ORDER BY created_at DESC LIMIT 50"):
                 d = dict(r)
                 d.pop("approval_token", None)    # tokens live on cards only
                 rows.append(d)
@@ -573,6 +575,37 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                             "enabled": p["enabled"],
                             "health": dict(h) if h else None})
             return out
+
+        def _data_sources(self):
+            """Market-data source chain status — configure by adding the env
+            vars to etc/claire.env and restarting both services."""
+            primary = market.primary_name() if hasattr(market,
+                                                       "primary_name") else None
+            return [
+                {"id": "ibkr", "name": "Interactive Brokers",
+                 "role": "primary when enabled (licensed exchange data)",
+                 "configured": bool((env or {}).get("IBKR_ENABLED")),
+                 "active": primary == "ibkr",
+                 "how": "IBKR_ENABLED=1 + IBKR_HOST/IBKR_PORT in claire.env; "
+                        "IB Gateway running (paper ok) + pip install "
+                        "ib-insync + per-exchange data subscriptions"},
+                {"id": "twelvedata", "name": "Twelve Data",
+                 "role": "primary when keyed (global quotes/charts/FX)",
+                 "configured": bool((env or {}).get("TWELVEDATA_API_KEY")),
+                 "active": primary == "twelvedata",
+                 "how": "TWELVEDATA_API_KEY in claire.env (free tier "
+                        "~800 credits/day)"},
+                {"id": "yahoo", "name": "Yahoo Finance",
+                 "role": "free default (paced + host-rotated; throttles)",
+                 "configured": True, "active": primary is None,
+                 "how": "always on"},
+                {"id": "tradingview", "name": "TradingView scanner",
+                 "role": "quote fallback + recommendations",
+                 "configured": True, "active": True, "how": "always on"},
+                {"id": "ecb", "name": "ECB / Frankfurter",
+                 "role": "FX fallback (daily rates)",
+                 "configured": True, "active": True, "how": "always on"},
+            ]
 
         def _mcps(self):
             out = []
@@ -772,14 +805,14 @@ def main():
     from .api.server import ROOT as API_ROOT
     from .api.server import load_env
     from .tools.files import Narratives
-    from .tools.market import Market
+    from .tools.market import build_market
 
     load_env()
     var = API_ROOT / "var"
     conn = db.connect(var / "desk.db")
     db.init(conn)
     repo = Repo(conn)
-    market = Market()
+    market = build_market()
     secret = os.environ.get("CLAIRE_INTERNAL_SECRET", "")
     dash_key = ensure_dash_key(API_ROOT / "etc" / "claire.env")
     cal = sessions.load(conn) or None

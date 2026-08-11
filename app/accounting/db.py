@@ -47,5 +47,18 @@ def connect(path):
     return ThreadLocalConnection(path)
 
 
+# additive migrations for databases created before a column existed;
+# "duplicate column" just means it's already applied
+MIGRATIONS = [
+    "ALTER TABLE work_items ADD COLUMN archived_at INTEGER",
+]
+
+
 def init(conn) -> None:
     conn.executescript(SCHEMA.read_text())
+    for stmt in MIGRATIONS:
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError as e:
+            if "duplicate column" not in str(e):
+                raise

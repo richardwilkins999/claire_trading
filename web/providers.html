@@ -38,6 +38,9 @@
     </div>
   </div>
 
+  <h2>Market data sources</h2>
+  <div id="sources">loading…</div>
+
   <h2>MCP servers (brokers &amp; tools)</h2>
   <div id="mcps">loading…</div>
   <div class="card">
@@ -70,8 +73,17 @@ const typing = () => ['INPUT', 'SELECT']
 
 async function refresh() {
   if (typing()) return;
-  const [provs, mcps] = await Promise.all(
-    [api('/api/providers'), api('/api/mcps')]);
+  const [provs, mcps, sources] = await Promise.all(
+    [api('/api/providers'), api('/api/mcps'), api('/api/data-sources')]);
+  document.getElementById('sources').innerHTML =
+    '<table><tr><th>source</th><th>role</th><th>status</th>' +
+    '<th>how to enable</th></tr>' + sources.map(s => `<tr>
+    <td><b>${esc(s.name)}</b></td><td class="muted">${esc(s.role)}</td>
+    <td>${s.active ? '<span class="ok">● active</span>'
+      : s.configured ? '<span class="warn">configured, standby</span>'
+      : '<span class="muted">not configured</span>'}</td>
+    <td class="muted" style="font-size:.75rem">${esc(s.how)}</td>
+    </tr>`).join('') + '</table>';
   document.getElementById('provs').innerHTML =
     '<table><tr><th>provider</th><th>kind</th><th>key</th><th>health</th>' +
     '<th>capabilities</th><th>cost /1k</th><th></th></tr>' +

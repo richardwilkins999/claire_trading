@@ -11,10 +11,15 @@ def probe(conn, provider_id, *, _build=registry.build_llm, env=None):
     env = env if env is not None else os.environ
     t0 = time.time()
     ok, err = 0, None
+    model = _probe_model(conn, provider_id)
     try:
-        llm = _build(conn, provider_id, _probe_model(conn, provider_id), env=env)
+        llm = _build(conn, provider_id, model, env=env)
         llm.invoke("Reply with the single word: ok")
         ok = 1
+        conn.execute(                   # a probed model is a known model (§8)
+            "INSERT INTO provider_models (provider_id, model, last_seen)"
+            " VALUES (?,?,?) ON CONFLICT(provider_id, model) DO UPDATE SET"
+            " last_seen=excluded.last_seen", (provider_id, model, int(t0)))
     except Exception as e:              # noqa: BLE001 — any failure is the answer
         err = str(e)[:300]
     conn.execute(

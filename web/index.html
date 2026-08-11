@@ -128,8 +128,8 @@ async function act(id, action, token, sell) {
 
 /* ── the desk: staged pipeline strip (v1 pattern) ─────────────────── */
 const STAGES = [
-  {label: 'screen', agents: ['screener']},   // scheduled scans start here
-  {label: 'prepare', det: ['prepare']},
+  // scheduled scans start here; prepare rides along (instrument resolution)
+  {label: 'screen · prepare', agents: ['screener'], det: ['prepare']},
   {label: 'analyze', agents: ['fundamental', 'technical', 'news']},
   {label: 'debate', agents: ['bull', 'bear']},
   {label: 'arbitrate', agents: ['arbiter']},

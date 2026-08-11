@@ -172,6 +172,22 @@ class Repo:
                 " AND instrument_id != ?", (account_id, instrument_id)).fetchone()
             if n + 1 > cap:
                 raise RiskLimitExceeded(f"would exceed max_open_positions {cap}")
+        cap = limits.get("max_position_pct")
+        if cap is not None and side == "buy" and notional is not None:
+            (open_cost,) = self.conn.execute(
+                "SELECT COALESCE(SUM(qty_remaining*cost_per_share_base/1e6),0)"
+                " FROM lots WHERE account_id=? AND qty_remaining>0"
+                " AND qty_opened>0", (account_id,)).fetchone()
+            (inst_cost,) = self.conn.execute(
+                "SELECT COALESCE(SUM(qty_remaining*cost_per_share_base/1e6),0)"
+                " FROM lots WHERE account_id=? AND instrument_id=?"
+                " AND qty_remaining>0 AND qty_opened>0",
+                (account_id, instrument_id)).fetchone()
+            equity = self.cash_balance(account_id) + int(open_cost)
+            if equity > 0 and \
+                    (int(inst_cost) + notional) / equity * 100 > cap:
+                raise RiskLimitExceeded(
+                    f"position would exceed max_position_pct {cap}% of equity")
         cap = limits.get("max_trades_per_day")
         if cap is not None:
             day = ts - (ts % 86400)
@@ -329,6 +345,40 @@ class Repo:
                 (f"lot_{uuid.uuid4().hex[:12]}", ex_id, account_id, instrument_id,
                  unmatched if side == "buy" else -unmatched, unmatched,
                  price_base, lot_fees, ts))
+
+    # ── corporate actions ────────────────────────────────────────────────
+    def apply_split(self, instrument_id, ratio, *, ex_date, ts, detail=None):
+        """Apply a share split to open lots as an auditable row (§7): a 2:1
+        split doubles remaining shares and halves per-share cost; total cost
+        basis is conserved to the micro."""
+        r = Decimal(str(ratio))
+        if r <= 0:
+            raise LedgerError("split ratio must be positive")
+        cur = self.conn
+        cur.execute("BEGIN IMMEDIATE")
+        try:
+            for lot in cur.execute(
+                    "SELECT * FROM lots WHERE instrument_id=?"
+                    " AND qty_remaining > 0", (instrument_id,)).fetchall():
+                new_rem = int((Decimal(lot["qty_remaining"]) * r)
+                              .quantize(Decimal(1)))
+                new_opened = int((Decimal(lot["qty_opened"]) * r)
+                                 .quantize(Decimal(1)))
+                # conserve basis exactly: recompute per-share from the total
+                total_cost = lot["qty_remaining"] * lot["cost_per_share_base"]
+                new_cps = int(Decimal(total_cost) / new_rem) if new_rem else 0
+                cur.execute(
+                    "UPDATE lots SET qty_remaining=?, qty_opened=?,"
+                    " cost_per_share_base=? WHERE id=?",
+                    (new_rem, new_opened, new_cps, lot["id"]))
+            cur.execute(
+                "INSERT INTO corporate_actions (instrument_id, kind, ratio,"
+                " ex_date, applied_at, detail) VALUES (?,?,?,?,?,?)",
+                (instrument_id, "split", float(r), ex_date, ts, detail))
+            cur.execute("COMMIT")
+        except BaseException:
+            cur.execute("ROLLBACK")
+            raise
 
     # ── queries the tests and views build on ─────────────────────────────
     def position(self, account_id, instrument_id):

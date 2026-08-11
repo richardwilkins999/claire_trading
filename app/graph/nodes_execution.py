@@ -111,10 +111,12 @@ def _pre_checks(repo, account_id, inst, th, qty, price_base, ts):
                 f"but {account_id} holds {from_micro(balance):.2f}")
 
 
-def build_record(repo, narratives, *, clock=time.time):
+def build_record(repo, narratives, *, clock=time.time, prose_fn=None):
     """Terminal bookkeeping: one factual markdown summary per run. State
     transitions live in Desk._sync; money lives in repo — this node only
-    writes prose ABOUT the record, never the record."""
+    writes prose ABOUT the record, never the record. `prose_fn` (the recorder
+    agent, §4) adds a short human note when a provider is available; its
+    failure never fails a run."""
 
     def record(state):
         lines = [f"# {state.ticker} — {state.kind} {state.work_item_id}", ""]
@@ -134,6 +136,12 @@ def build_record(repo, narratives, *, clock=time.time):
             lines.append(f"**Orders**: {', '.join(state.order_ids)}")
         if state.errors:
             lines.append("\n## Errors\n" + "\n".join(f"- {e}" for e in state.errors))
+        if prose_fn is not None:
+            try:
+                lines.append("\n## Recorder note\n" +
+                             prose_fn("\n".join(lines)))
+            except Exception:                   # noqa: BLE001 — prose is a
+                pass                            # nicety, never a dependency
         narratives.write(state.work_item_id, "summary", "\n".join(lines))
         return {}
 

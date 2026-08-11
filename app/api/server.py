@@ -29,7 +29,7 @@ def build_world():
     from ..graph.claire_agent import Claire
     from ..providers import seeds
     from ..tools.files import Narratives
-    from ..tools.market import Market
+    from ..tools.market import build_market
     from .desk import Desk
 
     var = ROOT / "var"
@@ -53,12 +53,16 @@ def build_world():
             repo.deposit(acct, to_micro("100000"), ts=ts,
                          note="opening paper balance")
 
-    market = Market()
+    market = build_market()
     narratives = Narratives(var / "narratives")
     brokers = wiring.build_brokers()
     deps = wiring.build_deps(conn, repo, narratives, market, brokers=brokers)
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+    serde = JsonPlusSerializer(allowed_msgpack_modules=[
+        ("app.graph.state", n) for n in
+        ("Instrument", "AnalystReport", "DebateCase", "Thesis", "Approval")])
     saver = SqliteSaver(sqlite3.connect(var / "checkpoints.db",
-                                        check_same_thread=False))
+                                        check_same_thread=False), serde=serde)
     desk = Desk(conn, deps, saver, repo, session_cal=sessions.load(conn) or None)
     claire = Claire(conn, repo, desk, market, env=os.environ)
     return conn, repo, desk, claire, brokers, market

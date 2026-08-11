@@ -46,9 +46,25 @@ def check_capabilities(conn, agent_id, provider_id):
             f"provider {provider_id!r} lacks {missing} required by {agent_id!r}")
 
 
+def check_health_gate(conn, provider_id):
+    """§8: a provider must pass a health probe before it becomes selectable.
+    The currently-assigned provider is exempt (you can always keep what you
+    have); new assignments need a passing probe within 24h."""
+    row = conn.execute(
+        "SELECT ok FROM provider_health WHERE provider_id=?"
+        " ORDER BY checked_at DESC LIMIT 1", (provider_id,)).fetchone()
+    if row is None or not row["ok"]:
+        raise CapabilityError(
+            f"provider {provider_id!r} has not passed a health probe — "
+            "probe it first (Providers page)")
+
+
 def assign(conn, agent_id, provider_id, model, *, fallback_provider_id=None,
-           fallback_model=None, ts=None):
+           fallback_model=None, ts=None, require_health=True):
     check_capabilities(conn, agent_id, provider_id)
+    if require_health and \
+            agent_row(conn, agent_id)["provider_id"] != provider_id:
+        check_health_gate(conn, provider_id)
     if fallback_provider_id:
         check_capabilities(conn, agent_id, fallback_provider_id)
     conn.execute(

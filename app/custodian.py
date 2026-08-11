@@ -31,6 +31,8 @@ class Custodian:
             report["resume_retried"] = approvals.retry_pending(
                 self.conn, self.resume_post, clock=self.clock)
             self._orphans(report)
+            self._drift(report)
+            report["archived"] = self._archive()
             ok = "degraded" if report["flags"] else "ok"
         except Exception as e:                  # noqa: BLE001 — net must not die silent
             report["flags"].append(f"custodian error: {e}")
@@ -159,6 +161,56 @@ class Custodian:
         for r in self.conn.execute(
                 "SELECT l.id FROM lots l WHERE l.qty_remaining < 0"):
             report["flags"].append(f"lot {r['id']} negative remainder")
+        # UNPROTECTED: an open long position whose opening order carried no
+        # stop — the watcher is its only safety net, and you should know (§11)
+        for r in self.conn.execute(
+                "SELECT DISTINCT l.instrument_id FROM lots l"
+                " JOIN executions e ON e.id = l.open_execution_id"
+                " LEFT JOIN orders o ON o.id = e.order_id"
+                " WHERE l.qty_remaining > 0 AND l.qty_opened > 0"
+                " AND (o.stop_loss IS NULL OR o.id IS NULL)"):
+            report["flags"].append(
+                f"UNPROTECTED position {r['instrument_id']} — no resting stop"
+                " at the venue; watcher alerts are the only backstop")
+
+    def _drift(self, report):
+        """Reconcile the latest broker snapshot against the book (§12): the
+        broker is presumed right; drift is FLAGGED, never silently fixed.
+        Sim snapshots carry no cash/positions and are skipped."""
+        for acct in self.conn.execute("SELECT id FROM broker_accounts"):
+            snap = self.conn.execute(
+                "SELECT * FROM broker_snapshots WHERE account_id=?"
+                " ORDER BY taken_at DESC LIMIT 1", (acct["id"],)).fetchone()
+            if snap is None:
+                continue
+            if snap["cash"] is not None:
+                book = self.repo.cash_balance(acct["id"])
+                if abs(snap["cash"] - book) > 1_000_000:      # > $1 drift
+                    report["flags"].append(
+                        f"CASH DRIFT {acct['id']}: broker reports "
+                        f"{snap['cash'] / 1e6:.2f}, book says {book / 1e6:.2f}")
+            positions = {}
+            try:
+                positions = (json.loads(snap["positions_json"] or "{}")
+                             .get("positions") or {})
+            except (TypeError, ValueError):
+                pass
+            for inst_id, broker_qty in positions.items():
+                held, _, _ = self.repo.position(acct["id"], inst_id)
+                if abs(held / 1e6 - float(broker_qty)) > 1e-6:
+                    report["flags"].append(
+                        f"POSITION DRIFT {acct['id']} {inst_id}: broker "
+                        f"{broker_qty}, book {held / 1e6}")
+
+    def _archive(self) -> int:
+        """Terminal items > 30 days old get archived (hidden from the default
+        run list; nothing is deleted — the audit trail is forever)."""
+        now = int(self.clock())
+        cur = self.conn.execute(
+            "UPDATE work_items SET archived_at=? WHERE archived_at IS NULL"
+            " AND state IN ('done','rejected','expired','failed')"
+            " AND updated_at < ?", (now, now - 30 * 86400))
+        return cur.rowcount
 
     def snapshot_brokers(self):
         ts = int(self.clock())

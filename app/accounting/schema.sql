@@ -167,6 +167,55 @@ CREATE TABLE IF NOT EXISTS service_health ( -- every guard publishes its own
   detail TEXT
 );
 
+CREATE TABLE IF NOT EXISTS chat_threads (   -- Claire's conversation memory —
+  thread TEXT PRIMARY KEY,                  -- survives service restarts (§17)
+  messages TEXT NOT NULL,                   -- JSON list of {role, content}
+  updated_at INTEGER NOT NULL
+);
+
+-- ── views: derived, never stored (§7) ────────────────────────────────────
+CREATE VIEW IF NOT EXISTS v_positions AS
+SELECT account_id, instrument_id,
+  SUM(CASE WHEN qty_opened<0 THEN -qty_remaining ELSE qty_remaining END)/1e6
+    AS qty,
+  SUM(CASE WHEN qty_opened<0 THEN 0
+      ELSE qty_remaining*cost_per_share_base/1e12 END) AS cost_base,
+  SUM(commission_allocated)/1e6 AS commissions
+FROM lots WHERE qty_remaining>0 GROUP BY account_id, instrument_id;
+
+CREATE VIEW IF NOT EXISTS v_share_pl AS
+SELECT l.account_id, i.ticker, l.instrument_id,
+  SUM(CASE WHEN l.qty_opened<0 THEN -l.qty_remaining
+      ELSE l.qty_remaining END)/1e6 AS qty_open,
+  SUM(l.qty_remaining*l.cost_per_share_base/1e12) AS open_cost,
+  SUM(l.commission_allocated)/1e6 AS open_commissions,
+  (SELECT COALESCE(SUM(c.realized_pl_base),0)/1e6 FROM lot_closures c
+    JOIN lots l2 ON l2.id=c.lot_id
+    WHERE l2.account_id=l.account_id AND l2.instrument_id=l.instrument_id)
+    AS realized_pl
+FROM lots l JOIN instruments i ON i.id=l.instrument_id
+GROUP BY l.account_id, l.instrument_id;
+
+CREATE VIEW IF NOT EXISTS v_broker_metrics AS
+SELECT account_id, COUNT(*) AS fills, SUM(commission)/1e6 AS commissions,
+  SUM(gross_base)/1e6 AS notional,
+  AVG(CASE WHEN intended_price IS NOT NULL AND intended_price>0
+      THEN (price_native-intended_price)*1.0/intended_price END)
+    AS avg_slippage
+FROM executions GROUP BY account_id;
+
+CREATE VIEW IF NOT EXISTS v_thesis_outcomes AS  -- did the thesis make money,
+SELECT w.id AS work_item_id, w.ticker, w.kind, w.state,  -- and which model
+  (SELECT r.model FROM agent_runs r WHERE r.work_item_id=w.id
+    AND r.agent_id='arbiter' ORDER BY r.started_at DESC LIMIT 1)
+    AS arbiter_model,
+  (SELECT COALESCE(SUM(c.realized_pl_base),0)/1e6 FROM lot_closures c
+    JOIN executions e ON e.id=c.close_execution_id
+    WHERE e.work_item_id=w.id) AS realized_pl,
+  (SELECT COALESCE(SUM(cost_usd),0) FROM agent_runs r
+    WHERE r.work_item_id=w.id) AS llm_cost
+FROM work_items w WHERE w.thesis_json IS NOT NULL;
+
 -- ── providers & agents (the multi-LLM layer) ─────────────────────────────
 CREATE TABLE IF NOT EXISTS providers (
   id TEXT PRIMARY KEY,

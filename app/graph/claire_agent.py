@@ -138,8 +138,24 @@ class Claire:
     def __init__(self, conn, repo, desk, market, *, env=None):
         self.conn, self.repo, self.desk, self.market = conn, repo, desk, market
         self.env = env
-        self._histories = {}                    # thread -> [messages]
+        self._histories = {}                    # cache over chat_threads table
         self._agent = None
+
+    def _load(self, thread):
+        if thread not in self._histories:
+            row = self.conn.execute(
+                "SELECT messages FROM chat_threads WHERE thread=?",
+                (thread,)).fetchone()
+            self._histories[thread] = json.loads(row["messages"]) if row else []
+        return self._histories[thread]
+
+    def _save(self, thread):
+        import time
+        self.conn.execute(
+            "INSERT INTO chat_threads (thread, messages, updated_at)"
+            " VALUES (?,?,?) ON CONFLICT(thread) DO UPDATE SET"
+            " messages=excluded.messages, updated_at=excluded.updated_at",
+            (thread, json.dumps(self._histories[thread]), int(time.time())))
 
     def _ensure_agent(self):
         if self._agent is None:
@@ -160,7 +176,7 @@ class Claire:
             yield json.dumps({"kind": "error", "text": str(e)}) + "\n"
             yield json.dumps({"kind": "done"}) + "\n"
             return
-        history = self._histories.setdefault(thread, [])
+        history = self._load(thread)            # survives restarts (§17)
         if len(history) > MAX_TURNS_PER_THREAD * 2:
             history.clear()                     # §17 auto-reset
         history.append({"role": "user", "content": text})
@@ -184,6 +200,7 @@ class Claire:
                                 yield json.dumps({"kind": "text",
                                                   "text": m.content}) + "\n"
             history.append({"role": "assistant", "content": final})
+            self._save(thread)
             yield json.dumps({"kind": "done"}) + "\n"
         except Exception as e:                  # noqa: BLE001
             yield json.dumps({"kind": "error", "text": str(e)[:400]}) + "\n"

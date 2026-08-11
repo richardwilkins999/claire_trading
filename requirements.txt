@@ -16,3 +16,5 @@ fastapi==0.141.1
 uvicorn[standard]==0.52.1
 httpx==0.28.1
 pytest==9.1.1
+# optional, install when activating IBKR market data (see app/tools/ibkr.py):
+# ib-insync

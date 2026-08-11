@@ -43,7 +43,8 @@ def test_sgx_and_nyse_never_overlap():
 
 def test_next_open_over_weekend():
     fri_evening = at(SGT, 2026, 8, 7, 18)
-    assert next_open("SGX", fri_evening) == at(SGT, 2026, 8, 10, 9)
+    # Mon 2026-08-10 is SGX National Day (observed) → Tuesday
+    assert next_open("SGX", fri_evening) == at(SGT, 2026, 8, 11, 9)
 
 
 def test_next_open_during_lunch_is_lunch_end():
@@ -57,8 +58,8 @@ def test_next_open_when_open_is_now():
 
 def test_close_of_session():
     assert close_of("SGX", at(SGT, 2026, 8, 11, 10)) == at(SGT, 2026, 8, 11, 17)
-    # Friday post-close → Monday's close (weekend-safe approval expiry)
-    assert close_of("SGX", at(SGT, 2026, 8, 7, 18)) == at(SGT, 2026, 8, 10, 17)
+    # Friday post-close → next SESSION's close: Monday is a holiday → Tuesday
+    assert close_of("SGX", at(SGT, 2026, 8, 7, 18)) == at(SGT, 2026, 8, 11, 17)
 
 
 def test_holidays_respected():

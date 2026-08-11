@@ -33,6 +33,27 @@ class MarketError(Exception):
     pass
 
 
+def build_market(env=None) -> "Market":
+    """Source chain from configuration: IBKR (licensed, needs the gateway) >
+    Twelve Data (keyed API) > Yahoo (free, throttled) > TradingView quotes >
+    ECB FX. Configure by adding the env vars to etc/claire.env + restart."""
+    import os
+    env = env if env is not None else os.environ
+    primary = None
+    if env.get("IBKR_ENABLED"):
+        try:
+            from . import ibkr
+            primary = ibkr.Client(env.get("IBKR_HOST", "127.0.0.1"),
+                                  env.get("IBKR_PORT", 4002),
+                                  env.get("IBKR_CLIENT_ID", 17))
+        except Exception as e:              # noqa: BLE001 — degrade loudly
+            print(f"IBKR enabled but unusable: {e}")
+    if primary is None and env.get("TWELVEDATA_API_KEY"):
+        from . import twelvedata
+        primary = twelvedata.Client(env["TWELVEDATA_API_KEY"])
+    return Market(primary=primary)
+
+
 def yahoo_symbol(ticker: str, exchange: str) -> str:
     return ticker + SUFFIX.get(exchange, "")
 
@@ -59,7 +80,7 @@ class Market:
     long caches + stale service instead."""
 
     def __init__(self, *, _get=None, clock=time.time, cache_ttl=300,
-                 tv_quotes=None, fx_fallback=None):
+                 tv_quotes=None, fx_fallback=None, primary=None):
         self.clock = clock
         self.cache_ttl = cache_ttl
         self._cache = {}
@@ -69,6 +90,7 @@ class Market:
         self._get = _get or self._http_get
         self._tv_quotes = tv_quotes         # injected in tests
         self._fx_fallback = fx_fallback
+        self._primary = primary             # keyed provider (twelvedata/ibkr)
         self._pace_lock = __import__("threading").Lock()
         self._last_call = 0.0
         self._host_i = 0
@@ -130,6 +152,14 @@ class Market:
 
     # ── quotes ───────────────────────────────────────────────────────────
     def spark(self, symbols: list[str]) -> dict:
+        if self._primary is not None:
+            try:
+                out = self._cached(("pq", tuple(symbols)), 60,
+                                   lambda: self._primary.quote(symbols))
+                if all(s in out for s in symbols):
+                    return out
+            except Exception:               # noqa: BLE001 — fall through
+                pass
         try:
             return self._spark_yahoo(symbols)
         except Exception:                   # noqa: BLE001 — Yahoo throttled/down
@@ -180,6 +210,17 @@ class Market:
 
     # ── OHLCV ────────────────────────────────────────────────────────────
     def chart(self, symbol: str, range_="6mo", interval="1d") -> dict:
+        if self._primary is not None and not symbol.endswith("=X") \
+                and not symbol.startswith("^"):
+            try:
+                return self._cached(("pchart", symbol, range_, interval),
+                                    900, lambda: self._primary.chart(
+                                        symbol, range_, interval))
+            except Exception:               # noqa: BLE001 — fall through
+                pass
+        return self._chart_yahoo(symbol, range_, interval)
+
+    def _chart_yahoo(self, symbol: str, range_="6mo", interval="1d") -> dict:
         def fetch():
             return self._get(f"{BASE}/v8/finance/chart/{symbol}",
                              {"range": range_, "interval": interval})
@@ -280,6 +321,13 @@ class Market:
         if from_ccy == to_ccy:
             return Decimal(1)
         pair = f"{from_ccy}{to_ccy}=X"
+        if self._primary is not None:
+            try:
+                return Decimal(self._cached(
+                    ("pfx", pair), self.cache_ttl,
+                    lambda: self._primary.fx(from_ccy, to_ccy)))
+            except Exception:               # noqa: BLE001 — fall through
+                pass
 
         def fetch():
             c = self.chart(pair, range_="1d", interval="5m")
@@ -293,6 +341,10 @@ class Market:
             fb = self._fx_fallback or self._frankfurter
             return Decimal(self._cached(("fxecb", pair), 3600,
                                         lambda: fb(from_ccy, to_ccy)))
+
+    def primary_name(self):
+        return type(self._primary).__module__.rsplit(".", 1)[-1] \
+            if self._primary else None
 
     def _frankfurter(self, from_ccy, to_ccy) -> str:
         if self._client is None:

@@ -27,7 +27,8 @@ def test_capability_gate_rejects_with_reason(conn):
 
 
 def test_assign_updates_row(conn):
-    registry.assign(conn, "news", "deepseek", "deepseek-chat", ts=1)
+    registry.assign(conn, "news", "deepseek", "deepseek-chat", ts=1,
+                    require_health=False)     # gate has its own test
     a = registry.agent_row(conn, "news")
     assert (a["provider_id"], a["model"]) == ("deepseek", "deepseek-chat")
 
