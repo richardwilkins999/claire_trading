@@ -1,32 +1,169 @@
-<meta charset="utf-8"><title>Claire — Providers</title>
+<meta charset="utf-8"><title>Claire — Providers &amp; MCP</title>
 <link rel="stylesheet" href="/style.css"><script src="/nav.js"></script>
 <script>nav('/providers')</script>
-<main><h1>Providers</h1><div id="out">loading…</div>
-<p class="muted">Adding a provider (incl. a local LLM) is one DB row + a key
-in etc/claire.env — see DESIGN.md §8. Keys are shown present/absent only;
-values never leave the env file.</p></main>
+<main>
+  <h1>Providers &amp; MCP</h1>
+
+  <h2>LLM providers</h2>
+  <div id="provs">loading…</div>
+  <div class="card">
+    <h3 id="pform-title">Add a provider</h3>
+    <p class="muted">Secrets never enter the database — "key env var" is the
+    NAME of a variable you add to etc/claire.env (then restart claire-api).
+    A local Ollama needs no key: kind openai_compatible, base URL
+    http://127.0.0.1:11434/v1.</p>
+    <div class="row">
+      <input id="p-id" placeholder="id e.g. ollama" style="width:110px">
+      <input id="p-name" placeholder="display name" style="width:140px">
+      <select id="p-kind"><option value="openai_compatible">
+        openai_compatible</option><option value="anthropic">anthropic</option>
+      </select>
+      <input id="p-url" placeholder="base URL (openai_compatible only)"
+        style="flex:1">
+      <input id="p-key" placeholder="key env var e.g. GROQ_API_KEY"
+        style="width:190px">
+    </div>
+    <div class="row" style="margin-top:.5rem">
+      <label class="pill"><input type="checkbox" id="p-tools" checked
+        style="margin-right:.2rem">tool_calling</label>
+      <label class="pill"><input type="checkbox" id="p-struct" checked
+        style="margin-right:.2rem">structured_output</label>
+      <input id="p-cin" type="number" step="0.0001"
+        placeholder="$/1k in" style="width:100px">
+      <input id="p-cout" type="number" step="0.0001"
+        placeholder="$/1k out" style="width:100px">
+      <label class="pill"><input type="checkbox" id="p-en" checked
+        style="margin-right:.2rem">enabled</label>
+      <button onclick="saveProvider()">Save provider</button>
+    </div>
+  </div>
+
+  <h2>MCP servers (brokers &amp; tools)</h2>
+  <div id="mcps">loading…</div>
+  <div class="card">
+    <h3>Add an MCP server</h3>
+    <p class="muted">The command is launched with the env vars named below
+    taken from etc/claire.env. A server attached to a broker activates that
+    broker's real adapter once its credentials are present; until then the
+    paper sim stands in.</p>
+    <div class="row">
+      <input id="m-id" placeholder="id e.g. ibkr" style="width:110px">
+      <select id="m-broker"><option value="">no broker</option>
+        <option>alpaca</option><option>saxo</option><option>moomoo</option>
+      </select>
+      <input id="m-cmd" placeholder="command e.g. uvx some-mcp-server"
+        style="flex:1">
+      <input id="m-refs" placeholder="env vars, comma-sep e.g. IBKR_TOKEN"
+        style="width:220px">
+    </div>
+    <div class="row" style="margin-top:.5rem">
+      <input id="m-note" placeholder="note" style="flex:1">
+      <label class="pill"><input type="checkbox" id="m-en" checked
+        style="margin-right:.2rem">enabled</label>
+      <button onclick="saveMcp()">Save MCP</button>
+    </div>
+  </div>
+</main>
 <script>
+const typing = () => ['INPUT', 'SELECT']
+  .includes((document.activeElement || {}).tagName);
+
 async function refresh() {
-  const provs = await api('/api/providers');
-  document.getElementById('out').innerHTML =
+  if (typing()) return;
+  const [provs, mcps] = await Promise.all(
+    [api('/api/providers'), api('/api/mcps')]);
+  document.getElementById('provs').innerHTML =
     '<table><tr><th>provider</th><th>kind</th><th>key</th><th>health</th>' +
-    '<th>capabilities</th><th></th></tr>' + provs.map(p => {
+    '<th>capabilities</th><th>cost /1k</th><th></th></tr>' +
+    provs.map(p => {
       const h = p.health;
       const hs = h ? (h.ok ? `<span class="ok">ok ${h.latency_ms}ms</span>`
-        : `<span class="bad" title="${h.error || ''}">failing</span>`)
+        : `<span class="bad" title="${esc(h.error || '')}">failing</span>`)
         : '<span class="muted">unprobed</span>';
-      return `<tr><td><b>${p.display_name}</b><br>
-        <span class="muted">${p.base_url || 'api.anthropic.com'}</span></td>
+      return `<tr><td><b>${esc(p.display_name)}</b>
+        ${p.enabled ? '' : '<span class="pill bad">off</span>'}<br>
+        <span class="muted">${esc(p.base_url || 'api.anthropic.com')}</span></td>
         <td>${p.kind}</td>
         <td class="${p.key_present ? 'ok' : (p.key_ref ? 'bad' : 'muted')}">
-          ${p.key_ref ? (p.key_present ? 'present' : 'MISSING') : 'none needed'}
-          <br><span class="muted">${p.key_ref || ''}</span></td>
+          ${p.key_ref ? (p.key_present ? 'present' : 'MISSING') : 'none'}
+          <br><span class="muted">${esc(p.key_ref || '')}</span></td>
         <td>${hs}</td>
         <td class="muted">${Object.keys(p.capabilities)
-          .filter(k => p.capabilities[k]).join(', ')}</td>
-        <td><button class="ghost" onclick="probe('${p.id}')">probe</button>
+          .filter(k => p.capabilities[k]).join(', ') || '—'}</td>
+        <td class="muted">${fmt(p.cost_per_1k_in, 4)} /
+          ${fmt(p.cost_per_1k_out, 4)}</td>
+        <td class="row"><button class="ghost" onclick="probe('${p.id}')">
+          probe</button>
+          <button class="ghost" onclick='editProvider(${JSON.stringify(
+            JSON.stringify(p))})'>edit</button>
+          <button class="ghost" onclick="toggleProvider(${JSON.stringify(
+            JSON.stringify(p))})">${p.enabled ? 'disable' : 'enable'}</button>
         </td></tr>`;
     }).join('') + '</table>';
+
+  document.getElementById('mcps').innerHTML = mcps.length === 0
+    ? '<p class="muted">No MCP servers configured — add one below.</p>'
+    : '<table><tr><th>id</th><th>broker</th><th>command</th><th>creds</th>' +
+      '<th>note</th><th></th></tr>' + mcps.map(m => `<tr>
+      <td><b>${esc(m.id)}</b>
+        ${m.enabled ? '' : '<span class="pill bad">off</span>'}</td>
+      <td>${esc(m.broker || '—')}</td>
+      <td><code>${esc(m.command.join(' '))}</code></td>
+      <td class="${m.creds_present ? 'ok' : (m.env_refs.length ? 'bad'
+        : 'muted')}">${m.env_refs.length === 0 ? 'none needed'
+        : m.creds_present ? 'present'
+        : 'missing: ' + m.missing_refs.join(', ')}</td>
+      <td class="muted">${esc(m.note || '')}</td>
+      <td class="row">
+        <button class="ghost" onclick='editMcp(${JSON.stringify(
+          JSON.stringify(m))})'>edit</button>
+        <button class="ghost" onclick="delMcp('${m.id}')">delete</button>
+      </td></tr>`).join('') + '</table>';
+}
+
+/* providers */
+function editProvider(pj) {
+  const p = JSON.parse(pj);
+  document.getElementById('p-id').value = p.id;
+  document.getElementById('p-name').value = p.display_name || '';
+  document.getElementById('p-kind').value = p.kind;
+  document.getElementById('p-url').value = p.base_url || '';
+  document.getElementById('p-key').value = p.key_ref || '';
+  document.getElementById('p-tools').checked = !!p.capabilities.tool_calling;
+  document.getElementById('p-struct').checked =
+    !!p.capabilities.structured_output;
+  document.getElementById('p-cin').value = p.cost_per_1k_in ?? '';
+  document.getElementById('p-cout').value = p.cost_per_1k_out ?? '';
+  document.getElementById('p-en').checked = !!p.enabled;
+  document.getElementById('pform-title').textContent = 'Edit provider: ' + p.id;
+  document.getElementById('p-id').scrollIntoView({behavior: 'smooth'});
+}
+async function toggleProvider(pj) {
+  const p = JSON.parse(pj);
+  try {
+    await api('/api/provider', {id: p.id, display_name: p.display_name,
+      kind: p.kind, base_url: p.base_url, api_key_ref: p.key_ref,
+      capabilities: p.capabilities, cost_per_1k_in: p.cost_per_1k_in,
+      cost_per_1k_out: p.cost_per_1k_out, enabled: !p.enabled});
+    toast((p.enabled ? 'disabled' : 'enabled') + ' ✓');
+  } catch (e) { toast(e.message, false); }
+  refresh();
+}
+async function saveProvider() {
+  const v = id => document.getElementById(id).value.trim();
+  try {
+    await api('/api/provider', {id: v('p-id'), display_name: v('p-name'),
+      kind: v('p-kind'), base_url: v('p-url') || null,
+      api_key_ref: v('p-key') || null,
+      capabilities: {tool_calling: document.getElementById('p-tools').checked,
+        structured_output: document.getElementById('p-struct').checked},
+      cost_per_1k_in: Number(v('p-cin')) || null,
+      cost_per_1k_out: Number(v('p-cout')) || null,
+      enabled: document.getElementById('p-en').checked});
+    toast('saved ✓ — probe it before assigning agents');
+  } catch (e) { toast(e.message, false); }
+  document.activeElement.blur();
+  refresh();
 }
 async function probe(id) {
   toast('probing ' + id + '…');
@@ -36,5 +173,34 @@ async function probe(id) {
   } catch (e) { toast(e.message, false); }
   refresh();
 }
-refresh();
+
+/* MCPs */
+function editMcp(mj) {
+  const m = JSON.parse(mj);
+  document.getElementById('m-id').value = m.id;
+  document.getElementById('m-broker').value = m.broker || '';
+  document.getElementById('m-cmd').value = m.command.join(' ');
+  document.getElementById('m-refs').value = m.env_refs.join(', ');
+  document.getElementById('m-note').value = m.note || '';
+  document.getElementById('m-en').checked = !!m.enabled;
+  document.getElementById('m-id').scrollIntoView({behavior: 'smooth'});
+}
+async function saveMcp() {
+  const v = id => document.getElementById(id).value.trim();
+  try {
+    await api('/api/mcp', {id: v('m-id'), broker: v('m-broker') || null,
+      command: v('m-cmd'), env_refs: v('m-refs'), note: v('m-note'),
+      enabled: document.getElementById('m-en').checked});
+    toast('saved ✓');
+  } catch (e) { toast(e.message, false); }
+  document.activeElement.blur();
+  refresh();
+}
+async function delMcp(id) {
+  if (!confirm('Delete MCP server "' + id + '"?')) return;
+  try { await api('/api/mcp', {id, action: 'delete'}); toast('deleted'); }
+  catch (e) { toast(e.message, false); }
+  refresh();
+}
+refresh(); setInterval(refresh, 20000);
 </script>

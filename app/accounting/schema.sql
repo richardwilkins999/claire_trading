@@ -141,6 +141,14 @@ CREATE TABLE IF NOT EXISTS price_alerts (
   fire_count_date TEXT                     -- YYYY-MM-DD the counter belongs to
 );
 
+CREATE TABLE IF NOT EXISTS mcp_servers (    -- broker/tool MCP servers,
+  id TEXT PRIMARY KEY,                      -- UI-editable like providers
+  broker TEXT,                              -- broker adapter it serves, if any
+  command TEXT NOT NULL,                    -- JSON list: launch command
+  env_refs TEXT NOT NULL DEFAULT '[]',      -- JSON list of env var NAMES
+  note TEXT, enabled INTEGER NOT NULL DEFAULT 1
+);
+
 CREATE TABLE IF NOT EXISTS schedules (      -- UI-editable job schedules; the
   job TEXT PRIMARY KEY,                     -- claire-api scheduler thread and
   description TEXT NOT NULL,                -- the dashboards watcher read this

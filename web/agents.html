@@ -1,14 +1,43 @@
-<meta charset="utf-8"><title>Claire — Agents</title>
+<meta charset="utf-8"><title>Claire — Agents &amp; Schedule</title>
 <link rel="stylesheet" href="/style.css"><script src="/nav.js"></script>
 <script>nav('/agents')</script>
-<main><h1>Agents — model &amp; provider</h1><div id="out">loading…</div></main>
+<main>
+  <h1>Agents &amp; Schedule</h1>
+
+  <h2>Agent roster — model &amp; provider</h2>
+  <div id="agents">loading…</div>
+
+  <h2>Recurring jobs — edits apply live, no restarts</h2>
+  <p class="muted">Market-scan jobs only run against exchanges that are
+  <b>open</b> at fire time (toggleable per job). Times are interpreted in the
+  timezone shown.</p>
+  <div id="jobs">loading…</div>
+
+  <h2>Also on a clock (not editable)</h2>
+  <table>
+    <tr><th>what</th><th>cadence</th><th>where</th></tr>
+    <tr><td>SSE event push to browsers</td><td>every 2s</td>
+      <td>dashboards</td></tr>
+    <tr><td>market data caches</td><td>quotes 60s · charts/FX 5–15m ·
+      screener 10m</td><td>market module</td></tr>
+    <tr><td>approval expiry</td><td>end of the instrument's next trading
+      session</td><td>minted per thesis</td></tr>
+    <tr><td>order TTL</td><td>end of current session</td>
+      <td>set per order</td></tr>
+  </table>
+</main>
 <script>
+/* ── agents ──────────────────────────────────────────────────────── */
 let providers = [];
-async function refresh() {
+const typing = () => ['INPUT', 'SELECT']
+  .includes((document.activeElement || {}).tagName);
+
+async function refreshAgents() {
+  if (typing()) return;
   const [agents, provs] = await Promise.all(
     [api('/api/agents'), api('/api/providers')]);
   providers = provs;
-  document.getElementById('out').innerHTML = agents.map(a => {
+  document.getElementById('agents').innerHTML = agents.map(a => {
     const opts = provs.map(p => {
       const compatible = a.requires.every(c => p.capabilities[c]);
       return `<option value="${p.id}" ${p.id === a.provider_id ? 'selected' : ''}
@@ -20,27 +49,32 @@ async function refresh() {
     return `<div class="card"><h3>${a.display_name || a.id}
       <span class="pill">${a.id}</span>
       ${a.enabled ? '' : '<span class="pill bad">disabled</span>'}</h3>
-      <p class="muted">tools: ${a.tools.join(', ') || 'none (structured call)'}
+      <p class="muted">${a.tools.length ? 'tools: ' + a.tools.join(', ')
+        : 'single structured call'}
       ${lr ? `· last run: ${lr.status} $${fmt(lr.cost_usd, 4)}
-        (${lr.tokens_in || 0}/${lr.tokens_out || 0} tok)` : ''}</p>
+        (${lr.tokens_in || 0}/${lr.tokens_out || 0} tok, ${ago(lr.started_at)})`
+        : '· never run'}</p>
       <div class="row">
         <select id="prov-${a.id}">${opts}</select>
         <input id="model-${a.id}" value="${a.model}" style="width:220px">
-        <button onclick="save('${a.id}')">Save</button>
-        <button class="ghost" onclick="test('${a.id}')">Test provider</button>
+        <button onclick="saveAgent('${a.id}')">Save</button>
+        <button class="ghost" onclick="testProv('${a.id}')">Test provider</button>
+        <a class="pill" href="/" onclick="localStorage.setItem('openDrawer',
+          '${a.id}')" title="activity & direct Q&A live in the Mission
+          Control drawer">activity ↗</a>
       </div></div>`;
   }).join('');
 }
-async function save(id) {
+async function saveAgent(id) {
   try {
     await api('/api/agent', {id,
       provider_id: document.getElementById('prov-' + id).value,
       model: document.getElementById('model-' + id).value});
     toast('saved ✓');
   } catch (e) { toast(e.message, false); }
-  refresh();
+  refreshAgents();
 }
-async function test(id) {
+async function testProv(id) {
   const pid = document.getElementById('prov-' + id).value;
   toast('probing ' + pid + '…');
   try {
@@ -48,5 +82,92 @@ async function test(id) {
     toast(r.ok ? `ok, ${r.latency_ms}ms` : `failed: ${r.error}`, !!r.ok);
   } catch (e) { toast(e.message, false); }
 }
-refresh();
+
+/* ── schedule (merged from the old /schedule page) ────────────────── */
+const TZS = ['Asia/Singapore', 'Asia/Hong_Kong', 'Asia/Tokyo',
+  'Australia/Sydney', 'Asia/Kolkata', 'Europe/London', 'Europe/Berlin',
+  'Europe/Paris', 'America/New_York', 'UTC', 'local'];
+const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+let JOBS = [];
+
+async function refreshJobs() {
+  if (typing()) return;
+  JOBS = await api('/api/schedules');
+  document.getElementById('jobs').innerHTML = JOBS.map(jobCard).join('');
+}
+function jobCard(j) {
+  const s = j.spec;
+  const editor = s.type === 'interval'
+    ? `every <input id="min-${j.job}" type="number" min="1" max="1440"
+        value="${s.minutes}" style="width:70px"> minutes`
+    : `at <input id="time-${j.job}" value="${s.time}" style="width:70px">
+       <select id="tz-${j.job}">${TZS.map(z => `<option ${z === s.tz ?
+         'selected' : ''}>${z}</option>`).join('')}</select>
+       <span style="display:inline-flex;gap:.3rem">${DAYS.map((d, i) =>
+         `<label class="pill" style="cursor:pointer"><input type="checkbox"
+           id="day-${j.job}-${i + 1}" ${s.days.includes(i + 1) ?
+           'checked' : ''} style="margin-right:.2rem">${d}</label>`)
+         .join('')}</span>`;
+  const openToggle = 'require_open' in s
+    ? `<label class="pill" style="cursor:pointer"><input type="checkbox"
+        id="open-${j.job}" ${s.require_open ? 'checked' : ''}
+        style="margin-right:.2rem">only when market open</label>` : '';
+  const last = j.last_run_at
+    ? `${ago(j.last_run_at)} — ${lastSummary(j.last_result)}` : 'never';
+  return `<div class="card">
+    <h3>${j.job.replace(/_/g, ' ')} <span class="pill">${j.runs_in}</span>
+      ${j.enabled ? '' : '<span class="pill bad">disabled</span>'}</h3>
+    <p class="muted">${esc(j.description)}</p>
+    <div class="row">
+      <label class="pill" style="cursor:pointer"><input type="checkbox"
+        id="en-${j.job}" ${j.enabled ? 'checked' : ''}
+        style="margin-right:.2rem">enabled</label>
+      ${editor} ${openToggle}
+      <button onclick="saveJob('${j.job}')">Save</button>
+    </div>
+    <p class="muted" style="font-family:var(--mono);font-size:.78rem">
+      next: <b class="${j.enabled ? 'ok' : 'muted'}">${j.next_run_at ?
+        ts(j.next_run_at) + ' (' + until(j.next_run_at) + ')' : '—'}</b>
+      · last: ${last}</p></div>`;
+}
+function until(t) {
+  const s = t - Date.now() / 1000;
+  if (s < 0) return 'due';
+  if (s < 5400) return 'in ' + Math.round(s / 60) + 'm';
+  if (s < 172800) return 'in ' + Math.round(s / 3600) + 'h';
+  return 'in ' + Math.round(s / 86400) + 'd';
+}
+function lastSummary(r) {
+  if (!r) return 'ok';
+  if (r.error) return '✖ ' + esc(r.error);
+  if (r.started) return r.started.length + ' run(s) started' +
+    (r.skipped_closed && r.skipped_closed.length
+      ? ', skipped closed: ' + r.skipped_closed.join(' ') : '');
+  if ('fills' in r) return `${r.fills} fill(s), ${(r.flags || []).length}
+    flag(s)`;
+  return 'ok';
+}
+async function saveJob(job) {
+  const j = JOBS.find(x => x.job === job);
+  const spec = {};
+  if (j.spec.type === 'interval')
+    spec.minutes = Number(document.getElementById('min-' + job).value);
+  else {
+    spec.time = document.getElementById('time-' + job).value.trim();
+    spec.tz = document.getElementById('tz-' + job).value;
+    spec.days = [1, 2, 3, 4, 5, 6, 7].filter(d =>
+      document.getElementById(`day-${job}-${d}`).checked);
+  }
+  if ('require_open' in j.spec)
+    spec.require_open = document.getElementById('open-' + job).checked;
+  try {
+    await api('/api/schedule', {job, spec,
+      enabled: document.getElementById('en-' + job).checked});
+    toast('saved ✓ — takes effect next cycle');
+  } catch (e) { toast(e.message, false); }
+  document.activeElement.blur();
+  refreshJobs();
+}
+refreshAgents(); refreshJobs();
+setInterval(() => { refreshAgents(); refreshJobs(); }, 15000);
 </script>

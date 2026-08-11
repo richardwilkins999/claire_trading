@@ -21,14 +21,14 @@ from . import approvals, scheduler, sessions
 from .providers import health as provider_health
 from .providers import registry
 from .tools import tradingview
-from .tools.brokers import MCP_BROKERS
+from .tools.brokers import seed_mcps
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "web"
 PAGES = {"/": "index.html", "/portfolio": "portfolio.html",
          "/markets": "markets.html", "/trading": "trading.html",
          "/agents": "agents.html", "/providers": "providers.html",
-         "/claire": "claire.html", "/schedule": "schedule.html"}
+         "/claire": "claire.html", "/schedule": "agents.html"}  # merged page
 STATIC = {"/style.css": ("style.css", "text/css"),
           "/nav.js": ("nav.js", "text/javascript"),
           "/charts.js": ("charts.js", "text/javascript")}
@@ -79,6 +79,7 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
         threading.Thread(target=sse_poller, daemon=True,
                          name="sse-poller").start()
     scheduler.seed(conn)
+    seed_mcps(conn)
 
     def api_ok():
         with status_lock:
@@ -140,6 +141,8 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                 if u.path == "/api/schedules":
                     return self._send(200, scheduler.rows_with_next(
                         conn, clock=clock))
+                if u.path == "/api/mcps":
+                    return self._send(200, self._mcps())
                 if u.path == "/api/events":
                     return self._sse()
                 if u.path == "/api/fx":
@@ -220,6 +223,10 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                         return self._send(200, {"ok": True})
                     except (KeyError, ValueError) as e:
                         return self._send(400, {"error": str(e)})
+                if u.path == "/api/provider":
+                    return self._upsert_provider(body)
+                if u.path == "/api/mcp":
+                    return self._upsert_mcp(body)
                 self._send(404, {"error": "not found"})
             except Exception as e:               # noqa: BLE001
                 traceback.print_exc()
@@ -507,9 +514,11 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                     "SELECT COUNT(*) FROM orders WHERE account_id=? AND"
                     " status IN ('pending_session','placed',"
                     "'partially_filled')", (acct["id"],)).fetchone()
-                mcp = MCP_BROKERS.get(acct["broker"])
-                creds = all(env.get(ref) for ref in mcp.env_refs) \
-                    if mcp and mcp.env_refs else False
+                mcp = conn.execute(
+                    "SELECT * FROM mcp_servers WHERE broker=? AND enabled=1",
+                    (acct["broker"],)).fetchone()
+                refs = json.loads(mcp["env_refs"]) if mcp else []
+                creds = bool(refs) and all(env.get(r) for r in refs)
                 brokers.append({
                     "broker": acct["broker"], "account": acct["id"],
                     "environment": acct["environment"],
@@ -517,10 +526,10 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                     "ccy": acct["base_currency"],
                     "open_orders": open_orders,
                     "adapter": "mcp" if creds else "paper-sim",
-                    "mcp": {"command": " ".join(mcp.command),
-                            "env_refs": mcp.env_refs,
+                    "mcp": {"command": " ".join(json.loads(mcp["command"])),
+                            "env_refs": refs,
                             "creds_present": creds,
-                            "note": mcp.note} if mcp else None})
+                            "note": mcp["note"]} if mcp else None})
             return {"agents": agents, "edges": PIPELINE_EDGES,
                     "brokers": brokers, "claire_api": api_ok(),
                     "market_data": {"source": "Yahoo Finance",
@@ -557,9 +566,90 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                                 p["api_key_ref"] and
                                 (env or {}).get(p["api_key_ref"])),
                             "capabilities": json.loads(p["capabilities"]),
+                            "cost_per_1k_in": p["cost_per_1k_in"],
+                            "cost_per_1k_out": p["cost_per_1k_out"],
                             "enabled": p["enabled"],
                             "health": dict(h) if h else None})
             return out
+
+        def _mcps(self):
+            out = []
+            for m in conn.execute("SELECT * FROM mcp_servers ORDER BY id"):
+                refs = json.loads(m["env_refs"])
+                out.append({"id": m["id"], "broker": m["broker"],
+                            "command": json.loads(m["command"]),
+                            "env_refs": refs,
+                            "creds_present": bool(refs) and
+                            all((env or {}).get(r) for r in refs),
+                            "missing_refs": [r for r in refs
+                                             if not (env or {}).get(r)],
+                            "note": m["note"],
+                            "enabled": bool(m["enabled"])})
+            return out
+
+        def _upsert_provider(self, body):
+            import re
+            pid = str(body.get("id", "")).strip()
+            if not re.fullmatch(r"[a-z0-9_-]{2,30}", pid):
+                return self._send(400, {"error":
+                                        "id must be 2-30 chars [a-z0-9_-]"})
+            kind = body.get("kind")
+            if kind not in ("anthropic", "openai_compatible", "custom"):
+                return self._send(400, {"error": "kind must be anthropic |"
+                                        " openai_compatible | custom"})
+            caps = body.get("capabilities") or {}
+            if not isinstance(caps, dict):
+                return self._send(400, {"error": "capabilities must be an"
+                                        " object of booleans"})
+            conn.execute(
+                "INSERT INTO providers (id, display_name, kind, base_url,"
+                " api_key_ref, capabilities, cost_per_1k_in, cost_per_1k_out,"
+                " enabled) VALUES (?,?,?,?,?,?,?,?,?)"
+                " ON CONFLICT(id) DO UPDATE SET display_name=excluded"
+                ".display_name, kind=excluded.kind, base_url=excluded.base_url,"
+                " api_key_ref=excluded.api_key_ref, capabilities=excluded"
+                ".capabilities, cost_per_1k_in=excluded.cost_per_1k_in,"
+                " cost_per_1k_out=excluded.cost_per_1k_out,"
+                " enabled=excluded.enabled",
+                (pid, body.get("display_name") or pid, kind,
+                 body.get("base_url"), body.get("api_key_ref"),
+                 json.dumps(caps), body.get("cost_per_1k_in"),
+                 body.get("cost_per_1k_out"),
+                 1 if body.get("enabled", True) else 0))
+            return self._send(200, {"ok": True, "id": pid})
+
+        def _upsert_mcp(self, body):
+            import re
+            import shlex
+            mid = str(body.get("id", "")).strip()
+            if not re.fullmatch(r"[a-z0-9_-]{2,30}", mid):
+                return self._send(400, {"error":
+                                        "id must be 2-30 chars [a-z0-9_-]"})
+            if body.get("action") == "delete":
+                conn.execute("DELETE FROM mcp_servers WHERE id=?", (mid,))
+                return self._send(200, {"ok": True, "deleted": mid})
+            command = body.get("command")
+            if isinstance(command, str):
+                command = shlex.split(command)
+            if not command:
+                return self._send(400, {"error": "command required"})
+            refs = body.get("env_refs") or []
+            if isinstance(refs, str):
+                refs = [r.strip() for r in refs.split(",") if r.strip()]
+            if any(not re.fullmatch(r"[A-Z][A-Z0-9_]*", r) for r in refs):
+                return self._send(400, {"error": "env_refs must be UPPER_CASE"
+                                        " env var NAMES (values stay in"
+                                        " claire.env)"})
+            conn.execute(
+                "INSERT INTO mcp_servers (id, broker, command, env_refs,"
+                " note, enabled) VALUES (?,?,?,?,?,?)"
+                " ON CONFLICT(id) DO UPDATE SET broker=excluded.broker,"
+                " command=excluded.command, env_refs=excluded.env_refs,"
+                " note=excluded.note, enabled=excluded.enabled",
+                (mid, body.get("broker"), json.dumps(command),
+                 json.dumps(refs), body.get("note"),
+                 1 if body.get("enabled", True) else 0))
+            return self._send(200, {"ok": True, "id": mid})
 
         def _assign_agent(self, body):
             try:

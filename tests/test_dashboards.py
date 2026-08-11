@@ -227,6 +227,52 @@ def test_schedule_endpoints(web):
             "job": "ghost"}).status_code == 400
 
 
+def test_merged_agents_schedule_page(web):
+    base, conn = web
+    with paired(base) as c:
+        for path in ("/agents", "/schedule"):        # /schedule → merged page
+            body = c.get(path).text
+            assert "Agents &amp; Schedule" in body, path
+
+
+def test_mcp_crud_and_provider_upsert(web):
+    base, conn = web
+    with paired(base) as c:
+        mcps = {m["id"]: m for m in c.get("/api/mcps").json()}
+        assert mcps["alpaca"]["creds_present"] is False
+        assert "ALPACA_PAPER_KEY" in mcps["alpaca"]["missing_refs"]
+        # add a custom MCP with a string command and comma refs
+        r = c.post("/api/mcp", json={"id": "ibkr", "broker": "alpaca",
+                                     "command": "uvx ibkr-mcp --paper",
+                                     "env_refs": "IBKR_TOKEN, IBKR_ACCT",
+                                     "note": "test"})
+        assert r.status_code == 200
+        m = {x["id"]: x for x in c.get("/api/mcps").json()}["ibkr"]
+        assert m["command"] == ["uvx", "ibkr-mcp", "--paper"]
+        assert m["env_refs"] == ["IBKR_TOKEN", "IBKR_ACCT"]
+        assert c.post("/api/mcp", json={
+            "id": "bad", "command": "x", "env_refs": "lower_case"
+        }).status_code == 400
+        r = c.post("/api/mcp", json={"id": "ibkr", "action": "delete"})
+        assert r.status_code == 200
+        assert "ibkr" not in {x["id"] for x in c.get("/api/mcps").json()}
+        # provider upsert: add, appears in list with costs; invalid kind 400
+        r = c.post("/api/provider", json={
+            "id": "groq", "display_name": "Groq", "kind": "openai_compatible",
+            "base_url": "https://api.groq.com/openai/v1",
+            "api_key_ref": "GROQ_API_KEY",
+            "capabilities": {"tool_calling": True, "structured_output": True},
+            "cost_per_1k_in": 0.0001, "cost_per_1k_out": 0.0002})
+        assert r.status_code == 200
+        provs = {p["id"]: p for p in c.get("/api/providers").json()}
+        assert provs["groq"]["cost_per_1k_out"] == 0.0002
+        assert provs["groq"]["key_present"] is False
+        assert c.post("/api/provider", json={
+            "id": "x!", "kind": "openai_compatible"}).status_code == 400
+        assert c.post("/api/provider", json={
+            "id": "ok", "kind": "carrier-pigeon"}).status_code == 400
+
+
 def test_tv_recommendations_offline():
     class FakeResp:
         status_code = 200

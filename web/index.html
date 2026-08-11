@@ -350,5 +350,9 @@ function connectSSE() {
     } catch {}
   };
 }
-refresh(); connectSSE(); setInterval(refresh, 20000);
+refresh().then(() => {                 // deep-link from the Agents page
+  const want = localStorage.getItem('openDrawer');
+  if (want) { localStorage.removeItem('openDrawer'); openDrawer(want); }
+});
+connectSSE(); setInterval(refresh, 20000);
 </script>

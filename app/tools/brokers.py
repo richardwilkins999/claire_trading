@@ -124,3 +124,15 @@ MCP_BROKERS = {
         env_refs=[],
         note="needs the local OpenD gateway running"),
 }
+
+
+def seed_mcps(conn):
+    """The dict above is only the SEED — the mcp_servers table is the source
+    of truth, editable from the Providers page."""
+    import json
+    for cfg in MCP_BROKERS.values():
+        conn.execute(
+            "INSERT OR IGNORE INTO mcp_servers (id, broker, command,"
+            " env_refs, note) VALUES (?,?,?,?,?)",
+            (cfg.broker, cfg.broker, json.dumps(cfg.command),
+             json.dumps(cfg.env_refs), cfg.note))
