@@ -149,7 +149,7 @@ class FakeTD:
 
 
 def test_twelvedata_client_and_market_chain():
-    td = TDClient("k", _client=FakeTD())
+    td = TDClient("k", all_exchanges=True, _client=FakeTD())
     q = td.quote(["D05.SI"])
     assert q["D05.SI"]["price"] == Decimal("41.20")
     assert q["D05.SI"]["src"] == "twelvedata"
@@ -163,6 +163,32 @@ def test_twelvedata_client_and_market_chain():
     assert m.spark(["D05.SI"])["D05.SI"]["src"] == "twelvedata"
     assert m.fx("SGD", "USD") == Decimal("0.7815")
     assert m.primary_name() == "twelvedata"
+
+
+def test_market_partitions_by_plan_coverage():
+    """Free-tier TD covers US only: US symbols ride the primary, foreign
+    symbols the fallback chain, merged in one honest response."""
+    class USOnly:
+        def supports(self, sym):
+            return "." not in sym
+
+        def quote(self, symbols):
+            return {s: {"symbol": s, "price": Decimal("1"), "currency": "USD",
+                        "stale": False, "series": [], "src": "twelvedata"}
+                    for s in symbols}
+
+    def tv(symbols):
+        return {s: {"symbol": s, "price": Decimal("2"), "currency": "HKD",
+                    "stale": False, "series": [], "src": "tradingview"}
+                for s in symbols}
+
+    def yahoo_down(url, params=None, need_crumb=False):
+        raise MarketError("429")
+    m = Market(_get=yahoo_down, primary=USOnly(), tv_quotes=tv,
+               clock=lambda: 1000)
+    q = m.spark(["NVDA", "0700.HK"])
+    assert q["NVDA"]["src"] == "twelvedata"
+    assert q["0700.HK"]["src"] == "tradingview"
 
 
 def test_custodian_drift_archive_unprotected(repo):

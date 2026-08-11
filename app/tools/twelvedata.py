@@ -28,9 +28,15 @@ def _split(yahoo_symbol: str):
 
 
 class Client:
-    def __init__(self, api_key: str, *, _client=None):
+    def __init__(self, api_key: str, *, all_exchanges=False, _client=None):
         self.key = api_key
+        # the FREE tier covers US equities + forex only; international
+        # equities need Pro+ — set TWELVEDATA_ALL_EXCHANGES=1 after upgrading
+        self.all_exchanges = all_exchanges
         self._client = _client or httpx.Client(timeout=15)
+
+    def supports(self, yahoo_symbol: str) -> bool:
+        return self.all_exchanges or _split(yahoo_symbol)[1] is None
 
     def _get(self, path, **params):
         params["apikey"] = self.key

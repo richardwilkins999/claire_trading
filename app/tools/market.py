@@ -50,7 +50,9 @@ def build_market(env=None) -> "Market":
             print(f"IBKR enabled but unusable: {e}")
     if primary is None and env.get("TWELVEDATA_API_KEY"):
         from . import twelvedata
-        primary = twelvedata.Client(env["TWELVEDATA_API_KEY"])
+        primary = twelvedata.Client(
+            env["TWELVEDATA_API_KEY"],
+            all_exchanges=bool(env.get("TWELVEDATA_ALL_EXCHANGES")))
     return Market(primary=primary)
 
 
@@ -152,14 +154,27 @@ class Market:
 
     # ── quotes ───────────────────────────────────────────────────────────
     def spark(self, symbols: list[str]) -> dict:
+        """Per-symbol source partition: the keyed primary serves what its
+        plan covers; everything else rides the free chain. Mixed `src`
+        fields in one response are normal and honest."""
+        out, rest = {}, list(symbols)
         if self._primary is not None:
-            try:
-                out = self._cached(("pq", tuple(symbols)), 60,
-                                   lambda: self._primary.quote(symbols))
-                if all(s in out for s in symbols):
-                    return out
-            except Exception:               # noqa: BLE001 — fall through
-                pass
+            covered = tuple(s for s in symbols
+                            if getattr(self._primary, "supports",
+                                       lambda s: True)(s))
+            if covered:
+                try:
+                    out = dict(self._cached(("pq", covered), 60,
+                                            lambda: self._primary.quote(
+                                                list(covered))))
+                except Exception:           # noqa: BLE001 — fall through
+                    out = {}
+            rest = [s for s in symbols if s not in out]
+        if rest:
+            out.update(self._spark_free(rest))
+        return out
+
+    def _spark_free(self, symbols: list[str]) -> dict:
         try:
             return self._spark_yahoo(symbols)
         except Exception:                   # noqa: BLE001 — Yahoo throttled/down
@@ -211,7 +226,8 @@ class Market:
     # ── OHLCV ────────────────────────────────────────────────────────────
     def chart(self, symbol: str, range_="6mo", interval="1d") -> dict:
         if self._primary is not None and not symbol.endswith("=X") \
-                and not symbol.startswith("^"):
+                and not symbol.startswith("^") \
+                and getattr(self._primary, "supports", lambda s: True)(symbol):
             try:
                 return self._cached(("pchart", symbol, range_, interval),
                                     900, lambda: self._primary.chart(

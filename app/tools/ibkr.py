@@ -41,6 +41,9 @@ class Client:
                 f"cannot reach IB Gateway at {host}:{port} — is it running "
                 f"with API enabled? ({e})") from e
 
+    def supports(self, yahoo_symbol: str) -> bool:
+        return True                             # per-exchange data subs decide
+
     def _contract(self, yahoo_symbol: str):
         from ib_insync import Stock
         for suf, (exch, ccy) in SUFFIX_IB.items():
