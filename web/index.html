@@ -9,7 +9,8 @@
   <div id="approvals" class="muted">loading…</div>
 
   <h2>The desk — click any component to inspect &amp; configure</h2>
-  <div class="lane"><span class="llabel">pipeline · LLMs propose</span>
+  <div class="lane"><span class="llabel">pipeline · scheduled screen →
+    LLMs propose → human decides</span>
     <div class="desk" id="pipeline"></div></div>
   <div class="lane"><span class="llabel">deterministic money path · no LLM</span>
     <div class="desk" id="services"></div></div>
@@ -30,7 +31,7 @@
 
 <script>
 let GRAPH = null, PROVIDERS = [], APPROVALS = {cards: [], accounts: []};
-let OVERVIEW = null, selected = null, fxCache = {};
+let OVERVIEW = null, SCHEDULES = [], selected = null, fxCache = {};
 
 const typing = () => ['INPUT', 'TEXTAREA', 'SELECT']
   .includes((document.activeElement || {}).tagName);
@@ -127,6 +128,7 @@ async function act(id, action, token, sell) {
 
 /* ── the desk: staged pipeline strip (v1 pattern) ─────────────────── */
 const STAGES = [
+  {label: 'screen', agents: ['screener']},   // scheduled scans start here
   {label: 'prepare', det: ['prepare']},
   {label: 'analyze', agents: ['fundamental', 'technical', 'news']},
   {label: 'debate', agents: ['bull', 'bear']},
@@ -135,10 +137,23 @@ const STAGES = [
   {label: 'execute', det: ['execute']},
   {label: 'record', agents: ['recorder']}];
 
-function acard(id, title, sub, cls) {
+function acard(id, title, sub, cls, sub2) {
   return `<div class="acard ${cls} ${selected === id ? 'sel' : ''}"
     onclick="openDrawer('${id}')"><b>${title}</b><br>
-    <span class="sub">${sub}</span></div>`;
+    <span class="sub">${sub}</span>${sub2 ?
+      `<br><span class="sub">${sub2}</span>` : ''}</div>`;
+}
+function until(t) {
+  const s = t - Date.now() / 1000;
+  if (s < 0) return 'due';
+  if (s < 5400) return 'in ' + Math.round(s / 60) + 'm';
+  if (s < 172800) return 'in ' + Math.round(s / 3600) + 'h';
+  return 'in ' + Math.round(s / 86400) + 'd';
+}
+function nextScan() {
+  const times = SCHEDULES.filter(j => j.job.startsWith('analysis_') &&
+    j.enabled && j.next_run_at).map(j => j.next_run_at);
+  return times.length ? 'next scan ' + until(Math.min(...times)) : 'no scans';
 }
 function renderDesk() {
   const g = GRAPH;
@@ -148,24 +163,23 @@ function renderDesk() {
       const a = g.agents[id];
       return a ? acard(id, a.display_name || id,
         `${a.provider_id}/${(a.model || '').replace('claude-', '')}`,
-        a.state) : '';
+        a.state, id === 'screener' ? nextScan() : null) : '';
     }).join('') +
     (s.det || []).map(id => acard(id, id,
       id === 'gate' ? 'human token ⏸' : 'no LLM', 'det')).join('') +
     '</div>').join('<div class="sep">›</div>');
 
   const h = OVERVIEW.health || {};
-  const svc = (id, sub, state) => acard(id, id, sub, state);
+  const svc = (id, sub, state, sub2) => acard(id, id, sub, state, sub2);
   document.getElementById('services').innerHTML = [
     svc('watcher', (h.watcher || {}).ok || 'never ran',
-        (h.watcher || {}).ok === 'ok' ? 'ok' : 'error'),
+        (h.watcher || {}).ok === 'ok' ? 'ok' : 'error',
+        'breach → sell_review'),
     svc('custodian', (h.custodian || {}).ok || 'never ran',
         (h.custodian || {}).ok === 'ok' ? 'ok' : 'error'),
     (() => { const a = g.agents.claire_chat; return a ? acard('claire_chat',
       'Claire chat', `${a.provider_id}/${(a.model || '')
       .replace('claude-', '')}`, a.state) : ''; })(),
-    (() => { const a = g.agents.screener; return a ? acard('screener',
-      'Screener', 'pre-open scans', a.state) : ''; })(),
   ].join('');
 
   document.getElementById('venues').innerHTML =
@@ -321,9 +335,9 @@ async function testProv() {
 
 /* ── overview + SSE ──────────────────────────────────────────────── */
 async function refresh() {
-  [OVERVIEW, GRAPH, PROVIDERS, APPROVALS] = await Promise.all([
+  [OVERVIEW, GRAPH, PROVIDERS, APPROVALS, SCHEDULES] = await Promise.all([
     api('/api/overview'), api('/api/agent-graph'), api('/api/providers'),
-    api('/api/approvals')]);
+    api('/api/approvals'), api('/api/schedules')]);
   document.getElementById('banner').innerHTML = OVERVIEW.flags.length
     ? `<div class="banner">${OVERVIEW.flags.map(f =>
         `<div>⚠ ${esc(f)}</div>`).join('')}</div>` : '';
