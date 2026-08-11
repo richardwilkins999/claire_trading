@@ -114,9 +114,18 @@ function jobCard(j) {
         style="margin-right:.2rem">only when market open</label>` : '';
   const last = j.last_run_at
     ? `${ago(j.last_run_at)} — ${lastSummary(j.last_result)}` : 'never';
+  const agent = j.agent
+    ? `<a class="pill warn" href="/" style="text-decoration:none"
+        onclick="localStorage.setItem('openDrawer','${j.agent}')"
+        title="opens this agent's activity drawer">🤖 invokes ${j.agent}</a>`
+    : '<span class="pill">no LLM — deterministic</span>';
   return `<div class="card">
-    <h3>${j.job.replace(/_/g, ' ')} <span class="pill">${j.runs_in}</span>
-      ${j.enabled ? '' : '<span class="pill bad">disabled</span>'}</h3>
+    <h3 style="display:flex;align-items:center;gap:.5rem">
+      ${j.job.replace(/_/g, ' ')} <span class="pill">${j.runs_in}</span>
+      ${j.enabled ? '' : '<span class="pill bad">disabled</span>'}
+      <span style="margin-left:auto;display:flex;gap:.4rem;align-items:center">
+        ${agent}${j.then ? `<span class="muted" style="font-size:.68rem">
+        → ${esc(j.then)}</span>` : ''}</span></h3>
     <p class="muted">${esc(j.description)}</p>
     <div class="row">
       <label class="pill" style="cursor:pointer"><input type="checkbox"
@@ -140,9 +149,14 @@ function until(t) {
 function lastSummary(r) {
   if (!r) return 'ok';
   if (r.error) return '✖ ' + esc(r.error);
-  if (r.started) return r.started.length + ' run(s) started' +
-    (r.skipped_closed && r.skipped_closed.length
-      ? ', skipped closed: ' + r.skipped_closed.join(' ') : '');
+  if (r.started) {
+    const picks = r.started.map(s => typeof s === 'string' ? s
+      : `${s.ticker} (${esc(s.reason || '')})`).join(' · ');
+    return (r.started.length + ' run(s)' + (picks ? ': ' + picks : '')) +
+      (r.picker ? ` · picked by ${esc(r.picker)}` : '') +
+      (r.skipped_closed && r.skipped_closed.length
+        ? ' · skipped closed: ' + r.skipped_closed.join(' ') : '');
+  }
   if ('fills' in r) return `${r.fills} fill(s), ${(r.flags || []).length}
     flag(s)`;
   return 'ok';

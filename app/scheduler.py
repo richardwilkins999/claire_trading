@@ -37,6 +37,19 @@ DEFAULTS = [
 ]
 
 
+# which agent a job invokes (shown on the schedule card); deterministic
+# jobs run no LLM — that is a design property, not an omission
+JOB_INVOKES = {
+    "analysis_asia": {"agent": "screener",
+                      "then": "full pipeline per pick"},
+    "analysis_eu": {"agent": "screener", "then": "full pipeline per pick"},
+    "analysis_us": {"agent": "screener", "then": "full pipeline per pick"},
+    "custodian": {"agent": None, "then": None},
+    "reconcile": {"agent": None, "then": None},
+    "watcher": {"agent": None, "then": "sell_review pipeline on breach"},
+}
+
+
 def seed(conn):
     for job, desc, runs_in, spec in DEFAULTS:
         conn.execute(
@@ -94,9 +107,11 @@ def rows_with_next(conn, clock=time.time):
                 else None
         except Exception:                       # noqa: BLE001
             nxt = None
+        invokes = JOB_INVOKES.get(r["job"], {"agent": None, "then": None})
         out.append({"job": r["job"], "description": r["description"],
                     "runs_in": r["runs_in"], "spec": spec,
                     "enabled": bool(r["enabled"]),
+                    "agent": invokes["agent"], "then": invokes["then"],
                     "last_run_at": r["last_run_at"],
                     "last_result": json.loads(r["last_result"] or "null"),
                     "next_run_at": nxt})

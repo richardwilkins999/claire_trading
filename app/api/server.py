@@ -103,6 +103,7 @@ def start_scheduler(conn, repo, desk, market, custodian):
     scheduler.seed(conn)
 
     def run_analysis(spec):
+        from ..screener import ScreenerError, screener_pick
         cal = sessions.load(conn) or None
         now = datetime.now(timezone.utc)
         exchanges = REGIONS[spec.get("region", "us")]
@@ -115,13 +116,26 @@ def start_scheduler(conn, repo, desk, market, custodian):
         held = {r["ticker"] for r in conn.execute(
             "SELECT DISTINCT i.ticker FROM lots l JOIN instruments i"
             " ON i.id=l.instrument_id WHERE l.qty_remaining > 0")}
+        # the SCREENER AGENT judges the shortlist; deterministic fallback
+        # so a provider outage never kills a scheduled run (§1.7)
+        picker, picks = "screener agent", []
+        try:
+            picks = [(p.ticker, p.exchange, p.reason) for p in
+                     screener_pick(conn, market, exchanges, held)]
+        except ScreenerError as e:
+            picker = f"deterministic fallback ({e})"
+            picks = [(t, ex, "top of book") for t, ex in
+                     pick_candidates(market, exchanges, held)]
         started = []
-        for ticker, ex in pick_candidates(market, exchanges, held):
+        for ticker, ex, reason in picks:
             inst = Instrument(id=f"{ex}:{ticker}", ticker=ticker, exchange=ex,
                               currency=CCY[ex],
                               lot_size=100 if ex == "SGX" else 1)
-            started.append(desk.start_run(inst))
-        return {"started": started, "skipped_closed": skipped}
+            started.append({"work_item": desk.start_run(inst),
+                            "ticker": ticker, "exchange": ex,
+                            "reason": reason})
+        return {"started": started, "picker": picker,
+                "skipped_closed": skipped}
 
     def run_reconcile(spec):
         report = custodian.run_once()
