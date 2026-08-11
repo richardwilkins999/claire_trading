@@ -207,9 +207,14 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                         " LIMIT 300", (int(q.get("since", 0)),))]
                     return self._send(200, {"events": rows})
                 self._send(404, {"error": "not found"})
+            except (BrokenPipeError, ConnectionResetError):
+                return                           # client went away; not news
             except Exception as e:               # noqa: BLE001
                 traceback.print_exc()
-                self._send(500, {"error": str(e)})
+                try:
+                    self._send(500, {"error": str(e)})
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
 
         # ── POST ─────────────────────────────────────────────────────────
         def do_POST(self):                       # noqa: N802
@@ -273,9 +278,14 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                             (t, ex, body.get("note"), int(clock())))
                     return self._send(200, {"ok": True})
                 self._send(404, {"error": "not found"})
+            except (BrokenPipeError, ConnectionResetError):
+                return                           # client went away; not news
             except Exception as e:               # noqa: BLE001
                 traceback.print_exc()
-                self._send(500, {"error": str(e)})
+                try:
+                    self._send(500, {"error": str(e)})
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
 
         def _ask_proxy(self, body, upstream="/ask"):
             """Stream claire-api NDJSON straight through to the browser."""
