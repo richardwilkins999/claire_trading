@@ -258,6 +258,47 @@ def test_account_topup_withdraw_and_approve_balance_guard(web):
         assert row["token_state"] == "minted"       # nothing consumed
 
 
+def test_narrative_formatting_and_per_run_fetch(web, tmp_path):
+    """Runs list caps at 5 and flags which have a write-up; narratives are
+    formatted for humans (the file on disk stays the raw record)."""
+    from app.narrative_format import format_narrative
+    base, conn = web
+    # a debater's JSON dump becomes prose
+    out = format_narrative('# arbiter — AMD\n\n' + json.dumps({
+        "direction": "pass", "conviction": 0.3, "stop_loss": 92,
+        "conditions": ["feeds disagree", "no forward EPS"]}))
+    assert "**Verdict: PASS**" in out
+    assert "- feeds disagree" in out
+    assert "stop loss 92" in out
+    assert "{" not in out                        # no raw JSON left
+    # an analyst transcript becomes numbered steps + prose
+    out = format_narrative('# news — AMD\n\n'
+                           '[human] Research AMD now.\n'
+                           '[ai] [{"type": "text", "text": "Looking now."},'
+                           ' {"type": "tool_use", "name": "web_search",'
+                           ' "input": {"query": "AMD news"}}]\n'
+                           '[tool] {"title": "AMD beats"}')
+    assert "**Task** — Research AMD now." in out
+    assert "Looking now." in out
+    assert "called `web_search`" in out
+    assert "query=AMD news" in out
+    assert '"type": "tool_use"' not in out       # blocks rendered, not dumped
+
+    with paired(base) as c:
+        for i in range(7):                       # more runs than the cap
+            conn.execute(
+                "INSERT INTO agent_runs (id, agent_id, work_item_id,"
+                " provider_id, model, started_at, status) VALUES"
+                " (?,'news','wi_1','anthropic','m',?,'ok')",
+                (f"r{i}", T0 - i * 60))
+        act = c.get("/api/agent-activity?id=news").json()
+        assert len(act["runs"]) == 5             # scrollable list of last 5
+        assert all("has_narrative" in r for r in act["runs"])
+        assert act["runs"][0]["has_narrative"] is False   # none on disk here
+        miss = c.get("/api/agent-narrative?agent=news&work_item=nope").json()
+        assert "error" in miss
+
+
 def test_node_status_vocabulary(web):
     """Every node type reports the same status vocabulary: active (glowing),
     ok, warn, error, idle, disabled — computed from real conditions, not

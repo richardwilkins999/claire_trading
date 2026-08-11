@@ -174,6 +174,10 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                 if u.path == "/api/agent-activity":
                     return self._send(200, self._agent_activity(
                         q.get("id", "")))
+                if u.path == "/api/agent-narrative":
+                    return self._send(200, self._narrative(
+                        q.get("agent", ""), q.get("work_item", "")) or
+                        {"error": "no narrative for that run"})
                 if u.path == "/api/exchange-info":
                     return self._send(200, self._exchange_info(
                         q.get("exchange", "NASDAQ")))
@@ -326,6 +330,19 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                     if q in sse_clients:
                         sse_clients.remove(q)
 
+        def _narrative(self, agent_id, work_item):
+            """One run's write-up, formatted for a human (the file on disk
+            stays the raw audit record)."""
+            from .narrative_format import format_narrative
+            if not narratives or not work_item:
+                return None
+            try:
+                raw = narratives.read(work_item, agent_id)
+            except OSError:
+                return None
+            return {"work_item": work_item, "agent": agent_id,
+                    "text": format_narrative(raw)[:12000]}
+
         def _exchanges(self):
             """The world-markets strip: pure session-calendar data — no Yahoo,
             immune to rate limits, always instant."""
@@ -357,23 +374,22 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
 
         def _agent_activity(self, agent_id):
             """What is this agent doing? Recent LLM runs, the work items they
-            belong to, and the agent's latest written narrative."""
+            belong to, and which of them left a narrative to read."""
             runs = [dict(r) for r in conn.execute(
                 "SELECT r.*, w.ticker, w.state AS wi_state FROM agent_runs r"
                 " LEFT JOIN work_items w ON w.id = r.work_item_id"
-                " WHERE r.agent_id=? ORDER BY r.started_at DESC LIMIT 10",
+                " WHERE r.agent_id=? ORDER BY r.started_at DESC LIMIT 5",
                 (agent_id,))]
             current = next((r for r in runs if r["status"] == "running"), None)
+            for r in runs:
+                r["has_narrative"] = bool(
+                    r["work_item_id"] and narratives and
+                    f"{agent_id}.md" in narratives.list(r["work_item_id"]))
             narrative = None
             for r in runs:
-                if r["work_item_id"] and narratives:
-                    try:
-                        narrative = {"work_item": r["work_item_id"],
-                                     "text": narratives.read(
-                                         r["work_item_id"], agent_id)[:2000]}
-                        break
-                    except OSError:
-                        continue
+                if r.get("has_narrative"):
+                    narrative = self._narrative(agent_id, r["work_item_id"])
+                    break
             (cost_today,) = conn.execute(
                 "SELECT COALESCE(SUM(cost_usd),0) FROM agent_runs"
                 " WHERE agent_id=? AND started_at > ?",

@@ -394,20 +394,22 @@ async function openDrawer(id) {
         agent's own model + prompt, grounded in its run history — for
         desk-wide questions use <a href="/claire">Claire</a></p>
       <div id="d-answer"></div>
-      <h2>Recent runs</h2>
+      <h2>Recent runs <span class="muted" style="font-weight:400;
+        text-transform:none;letter-spacing:0">— click one to read it</span></h2>
       ${act.runs.length === 0 ? `<p class="muted">Never run — launch a
         pipeline from Markets and this agent will light up.</p>`
-        : `<table><tr><th>when</th><th>work item</th><th>status</th>
-          <th>tokens</th><th>cost</th></tr>` + act.runs.map(r =>
-          `<tr><td>${ago(r.started_at)}</td>
-          <td>${esc(r.ticker || r.work_item_id || '—')}</td>
-          <td class="${r.status === 'ok' ? 'ok' : r.status === 'error' ?
-            'bad' : 'warn'}">${r.status}</td>
-          <td>${r.tokens_in || 0}/${r.tokens_out || 0}</td>
-          <td>$${fmt(r.cost_usd, 4)}</td></tr>`).join('') + '</table>'}
-      ${act.narrative ? `<h2>Latest narrative
-        (${esc(act.narrative.work_item)})</h2>
-        <pre style="white-space:pre-wrap">${esc(act.narrative.text)}</pre>` : ''}
+        : `<div class="runlist">` + act.runs.map((r, i) =>
+          `<div class="runrow" id="rr-${i}" onclick="pickRun('${id}',${i},
+            '${r.work_item_id || ''}')">
+            <span class="rt">${esc(r.ticker || r.work_item_id || '—')}</span>
+            <span class="muted">${ago(r.started_at)}</span>
+            <span class="${r.status === 'ok' ? 'ok' : r.status === 'error' ?
+              'bad' : 'warn'}">${r.status}</span>
+            <span class="muted">${r.tokens_in || 0}/${r.tokens_out || 0} tok</span>
+            <span class="muted">$${fmt(r.cost_usd, 4)}</span>
+            <span>${r.has_narrative ? '📄' : ''}</span>
+          </div>`).join('') + '</div>'}
+      <div id="d-narr"></div>
       <h2>Model &amp; provider</h2>
       <div class="row">
         <select id="p-prov">${provOpts}</select>
@@ -417,6 +419,8 @@ async function openDrawer(id) {
       <details style="margin-top:.6rem"><summary class="muted">system prompt
         </summary><pre style="white-space:pre-wrap">${esc(a.system_prompt)}
         </pre></details>`;
+    const first = act.runs.findIndex(r => r.has_narrative);
+    if (first >= 0) pickRun(id, first, act.runs[first].work_item_id);
     return;
   }
   const b = (g.brokers || []).find(x => x.broker === id);
@@ -451,6 +455,38 @@ async function openDrawer(id) {
     (['watcher', 'custodian'].includes(id)
       ? `<p><a href="/agents">change its schedule</a></p>` : '') +
     (id === 'market' ? `<p><a href="/providers">data sources</a></p>` : '');
+}
+async function pickRun(agentId, idx, workItem) {
+  document.querySelectorAll('.runrow').forEach((el, i) =>
+    el.classList.toggle('sel', i === idx));
+  const out = document.getElementById('d-narr');
+  if (!out) return;
+  if (!workItem) { out.innerHTML =
+    '<p class="muted">This run has no work item attached.</p>'; return; }
+  out.innerHTML = '<p class="muted">loading write-up…</p>';
+  try {
+    const n = await api(`/api/agent-narrative?agent=${
+      encodeURIComponent(agentId)}&work_item=${encodeURIComponent(workItem)}`);
+    out.innerHTML = n.error
+      ? `<h2>Write-up</h2><p class="muted">${esc(n.error)} — this agent makes
+         a single structured call and does not always leave one.</p>`
+      : `<h2>What ${esc(agentId)} wrote · ${esc(workItem)}</h2>
+         <div class="narr">${mdLite(n.text)}</div>`;
+  } catch (e) {
+    out.innerHTML = `<p class="bad">${esc(e.message)}</p>`;
+  }
+}
+/* minimal markdown: bold, bullets, code, paragraphs — no library needed */
+function mdLite(t) {
+  return esc(t)
+    .replace(/^# (.+)$/gm, '<h3>$1</h3>')
+    .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+    .replace(/_(.+?)_/g, '<i>$1</i>')
+    .replace(/`(.+?)`/g, '<code>$1</code>')
+    .replace(/^- (.+)$/gm, '<li>$1</li>')
+    .replace(/(<li>[\s\S]*?<\/li>)(?!\s*<li>)/g, '<ul>$1</ul>')
+    .split(/\n{2,}/).map(p => p.match(/^\s*<(h3|ul)/) ? p
+      : `<p>${p.replace(/\n/g, '<br>')}</p>`).join('');
 }
 async function askAgent(id) {
   const q = document.getElementById('d-q').value.trim();
