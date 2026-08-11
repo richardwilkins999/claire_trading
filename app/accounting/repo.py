@@ -119,7 +119,7 @@ class Repo:
                      broker_order_id=None):
         if qty <= 0:
             raise LedgerError("order qty must be positive")
-        self._check_risk(account_id, instrument_id, side, qty, limit_price, ts)
+        self.check_risk(account_id, instrument_id, side, qty, limit_price, ts)
         self.conn.execute(
             "INSERT INTO orders (id, work_item_id, account_id, instrument_id, side,"
             " qty, limit_price, stop_loss, take_profit, status, broker_order_id,"
@@ -152,7 +152,9 @@ class Repo:
             "SELECT * FROM orders WHERE status IN"
             " ('pending_session','placed','partially_filled')").fetchall()
 
-    def _check_risk(self, account_id, instrument_id, side, qty, limit_price, ts):
+    def check_risk(self, account_id, instrument_id, side, qty, limit_price, ts):
+        """Public so the executor can validate BEFORE the venue sees the
+        order; create_order runs it again (idempotent, cheap)."""
         acct = self.account(account_id)
         limits = json.loads(acct["risk_limits"])
         if not limits:

@@ -227,6 +227,8 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                     return self._upsert_provider(body)
                 if u.path == "/api/mcp":
                     return self._upsert_mcp(body)
+                if u.path == "/api/account-action":
+                    return self._account_action(body)
                 self._send(404, {"error": "not found"})
             except Exception as e:               # noqa: BLE001
                 traceback.print_exc()
@@ -650,6 +652,38 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                  json.dumps(refs), body.get("note"),
                  1 if body.get("enabled", True) else 0))
             return self._send(200, {"ok": True, "id": mid})
+
+        def _account_action(self, body):
+            """Top-up / withdraw paper cash — paired browsers only (it moves
+            the ledger), every movement is a cash_transactions row."""
+            from .accounting.money import to_micro
+            if dash_key and not self._paired():
+                return self._send(403, {"error": "dashboard not paired"})
+            account = body.get("account_id", "")
+            action = body.get("action")
+            try:
+                amount = to_micro(str(body.get("amount", 0)))
+            except Exception:                    # noqa: BLE001
+                return self._send(400, {"error": "amount must be a number"})
+            if amount <= 0:
+                return self._send(400, {"error": "amount must be positive"})
+            from .accounting.repo import InsufficientCash, LedgerError
+            try:
+                if action == "deposit":
+                    repo.deposit(account, amount, ts=int(clock()),
+                                 note="dashboard top-up")
+                elif action == "withdraw":
+                    repo.withdraw(account, amount, ts=int(clock()),
+                                  note="dashboard withdrawal")
+                else:
+                    return self._send(400, {"error":
+                                            "action must be deposit|withdraw"})
+            except InsufficientCash as e:
+                return self._send(400, {"error": str(e)})
+            except LedgerError as e:
+                return self._send(400, {"error": str(e)})
+            return self._send(200, {"ok": True,
+                                    "balance": repo.cash_balance(account) / 1e6})
 
         def _assign_agent(self, body):
             try:

@@ -24,6 +24,10 @@ def world():
     conn = db.connect(":memory:")
     db.init(conn)
     repo = Repo(conn)
+    repo.create_account("alpaca-paper", "alpaca", "paper", "USD",
+                        fee_model={"type": "flat", "per_trade": "0"},
+                        ts=CLOCK())
+    repo.deposit("alpaca-paper", 10_000_000_000, ts=CLOCK())  # $10k
     script = Script()
     desk = Desk(conn, script.deps,
                 SqliteSaver(sqlite3.connect(":memory:", check_same_thread=False)),

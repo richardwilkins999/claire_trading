@@ -52,7 +52,23 @@ def thesis_action(conn, payload: dict, resume_post, *, clock=time.time):
         raise AuthError(400, "approve needs a broker")
     if action == "approve" and not (payload.get("size_base") or
                                     payload.get("qty")):
-        raise AuthError(400, "approve needs size_base (buy) or qty (sell)")
+        raise AuthError(400, "approve needs size_base (buy) or qty (sell) —"
+                             " a positive quantity is mandatory")
+    if action == "approve" and payload.get("size_base"):
+        acct = conn.execute("SELECT id, base_currency FROM broker_accounts"
+                            " WHERE broker=? LIMIT 1",
+                            (payload["broker"],)).fetchone()
+        if acct is None:
+            raise AuthError(400, f"no account for broker "
+                                 f"{payload['broker']!r}")
+        (bal,) = conn.execute(
+            "SELECT COALESCE(SUM(amount_base),0) FROM cash_transactions"
+            " WHERE account_id=?", (acct["id"],)).fetchone()
+        if float(payload["size_base"]) > bal / 1e6:
+            raise AuthError(400, f"size {payload['size_base']:.2f} exceeds "
+                                 f"{acct['id']} cash "
+                                 f"{bal / 1e6:.2f} {acct['base_currency']} — "
+                                 "top up on the Portfolio page or reduce size")
 
     # authorize: mark pending_resume (NOT burned) + audit row
     conn.execute("UPDATE work_items SET token_state='pending_resume',"

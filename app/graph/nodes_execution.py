@@ -2,13 +2,15 @@
 file. An approved typed thesis contains every number needed; execution is a
 function, not a conversation.
 """
+import json
 import time
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
 from .. import sessions
-from ..accounting.money import to_micro
+from ..accounting.money import from_micro, mul_micro, to_micro
+from ..accounting.repo import InsufficientCash
 from ..tools.market import yahoo_symbol
 
 
@@ -33,8 +35,10 @@ def build_execute(repo, brokers: dict, market, *, account_for,
         oid = f"ord_{uuid.uuid4().hex[:12]}"
 
         if not sessions.is_open(inst.exchange, now, cal):       # §14a
-            qty = _intended_qty(ap, th, inst, market, symbol, account_id, repo)
-            repo.create_order(
+            qty, price_base = _intended_qty(ap, th, inst, market, symbol,
+                                            account_id, repo, state.kind)
+            _pre_checks(repo, account_id, inst, th, qty, price_base, ts)
+            repo.create_order(  # queued for the open; checks re-run at fill
                 id=oid, account_id=account_id, instrument_id=inst.id,
                 side=th.direction, qty=to_micro(qty),
                 limit_price=to_micro(str(th.entry_high)) if th.entry_high else None,
@@ -45,9 +49,9 @@ def build_execute(repo, brokers: dict, market, *, account_for,
                                                  cal).timestamp()), ts=ts)
             return {"order_ids": [oid]}             # custodian places at next open
 
-        qty = _intended_qty(ap, th, inst, market, symbol, account_id, repo)
-        if qty <= 0:
-            raise ValueError("size too small for one lot at current price")
+        qty, price_base = _intended_qty(ap, th, inst, market, symbol,
+                                        account_id, repo, state.kind)
+        _pre_checks(repo, account_id, inst, th, qty, price_base, ts)
         placed = brokers[ap.broker].place_bracket(
             symbol=symbol, side=th.direction, qty=qty,
             limit=th.entry_high, stop_loss=th.stop_loss,
@@ -66,21 +70,45 @@ def build_execute(repo, brokers: dict, market, *, account_for,
                                              cal).timestamp()), ts=ts)
         return {"order_ids": [oid]}                 # fills arrive ASYNC (§12)
 
-    def _intended_qty(ap, th, inst, market, symbol, account_id, repo_):
+    def _intended_qty(ap, th, inst, market, symbol, account_id, repo_, kind):
         if th.direction == "sell":
-            if ap.qty:                              # exits are sized in shares
-                return Decimal(str(ap.qty))
             held, _, _ = repo_.position(account_id, inst.id)
-            return Decimal(held) / 1_000_000        # close the whole position
+            held_shares = Decimal(held) / 1_000_000
+            qty = Decimal(str(ap.qty)) if ap.qty else held_shares
+            if kind == "sell_review":
+                # an exit review closes a position — it never flips short
+                qty = min(qty, held_shares)
+            return qty, None
         acct = repo_.account(account_id)
         q = market.quote(symbol)
-        price_native = q["price"]
         rate = market.fx(q["currency"], acct["base_currency"])
-        price_base = Decimal(price_native) * rate
+        price_base = Decimal(q["price"]) * rate
         return position_qty(Decimal(str(ap.size_base)), price_base,
-                            inst.lot_size)
+                            inst.lot_size), price_base
 
     return execute
+
+
+def _pre_checks(repo, account_id, inst, th, qty, price_base, ts):
+    """Everything that must hold BEFORE the venue sees the order (§11):
+    a real quantity, cash to cover cost + estimated fee, and risk caps."""
+    if qty is None or qty <= 0:
+        raise ValueError(
+            "order quantity is zero — size too small for one lot, or a sell "
+            "with no position and no explicit qty")
+    limit = to_micro(str(th.entry_high)) if th.entry_high else None
+    repo.check_risk(account_id, inst.id, th.direction, to_micro(qty),
+                    limit, ts)
+    if th.direction == "buy" and price_base is not None:
+        cost = mul_micro(to_micro(qty), to_micro(str(price_base)))
+        acct = repo.account(account_id)
+        fee = repo._fee_for(json.loads(acct["fee_model"]), cost)
+        balance = repo.cash_balance(account_id)
+        if cost + fee > balance:
+            raise InsufficientCash(
+                f"order needs {from_micro(cost + fee):.2f} "
+                f"{acct['base_currency']} (incl. ~{from_micro(fee):.2f} fee) "
+                f"but {account_id} holds {from_micro(balance):.2f}")
 
 
 def build_record(repo, narratives, *, clock=time.time):

@@ -66,7 +66,8 @@ class World:
             " VALUES (?, 'pipeline', 'NVDA', 'executing', ?, ?, ?)",
             (wi, wi, self.clock(), self.clock()))
         kw = dict(entry_low=99.0, entry_high=101.0, stop_loss=95.0,
-                  take_profit=120.0) if direction == "buy" else {}
+                  take_profit=120.0) if direction == "buy" else \
+            dict(entry_low=99.0, entry_high=101.0, stop_loss=110.0)
         return PipelineState(
             work_item_id=wi, ticker="NVDA", instrument=NVDA,
             thesis=Thesis(ticker="NVDA", direction=direction, conviction=0.7,
@@ -74,6 +75,51 @@ class World:
             approval=Approval(status="approved", size_base=size,
                               broker="alpaca", actor="human", token="t",
                               at=datetime.now(timezone.utc)))
+
+
+def test_buy_exceeding_balance_never_reaches_the_venue():
+    w = World()                                 # balance 50k
+    with pytest.raises(Exception, match="holds 50,?000|holds 50000"):
+        w.execute(w.state(size=60000.0))
+    assert w.broker.orders == {}                # venue never saw it
+    (n,) = w.conn.execute("SELECT COUNT(*) FROM orders").fetchone()
+    assert n == 0
+
+
+def test_risk_cap_checked_before_placement():
+    w = World()
+    w.repo.create_account("capped", "alpaca", "paper", "USD",
+                          fee_model={"type": "flat", "per_trade": "0"},
+                          risk_limits={"max_order_base": 100}, ts=OPEN_TS)
+    w.repo.deposit("capped", to_micro("50000"), ts=OPEN_TS)
+    from app.graph.nodes_execution import build_execute
+    execute = build_execute(w.repo, {"alpaca": w.broker}, w.market,
+                            account_for=lambda b: "capped", clock=w.clock)
+    from app.accounting.repo import RiskLimitExceeded
+    with pytest.raises(RiskLimitExceeded):
+        execute(w.state(size=1000.0))
+    assert w.broker.orders == {}                # refused BEFORE placement
+
+
+def test_sell_review_never_flips_short():
+    w = World(fill_mode="instant")
+    w.execute(w.state())                        # buy ~10 shares
+    w.custodian.run_once()
+    st = w.state(wi="wi_sr", direction="sell")
+    st = st.model_copy(update={"kind": "sell_review",
+                               "approval": st.approval.model_copy(
+                                   update={"qty": 999.0})})
+    out = w.execute(st)
+    o = w.repo.order(out["order_ids"][0])
+    assert o["qty"] == to_micro("10")           # capped at held, not 999
+
+
+def test_sell_with_no_position_and_no_qty_refused():
+    w = World()
+    st = w.state(wi="wi_s2", direction="sell")  # approval.qty defaults None
+    with pytest.raises(ValueError, match="quantity is zero"):
+        w.execute(st)
+    assert w.broker.orders == {}
 
 
 def test_position_qty_lot_floor():

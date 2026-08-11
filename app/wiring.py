@@ -36,17 +36,31 @@ def build_brokers(env=os.environ):
     return brokers
 
 
+def make_prepare(repo):
+    """Prepare owns instrument resolution: currency from the exchange suffix
+    (GBp→GBP), venue lot size, and the desk.db registration — callers only
+    need ticker + exchange, and every entry point gets identical results."""
+    from .tools.market import currency_for, yahoo_symbol
+
+    def prepare(state):
+        inst = state.instrument
+        ccy = currency_for(yahoo_symbol(inst.ticker, inst.exchange))
+        resolved = inst.model_copy(update={
+            "currency": "GBP" if ccy == "GBp" else ccy,
+            "lot_size": max(inst.lot_size, 100 if inst.exchange == "SGX"
+                            else 1)})
+        repo.add_instrument(resolved.id, resolved.ticker, resolved.exchange,
+                            resolved.currency, resolved.name)
+        return {"instrument": resolved}
+    return prepare
+
+
 def build_deps(conn, repo, narratives, market, *, brokers=None,
                clock=time.time, cal=None, env=os.environ) -> Deps:
     structured = default_structured_factory(conn, env=env)
     tool_builder = build_tool_registry(market, narratives, env=env)
     brokers = brokers or build_brokers(env)
-
-    def prepare(state):
-        repo.add_instrument(state.instrument.id, state.instrument.ticker,
-                            state.instrument.exchange,
-                            state.instrument.currency)
-        return {}
+    prepare = make_prepare(repo)
 
     analysts = {a: make_analyst(conn, a, narratives, tool_builder,
                                 structured_factory=structured, env=env)

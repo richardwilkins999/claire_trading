@@ -227,6 +227,37 @@ def test_schedule_endpoints(web):
             "job": "ghost"}).status_code == 400
 
 
+def test_account_topup_withdraw_and_approve_balance_guard(web):
+    base, conn = web
+    with httpx.Client(base_url=base, timeout=5) as anon:
+        r = anon.post("/api/account-action",
+                      json={"account_id": "acct", "action": "deposit",
+                            "amount": 500})
+        assert r.status_code == 403                 # money moves need pairing
+    with paired(base) as c:
+        r = c.post("/api/account-action",
+                   json={"account_id": "acct", "action": "deposit",
+                         "amount": 500})
+        assert (r.status_code, r.json()["balance"]) == (200, 1500)
+        r = c.post("/api/account-action",
+                   json={"account_id": "acct", "action": "withdraw",
+                         "amount": 99999})
+        assert r.status_code == 400                 # exceeds balance
+        assert c.post("/api/account-action",
+                      json={"account_id": "acct", "action": "deposit",
+                            "amount": -5}).status_code == 400
+        # approving a buy larger than the account's cash is refused upfront
+        r = c.post("/api/thesis-action",
+                   json={"work_item_id": "wi_1", "action": "approve",
+                         "size_base": 99999, "broker": "alpaca",
+                         "token": "tok_abc"})
+        assert r.status_code == 400
+        assert "exceeds" in r.json()["error"]
+        row = conn.execute("SELECT token_state FROM work_items"
+                           " WHERE id='wi_1'").fetchone()
+        assert row["token_state"] == "minted"       # nothing consumed
+
+
 def test_merged_agents_schedule_page(web):
     base, conn = web
     with paired(base) as c:

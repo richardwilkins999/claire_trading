@@ -12,6 +12,13 @@ async function refresh() {
     <p>cash <b>${fmt(a.cash)}</b> ${a.ccy} ·
        realized P&amp;L <b class="${a.realized_pl >= 0 ? 'ok' : 'bad'}">
        ${fmt(a.realized_pl)}</b></p>
+    <div class="row" style="margin:.4rem 0">
+      <input id="amt-${a.id}" type="number" min="0" placeholder="amount"
+        style="width:110px">
+      <button class="ghost" onclick="acct('${a.id}','deposit')">Top up</button>
+      <button class="ghost" onclick="acct('${a.id}','withdraw')">Withdraw
+        </button>
+    </div>
     ${a.positions.length === 0 ? '<p class="muted">no open positions</p>' :
     `<table><tr><th>instrument</th><th>qty</th><th>cost basis</th>
        <th>avg (incl fees)</th></tr>` +
@@ -29,5 +36,19 @@ async function refresh() {
         <td class="muted">${ts(a.last_fired_at)}</td></tr>`).join('') +
       '</table>';
 }
-refresh(); setInterval(refresh, 15000);
+async function acct(id, action) {
+  const amount = Number(document.getElementById('amt-' + id).value);
+  if (!amount || amount <= 0) return toast('enter an amount', false);
+  if (!confirm(`${action} ${fmt(amount)} ${action === 'deposit' ? 'into'
+    : 'from'} ${id} (paper cash)?`)) return;
+  try {
+    const r = await api('/api/account-action',
+      {account_id: id, action, amount});
+    toast(`${action} ✓ — balance ${fmt(r.balance)}`);
+  } catch (e) { toast(e.message, false); }
+  refresh();
+}
+const typing = () => ['INPUT', 'SELECT']
+  .includes((document.activeElement || {}).tagName);
+refresh(); setInterval(() => { if (!typing()) refresh(); }, 15000);
 </script>
