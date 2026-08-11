@@ -275,11 +275,15 @@ async function openDrawer(id) {
     return;
   }
   const desc = {
-    prepare: 'Instrument + FX enrichment. Deterministic.',
+    prepare: 'Resolves the instrument: currency from the exchange suffix ' +
+      '(GBp→GBP), venue lot size, desk.db registration. Deterministic — ' +
+      'every entry point gets identical instruments.',
     gate: 'interrupt() — the run suspends here until you present the ' +
       'single-use token from an approval card. No LLM can pass it.',
-    execute: 'Session-aware order placement with risk caps. No LLM in ' +
-      'this file — an approved typed thesis contains every number needed.',
+    execute: 'Pre-placement guards, then session-aware order placement. ' +
+      'Before any venue sees an order: positive quantity required, cash ' +
+      'must cover cost + estimated fee, risk caps checked, exits capped ' +
+      'at held quantity. No LLM in this file.',
     watcher: 'LLM-free stop-loss monitor: session-aware, escalating ' +
       're-alerts, launches sell-reviews. Publishes its own health.',
     custodian: 'Fills, order TTLs, approval expiry, orphan checks, ' +

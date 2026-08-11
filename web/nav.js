@@ -1,7 +1,7 @@
 function nav(active) {
-  const items = [["/", "Mission Control"], ["/claire", "Claire"],
-    ["/trading", "Trading"], ["/portfolio", "Portfolio"],
-    ["/markets", "Markets"], ["/agents", "Agents & Schedule"],
+  const items = [["/", "Mission Control"], ["/markets", "Markets"],
+    ["/claire", "Claire"], ["/trading", "Trading"],
+    ["/portfolio", "Portfolio"], ["/agents", "Agents & Schedule"],
     ["/providers", "Providers & MCP"]];
   document.write('<nav>' + items.map(([href, label]) =>
     `<a href="${href}" class="${href === active ? 'active' : ''}">${label}</a>`
