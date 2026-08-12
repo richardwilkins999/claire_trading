@@ -34,7 +34,7 @@ def _call(method, path, payload=None):
     if not token:
         return {"error": "SAXO_ACCESS_TOKEN is not set. Get a 24h SIM token "
                          "from https://www.developer.saxo and put it in "
-                         "~/agent-dashboard/brokers.env"}
+                         "etc/claire.env"}
     req = urllib.request.Request(
         BASE + path, method=method,
         data=json.dumps(payload).encode() if payload is not None else None,
