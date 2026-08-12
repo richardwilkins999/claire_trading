@@ -55,7 +55,7 @@ def book():
     r.record_fill("o1", broker_fill_id="f1", qty=to_micro("10"),
                   price_native=to_micro("100"), fx_rate=to_micro("1"), ts=T0)
     conn.execute("INSERT INTO price_alerts (instrument_id, rule, threshold,"
-                 " armed) VALUES ('NASDAQ:NVDA','drop_pct_from_entry',8,1)")
+                 " armed) VALUES ('NASDAQ:NVDA','trail_pct',8,1)")
     return conn
 
 
@@ -86,10 +86,24 @@ def test_levels_come_from_your_fills_and_your_thesis(book):
     assert lv["stop_loss"] == 92               # from the approved thesis
     assert lv["take_profit"] == 130
     assert lv["work_item_id"] == "wi_1"
-    assert lv["alert"] == pytest.approx(92.0)  # watcher −8% from entry
+    # no peak recorded yet (the watcher has not ticked), so the floor sits
+    # 8% under average cost — its starting position before it trails
+    assert lv["alert"] == pytest.approx(92.0)
     fills = d["exchanges"]["NASDAQ"][0]["fills"]
     assert [(f["side"], f["qty"], f["price_native"]) for f in fills] == \
         [("buy", 10, 100)]
+
+
+def test_the_drawn_floor_follows_the_peak_not_the_entry(book):
+    """Once the watcher has ratcheted the peak, the chart must show the floor
+    where it actually is — otherwise the line says you are protected at 92
+    while the desk would alert at 119."""
+    book.execute("UPDATE price_alerts SET peak_base=130 WHERE"
+                 " instrument_id='NASDAQ:NVDA'")
+    d = portfolio.build(book, FakeMarket(), clock=lambda: T0 + 60)
+    lv = d["exchanges"]["NASDAQ"][0]["levels"]
+    assert lv["alert"] == pytest.approx(119.6)
+    assert "130" in lv["alert_rule"]
 
 
 def test_chart_bundles_history_fills_and_levels(book):

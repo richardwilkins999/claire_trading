@@ -126,6 +126,10 @@ class PipelineState(BaseModel):
     # Analysts used to start blind; an exit review in particular had no idea
     # it was ordered because a stop was hit.
     trigger: str | None = None
+    # An exit review reuses the analysis that opened the position rather than
+    # re-running six agents while the price falls: this is that earlier run's
+    # reports and verdict, rendered once and handed to the arbiter.
+    prior_evidence: str = ""
     reports: Annotated[list[AnalystReport], operator.add] = []
     bull: DebateCase | None = None
     bear: DebateCase | None = None

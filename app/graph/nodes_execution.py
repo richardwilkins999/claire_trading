@@ -101,17 +101,19 @@ def build_execute(repo, brokers: dict, market, *, account_for,
 
 
 def _set_trailing_floor(repo, inst, ap):
-    """The trailing floor you chose at approval becomes the watcher's rule
-    for this instrument, replacing the default 8%."""
+    """The trailing floor you chose at approval becomes the watcher's rule for
+    this instrument, replacing the default 8%. peak_base is left NULL: the
+    watcher seeds it from the position's average cost on its next tick and
+    ratchets it from there, so the floor rises with the price."""
     if not ap.trail_pct or ap.status != "approved":
         return
     repo.conn.execute(
         "INSERT INTO price_alerts (instrument_id, rule, threshold, armed)"
-        " VALUES (?, 'drop_pct_from_entry', ?, 1)"
+        " VALUES (?, 'trail_pct', ?, 1)"
         " ON CONFLICT DO NOTHING", (inst.id, float(ap.trail_pct)))
     repo.conn.execute(
         "UPDATE price_alerts SET threshold=?, armed=1 WHERE instrument_id=?"
-        " AND rule='drop_pct_from_entry'", (float(ap.trail_pct), inst.id))
+        " AND rule='trail_pct'", (float(ap.trail_pct), inst.id))
 
 
 def _pre_checks(repo, account_id, inst, th, qty, price_base, ts):

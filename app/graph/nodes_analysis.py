@@ -56,11 +56,28 @@ def bear_prompt(state) -> str:
 
 
 def arbiter_prompt(state) -> str:
-    sell_note = ("This is a SELL REVIEW of an existing position: direction "
-                 "'sell' means exit; size is decided at approval in shares.\n"
-                 if state.kind == "sell_review" else "")
+    if state.kind == "sell_review":
+        # An exit review is a narrower question than a purchase, and it is
+        # asked while the position is moving — so it gets the entry analysis
+        # rather than a fresh debate, and is told plainly that holding is a
+        # legitimate answer. Without that it reads a breach as an instruction.
+        return (f"Ticker: {state.ticker} ({state.instrument.exchange}, "
+                f"{state.instrument.currency}). EXIT REVIEW of a position we "
+                f"already hold.\n{render_trigger(state)}\n"
+                f"What we believed when we opened it:\n"
+                f"{state.prior_evidence or '(no earlier analysis on record)'}"
+                f"\n\nWhat has happened since:\n{render_reports(state)}\n\n"
+                "Decide whether the reason we own this is still intact.\n"
+                "- direction 'sell' to exit; size is chosen at approval, in "
+                "shares, and stop_loss sits ABOVE entry for an exit.\n"
+                "- direction 'pass' to HOLD — say so when the fall is noise, "
+                "sector-wide, or already priced in. A breached stop is a "
+                "prompt to look, not an instruction to sell.\n"
+                "Numbers must be defensible from the record; currency is "
+                f"{state.instrument.currency}. Put the single reason this is "
+                "still owned, or no longer is, in the summary.")
     return (f"Ticker: {state.ticker} ({state.instrument.exchange}, "
-            f"{state.instrument.currency}).\n{sell_note}"
+            f"{state.instrument.currency}).\n"
             f"{render_trigger(state)}\n"
             f"Analyst reports:\n{render_reports(state)}\n\n"
             f"BULL:\n{render_case(state.bull)}\n\n"

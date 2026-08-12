@@ -63,6 +63,15 @@ MIGRATIONS = [
     # a human override points back at the PASS verdict it overturned, so the
     # approval card can show the evidence the desk declined on
     "ALTER TABLE work_items ADD COLUMN override_of TEXT",
+    # a sell review points back at the run that opened the position, so it can
+    # reuse that analysis instead of paying to think about the name again
+    "ALTER TABLE work_items ADD COLUMN prior_run TEXT",
+    # the best price seen since entry — highest for a long, LOWEST for a
+    # short. Without it a "trailing" floor never moved off the entry price.
+    "ALTER TABLE price_alerts ADD COLUMN peak_base REAL",
+    # the old name described the old behaviour; anything still on it would
+    # silently keep measuring from entry
+    "UPDATE price_alerts SET rule='trail_pct' WHERE rule='drop_pct_from_entry'",
 ]
 
 

@@ -14,7 +14,8 @@ from datetime import datetime, timezone
 from langgraph.types import Command
 
 from .. import sessions
-from ..graph.pipeline import build_override_pipeline, build_pipeline
+from ..graph.pipeline import (build_override_pipeline, build_pipeline,
+                              build_sell_review_pipeline)
 from ..graph.state import Instrument, PipelineState, Thesis
 
 
@@ -24,6 +25,7 @@ class Desk:
         self.conn, self.repo = conn, repo
         self.pipeline = build_pipeline(deps, checkpointer)
         self.override_pipeline = build_override_pipeline(deps, checkpointer)
+        self.sell_pipeline = build_sell_review_pipeline(deps, checkpointer)
         self.clock = clock
         self.cal = session_cal          # None → sessions.DEFAULTS
 
@@ -40,8 +42,15 @@ class Desk:
         if trigger:
             self.conn.execute("UPDATE work_items SET trigger=? WHERE id=?",
                               (trigger, wi))
+        prior, evidence = ("", "")
+        if kind == "sell_review":
+            prior, evidence = self._prior_analysis(instrument.ticker)
+            if prior:
+                self.conn.execute(
+                    "UPDATE work_items SET prior_run=? WHERE id=?", (prior, wi))
         state = PipelineState(work_item_id=wi, kind=kind, trigger=trigger,
-                              ticker=instrument.ticker, instrument=instrument)
+                              ticker=instrument.ticker, instrument=instrument,
+                              prior_evidence=evidence)
         if background:
             threading.Thread(target=self._run, args=(wi, state),
                              daemon=True, name=f"run-{wi}").start()
@@ -49,9 +58,46 @@ class Desk:
             self._run(wi, state)
         return wi
 
+    def _prior_analysis(self, ticker):
+        """The run that opened this position, rendered for the arbiter. An
+        exit review inherits it rather than re-deriving it: the question at a
+        stop is 'has anything changed', and you cannot answer that without
+        what was believed at entry."""
+        row = self.conn.execute(
+            "SELECT id, thesis_json FROM work_items WHERE ticker=?"
+            " AND kind IN ('pipeline','override') AND thesis_json IS NOT NULL"
+            " ORDER BY created_at DESC LIMIT 1", (ticker,)).fetchone()
+        if row is None:
+            return "", ""
+        parts = []
+        try:
+            t = json.loads(row["thesis_json"])
+            parts.append(
+                f"### Verdict at entry: {str(t.get('direction')).upper()} "
+                f"(conviction {t.get('conviction')})\n"
+                f"entry {t.get('entry_low')}–{t.get('entry_high')}, "
+                f"stop {t.get('stop_loss')}, target {t.get('take_profit')}\n"
+                + "\n".join(f"- {c}" for c in (t.get('conditions') or [])))
+        except ValueError:
+            pass
+        for rep in self.conn.execute(
+                "SELECT agent_id, payload FROM agent_reports"
+                " WHERE work_item_id=? ORDER BY id", (row["id"],)):
+            try:
+                d = json.loads(rep["payload"])
+            except ValueError:
+                continue
+            head = d.get("signal") or d.get("side") or d.get("direction") or ""
+            body = d.get("summary") or ""
+            finds = "\n".join(f"- {f}" for f in (d.get("key_findings")
+                                                 or d.get("key_points") or []))
+            parts.append(f"### {rep['agent_id']} at entry — {head}\n{body}"
+                         + (f"\n{finds}" if finds else ""))
+        return row["id"], "\n\n".join(parts)
+
     def _run(self, wi, state):
         try:
-            self.pipeline.invoke(state, self.cfg(wi))
+            self._pipeline_for(wi).invoke(state, self.cfg(wi))
         except Exception as e:                      # noqa: BLE001
             self.repo.set_state(wi, "failed", actor="system",
                                 ts=int(self.clock()),
@@ -148,12 +194,16 @@ class Desk:
                           currency=r["currency"] or currency)
 
     def _pipeline_for(self, wi):
-        """An override item lives in the gate-only graph; resuming it against
-        the full pipeline would look for nodes its checkpoint never ran."""
+        """Each run kind has its own graph, and resuming against the wrong one
+        would look for nodes its checkpoint never ran."""
         row = self.work_item(wi)
-        return (self.override_pipeline
-                if row is not None and row["override_of"]
-                else self.pipeline)
+        if row is None:
+            return self.pipeline
+        if row["kind"] == "sell_review":
+            return self.sell_pipeline
+        if row["override_of"]:
+            return self.override_pipeline
+        return self.pipeline
 
     # ── resume (validation already done by the API layer) ────────────────
     def resume(self, wi, payload: dict):

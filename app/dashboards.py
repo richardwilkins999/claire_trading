@@ -544,7 +544,13 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                 # an override ran no analysts of its own — its evidence is the
                 # verdict it overturned, which is exactly what must be read
                 # before approving one
-                reports = self._reports_for(r["override_of"] or r["id"])
+                # an override inherits the verdict it overturned; a sell
+                # review inherits the analysis that opened the position. Both
+                # must be readable before approving.
+                reports = self._reports_for(r["id"])
+                inherited = r["override_of"] or r["prior_run"]
+                if inherited:
+                    reports = self._reports_for(inherited) + reports
                 costs = conn.execute(
                     "SELECT COALESCE(SUM(cost_usd),0) c, COUNT(*) n FROM"
                     " agent_runs WHERE work_item_id=?", (r["id"],)).fetchone()
@@ -552,6 +558,7 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                     "id": r["id"], "kind": r["kind"], "ticker": r["ticker"],
                     "exchange": exchange, "trigger": r["trigger"],
                     "reports": reports, "override_of": r["override_of"],
+                    "prior_run": r["prior_run"],
                     "llm_cost": costs["c"], "llm_calls": costs["n"],
                     "created_at": r["created_at"],
                     "thesis": json.loads(r["thesis_json"] or "{}"),

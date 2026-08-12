@@ -135,8 +135,10 @@ CREATE TABLE IF NOT EXISTS broker_snapshots (   -- broker-reported truth, for re
 CREATE TABLE IF NOT EXISTS price_alerts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   instrument_id TEXT NOT NULL,
-  rule TEXT NOT NULL,                      -- below_price | above_price | drop_pct_from_entry
+  rule TEXT NOT NULL,                      -- below_price | above_price | trail_pct
   threshold REAL NOT NULL, armed INTEGER NOT NULL DEFAULT 1,
+  peak_base REAL,                          -- best price since entry:
+                                           -- HIGHEST for a long, LOWEST for a short
   last_fired_at INTEGER, fire_count_today INTEGER DEFAULT 0,
   fire_count_date TEXT                     -- YYYY-MM-DD the counter belongs to
 );

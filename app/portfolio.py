@@ -95,12 +95,19 @@ def levels_for(conn, position, fills) -> dict:
             except ValueError:
                 pass
     alert = conn.execute(
-        "SELECT rule, threshold FROM price_alerts WHERE instrument_id=?"
-        " AND armed=1 AND rule='drop_pct_from_entry' LIMIT 1",
+        "SELECT rule, threshold, peak_base FROM price_alerts"
+        " WHERE instrument_id=? AND armed=1 AND rule='trail_pct' LIMIT 1",
         (position["instrument_id"],)).fetchone()
-    if alert and out["avg_cost_native"]:
-        out["alert"] = out["avg_cost_native"] * (1 - alert["threshold"] / 100)
-        out["alert_rule"] = f"watcher −{alert['threshold']:.0f}%"
+    if alert:
+        # draw the floor where it ACTUALLY sits — trailed up from the best
+        # price seen, not pinned to entry. Falls back to average cost until
+        # the watcher's first tick has set a peak.
+        ref = alert["peak_base"] or out["avg_cost_native"]
+        if ref:
+            out["alert"] = ref * (1 - alert["threshold"] / 100)
+            out["alert_rule"] = (f"trailing −{alert['threshold']:.0f}% "
+                                 f"of {ref:.2f}")
+            out["alert_peak"] = alert["peak_base"]
     return out
 
 
