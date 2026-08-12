@@ -236,6 +236,28 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                         return self._send(200, out)
                     except approvals.AuthError as e:
                         return self._send(e.code, {"error": e.message})
+                if u.path == "/api/override":
+                    # overturning the desk is a money-path action, so it needs
+                    # the same paired browser an approval does
+                    if dash_key and not self._paired():
+                        return self._send(403, {"error":
+                                                "dashboard not paired — enter "
+                                                "the dashboard key first"})
+                    try:
+                        r = httpx.post(f"{api_base}/internal/override",
+                                       json={**body, "actor": "human"},
+                                       headers={"x-claire-secret": secret},
+                                       timeout=30)
+                    except Exception as e:      # noqa: BLE001
+                        return self._send(502, {"error":
+                                                f"claire-api unreachable ({e})"})
+                    out = r.json() if r.headers.get("content-type", "") \
+                        .startswith("application/json") else {}
+                    if r.status_code != 200:
+                        return self._send(r.status_code,
+                                          {"error": out.get("detail",
+                                                            "override failed")})
+                    return self._send(200, out)
                 if u.path == "/api/run":
                     r = httpx.post(f"{api_base}/api/run", json=body,
                                    timeout=10)
@@ -472,6 +494,19 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                     "claire_api": up, "flags": flags,
                     "pending": states.get("awaiting_approval", 0)}
 
+        def _reports_for(self, wi):
+            """Every stored agent report for a run, in pipeline order."""
+            out = []
+            for rep in conn.execute(
+                    "SELECT agent_id, kind, payload FROM agent_reports"
+                    " WHERE work_item_id=? ORDER BY id", (wi,)):
+                try:
+                    out.append({"agent": rep["agent_id"], "kind": rep["kind"],
+                                "data": json.loads(rep["payload"])})
+                except ValueError:
+                    pass
+            return out
+
         def _approvals(self):
             paired = self._paired() or not dash_key
             cal = cal_or_default()
@@ -500,23 +535,17 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                                                            cal),
                                "next_open": sessions.next_open(
                                    exchange, nowdt, cal).isoformat()}
-                reports = []
-                for rep in conn.execute(
-                        "SELECT agent_id, kind, payload FROM agent_reports"
-                        " WHERE work_item_id=? ORDER BY id", (r["id"],)):
-                    try:
-                        reports.append({"agent": rep["agent_id"],
-                                        "kind": rep["kind"],
-                                        "data": json.loads(rep["payload"])})
-                    except ValueError:
-                        pass
+                # an override ran no analysts of its own — its evidence is the
+                # verdict it overturned, which is exactly what must be read
+                # before approving one
+                reports = self._reports_for(r["override_of"] or r["id"])
                 costs = conn.execute(
                     "SELECT COALESCE(SUM(cost_usd),0) c, COUNT(*) n FROM"
                     " agent_runs WHERE work_item_id=?", (r["id"],)).fetchone()
                 cards.append({
                     "id": r["id"], "kind": r["kind"], "ticker": r["ticker"],
                     "exchange": exchange, "trigger": r["trigger"],
-                    "reports": reports,
+                    "reports": reports, "override_of": r["override_of"],
                     "llm_cost": costs["c"], "llm_calls": costs["n"],
                     "created_at": r["created_at"],
                     "thesis": json.loads(r["thesis_json"] or "{}"),
@@ -530,7 +559,8 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
             decided = []
             for r in conn.execute(
                     "SELECT id, ticker, state, thesis_json, updated_at,"
-                    " trigger FROM work_items WHERE thesis_json IS NOT NULL"
+                    " trigger, override_of FROM work_items"
+                    " WHERE thesis_json IS NOT NULL"
                     " AND state IN ('done','rejected','expired')"
                     " AND updated_at > ? ORDER BY updated_at DESC LIMIT 12",
                     (int(clock()) - 7 * 86400,)):
@@ -538,11 +568,28 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                     t = json.loads(r["thesis_json"])
                 except ValueError:
                     continue
+                # already overturned? then the override owns the decision and
+                # offering a second one would double-buy the same thesis
+                ovr = conn.execute(
+                    "SELECT id, state FROM work_items WHERE override_of=?"
+                    " AND state NOT IN ('rejected','expired','failed')"
+                    " ORDER BY created_at DESC LIMIT 1", (r["id"],)).fetchone()
+                inst = conn.execute(
+                    "SELECT exchange FROM instruments WHERE ticker=? LIMIT 1",
+                    (r["ticker"],)).fetchone()
                 decided.append({
                     "id": r["id"], "ticker": r["ticker"], "state": r["state"],
+                    "exchange": inst["exchange"] if inst else None,
                     "direction": t.get("direction"),
                     "conviction": t.get("conviction"),
+                    "currency": t.get("currency"),
                     "conditions": t.get("conditions") or [],
+                    # the same evidence the approval cards show, so a PASS can
+                    # be read on its merits rather than taken on trust
+                    "reports": self._reports_for(r["id"]),
+                    "overridable": (t.get("direction") == "pass"
+                                    and not r["override_of"] and not ovr),
+                    "overridden_by": ovr["id"] if ovr else None,
                     "trigger": r["trigger"], "at": r["updated_at"]})
             return {"cards": cards, "accounts": accounts, "decided": decided}
 

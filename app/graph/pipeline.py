@@ -76,6 +76,32 @@ def build_pipeline(deps: Deps, checkpointer):
     return g.compile(checkpointer=checkpointer)
 
 
+def build_override_pipeline(deps, checkpointer):
+    """The money half of the pipeline on its own: gate → execute → record.
+
+    A PASS verdict routes arbitrate → record, so the graph RUNS TO COMPLETION
+    and there is no interrupt left to resume — overriding one cannot mean
+    reviving a finished run. Instead the override starts a fresh item that
+    enters at the gate carrying the thesis the human authored, so approval,
+    token burning and execution stay the code that is already proven. The
+    analysis nodes are deliberately absent: an override re-uses the original
+    run's evidence rather than paying to think again."""
+    from langgraph.graph import END, START, StateGraph
+    g = StateGraph(PipelineState)
+    g.add_node("gate", approval_gate)
+    g.add_node("execute", deps.execute)
+    g.add_node("record", deps.record)
+    g.add_edge(START, "gate")
+    g.add_conditional_edges(
+        "gate",
+        lambda s: {"approved": "execute", "rejected": "record",
+                   "expired": "record"}[s.approval.status],
+        ["execute", "record"])
+    g.add_edge("execute", "record")
+    g.add_edge("record", END)
+    return g.compile(checkpointer=checkpointer)
+
+
 def approval_gate(state: PipelineState):
     decision = interrupt({                          # ⏸ suspend; checkpoint persists
         "work_item_id": state.work_item_id,

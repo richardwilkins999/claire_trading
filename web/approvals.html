@@ -46,13 +46,86 @@ function renderDecided() {
           ${esc(r.ticker)} · conviction ${fmt(r.conviction)} ·
           <span class="muted">${esc(r.state)} ${ago(r.at)}</span>
           ${r.trigger ? `<span class="muted"> · ⟲ ${esc(r.trigger)}</span>`
-            : ''}</summary>
+            : ''}
+          ${r.overridden_by
+            ? '<span class="pill warn">overridden</span>' : ''}</summary>
         ${(r.conditions || []).length
           ? `<ul style="margin:.4rem 0 0 1rem">${r.conditions.map(c =>
               `<li>${esc(c)}</li>`).join('')}</ul>`
           : '<p class="muted">No conditions recorded.</p>'}
+        <h2 style="margin-top:.7rem">Evidence — everything that led to this</h2>
+        ${evidence(r)}
+        ${r.overridable ? overrideForm(r) : r.overridden_by
+          ? `<p class="muted" style="margin-top:.5rem">You already sent this to
+             the gate as <b>${esc(r.overridden_by)}</b> — it is above, or
+             already decided.</p>` : ''}
         <p style="margin-top:.4rem"><a href="/trading">full run detail →</a></p>
       </details>`).join('');
+}
+
+/* Overturning a PASS. The desk declined, so it never priced the trade —
+   there is no entry or stop to inherit and you have to author them. The
+   thesis validator rejects a stop that is not below your entry, which is the
+   same guard the agents' own theses pass through. */
+function overrideForm(r) {
+  return `<div class="card" style="margin-top:.6rem;padding:.6rem .8rem">
+    <h3 style="font-size:.95rem;margin:0">Override — trade it anyway</h3>
+    <p class="muted" style="font-size:.75rem">This does not place an order. It
+      sends <b>${esc(r.ticker)}</b> to the approval gate with the levels you
+      set, where you still size it and approve it as normal. A PASS carries no
+      prices, so the entry and floor below are yours, not the desk's.</p>
+    <div class="row" style="flex-wrap:wrap">
+      <select id="ovdir-${r.id}">
+        <option value="buy">buy</option><option value="sell">sell</option>
+      </select>
+      <label>entry <input id="oventry-${r.id}" type="number" step="0.01"
+        min="0.01" style="width:100px" placeholder="price"></label>
+      <label>stop (floor) <input id="ovstop-${r.id}" type="number" step="0.01"
+        min="0.01" style="width:100px" placeholder="must be below entry"></label>
+      <label>target <input id="ovtarget-${r.id}" type="number" step="0.01"
+        min="0.01" style="width:100px" placeholder="optional"></label>
+    </div>
+    <div class="row" style="margin-top:.4rem">
+      <input id="ovnote-${r.id}" placeholder="why are you overruling the desk?"
+        style="flex:1" maxlength="200">
+      <button onclick="override('${r.id}')">⚠ Send to approval</button>
+    </div>
+    <p class="yours" id="ovmsg-${r.id}"></p>
+  </div>`;
+}
+
+async function override(id) {
+  const r = (DATA.decided || []).find(x => x.id === id) || {};
+  const v = k => document.getElementById(`ov${k}-${id}`).value;
+  const entry = Number(v('entry')), stop = Number(v('stop'));
+  const target = Number(v('target')) || null, dir = v('dir');
+  const msg = document.getElementById('ovmsg-' + id);
+  if (!entry || !stop) {
+    msg.innerHTML = '<b class="bad">entry and stop are both required</b>';
+    return;
+  }
+  if (dir === 'buy' && stop >= entry) {
+    msg.innerHTML = '<b class="bad">for a buy the stop must sit BELOW the ' +
+      'entry — that floor is what limits the loss</b>';
+    return;
+  }
+  if (dir === 'sell' && stop <= entry) {
+    msg.innerHTML = '<b class="bad">for a sell the stop must sit ABOVE the ' +
+      'entry</b>';
+    return;
+  }
+  const risk = Math.abs(entry - stop) / entry * 100;
+  if (!confirm(`Overrule the desk on ${r.ticker}?\n\nThe arbiter returned ` +
+    `PASS at conviction ${fmt(r.conviction)}. You are sending it to the ` +
+    `approval gate as a ${dir.toUpperCase()} at ${entry}, floor ${stop} ` +
+    `(${risk.toFixed(1)}% away).\n\nNothing is bought until you approve it ` +
+    `there.`)) return;
+  try {
+    await api('/api/override', {work_item_id: id, direction: dir, entry,
+                                stop, target, note: v('note') || null});
+    toast('sent to approval ✓');
+  } catch (e) { msg.innerHTML = `<b class="bad">${esc(e.message)}</b>`; }
+  refresh();
 }
 
 function card(a) {
@@ -78,6 +151,10 @@ function card(a) {
           ${a.trigger ? '⟲ ' + esc(a.trigger) + ' · ' : ''}
           ${a.llm_calls} agent calls · $${fmt(a.llm_cost, 4)} ·
           expires ${ts(a.expires_at)}</p>
+        ${a.override_of ? `<p class="warn" style="font-size:.78rem">
+          ⚠ <b>Human override.</b> The desk returned PASS on this — the
+          evidence below is that run's, and the entry and floor are yours.
+          Nothing here re-analysed the position.</p>` : ''}
       </div>
     </div>
 

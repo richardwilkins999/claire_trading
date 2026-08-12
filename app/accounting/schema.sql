@@ -7,7 +7,7 @@
 -- ── lifecycle ─────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS work_items (
   id TEXT PRIMARY KEY,
-  kind TEXT NOT NULL,                      -- pipeline | sell_review | screen
+  kind TEXT NOT NULL,                      -- pipeline | sell_review | screen | override
   ticker TEXT NOT NULL,
   state TEXT NOT NULL,                     -- running | awaiting_approval | approved
                                            -- | executing | done | rejected

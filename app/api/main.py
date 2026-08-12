@@ -9,7 +9,7 @@ import time
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, ValidationError
 
 LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient"}
 
@@ -28,6 +28,16 @@ class ResumeBody(BaseModel):
     qty: float | None = None
     trail_pct: float | None = None
     broker: Literal["alpaca", "saxo", "moomoo"] | None = None
+
+
+class OverrideBody(BaseModel):
+    work_item_id: str                       # the PASS being overturned
+    direction: Literal["buy", "sell"]
+    entry: float = Field(gt=0)              # a pass thesis carries no prices,
+    stop: float = Field(gt=0)               # so the human must author them
+    target: float | None = Field(default=None, gt=0)
+    note: str | None = None
+    actor: str
 
 
 class RunBody(BaseModel):
@@ -91,6 +101,27 @@ def create_app(desk, conn, secret: str, *, clock=time.time,
         conn.execute("UPDATE work_items SET token_state='burned',"
                      " updated_at=? WHERE id=?", (now, body.work_item_id))
         return {"ok": True, "state": desk.work_item(body.work_item_id)["state"]}
+
+    @app.post("/internal/override")
+    def internal_override(body: OverrideBody, request: Request):
+        """Overturn a PASS. Same trust boundary as /internal/resume — the
+        dashboard has already checked pairing; this creates no position by
+        itself, it only puts the item in front of the human at the gate."""
+        _guard(request)
+        if body.actor != "human":
+            raise HTTPException(403, "an override requires a human actor")
+        try:
+            wi = desk.override(body.work_item_id, direction=body.direction,
+                               entry=body.entry, stop=body.stop,
+                               target=body.target, note=body.note)
+        except ValidationError as e:
+            # incoherent levels (a stop that is not a floor) — the guard doing
+            # its job. Checked BEFORE ValueError: pydantic's error subclasses
+            # it, so the order here is what makes this a 400 and not a 409.
+            raise HTTPException(400, str(e)[:300]) from e
+        except ValueError as e:                     # wrong state, already done
+            raise HTTPException(409, str(e)) from e
+        return {"ok": True, "work_item_id": wi}
 
     @app.post("/api/run")
     def start_run(body: RunBody):

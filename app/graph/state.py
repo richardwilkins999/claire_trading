@@ -119,7 +119,7 @@ class Approval(BaseModel):
 
 class PipelineState(BaseModel):
     work_item_id: str
-    kind: Literal["pipeline", "sell_review"] = "pipeline"
+    kind: Literal["pipeline", "sell_review", "override"] = "pipeline"
     ticker: str
     instrument: Instrument
     # why this run exists — the screener's rationale or the watcher's breach.

@@ -60,6 +60,9 @@ MIGRATIONS = [
     # cached input is billed at a different rate from fresh input
     "ALTER TABLE agent_runs ADD COLUMN cache_write_tokens INTEGER",
     "ALTER TABLE agent_runs ADD COLUMN cache_read_tokens INTEGER",
+    # a human override points back at the PASS verdict it overturned, so the
+    # approval card can show the evidence the desk declined on
+    "ALTER TABLE work_items ADD COLUMN override_of TEXT",
 ]
 
 
