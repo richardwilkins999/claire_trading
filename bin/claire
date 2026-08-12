@@ -1,0 +1,271 @@
+#!/usr/bin/env bash
+# Claire desk control: start / stop / status / reset.
+#
+# Two shutdown modes, because they answer different questions:
+#   --graceful  let work in flight finish first. Pauses the schedules so no
+#               NEW run starts, waits for running pipelines, approved orders
+#               and unfilled orders to settle, then stops. Use this normally.
+#   --kill      stop now. In-flight runs die where they stand. The book is
+#               safe either way (every write is committed synchronously), but
+#               an order placed and not yet recorded as filled will need the
+#               custodian to reconcile it on next start.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PY="$ROOT/venv/bin/python3"
+ENV_FILE="$ROOT/etc/claire.env"
+LOG_DIR="$ROOT/var/log"
+DRAIN_STATE="$ROOT/var/.drain-schedules.json"
+API_PAT='app\.api\.server'
+DASH_PAT='app\.dashboards'
+API_URL='http://127.0.0.1:7788'
+DASH_URL='http://127.0.0.1:7787'
+DRAIN_TIMEOUT="${CLAIRE_DRAIN_TIMEOUT:-300}"
+
+c_red=$'\033[31m'; c_grn=$'\033[32m'; c_yel=$'\033[33m'; c_dim=$'\033[2m'
+c_off=$'\033[0m'
+say()  { printf '%s\n' "$*"; }
+ok()   { printf '%s✔%s %s\n' "$c_grn" "$c_off" "$*"; }
+warn() { printf '%s!%s %s\n' "$c_yel" "$c_off" "$*"; }
+die()  { printf '%s✘%s %s\n' "$c_red" "$c_off" "$*" >&2; exit 1; }
+dim()  { printf '%s%s%s\n' "$c_dim" "$*" "$c_off"; }
+
+pids_for() { pgrep -f "$1" 2>/dev/null || true; }
+
+# Every DB question the script asks. Kept in one place so the SQL that
+# defines "work in flight" is readable and reviewable.
+dbq() {
+  ( cd "$ROOT" && "$PY" - "$@" <<'PYEOF'
+import sys, json
+from app.accounting import db
+conn = db.connect("var/desk.db")
+what = sys.argv[1]
+
+if what == "inflight":
+    # a run that is mid-pipeline, an approval already authorised, or an order
+    # the venue has not confirmed — all of these are "a trade in progress"
+    runs = conn.execute(
+        "SELECT COUNT(*) c FROM work_items WHERE state IN"
+        " ('running','executing','approved')").fetchone()["c"]
+    pend = conn.execute(
+        "SELECT COUNT(*) c FROM work_items WHERE token_state='pending_resume'"
+    ).fetchone()["c"]
+    orders = conn.execute(
+        "SELECT COUNT(*) c FROM orders WHERE status NOT IN"
+        " ('filled','cancelled','rejected','expired')").fetchone()["c"]
+    total = runs + pend + orders
+    if len(sys.argv) > 2 and sys.argv[2] == "total":
+        print(total)
+    elif len(sys.argv) > 2 and sys.argv[2] == "text":
+        bits = [f"{n} {label}" for n, label in
+                ((runs, "run(s) mid-pipeline"), (orders, "unfilled order(s)"),
+                 (pend, "authorised-not-acked")) if n]
+        print(", ".join(bits) or "nothing")
+    else:
+        print(total)
+elif what == "waiting":
+    print(conn.execute("SELECT COUNT(*) c FROM work_items WHERE"
+                       " state='awaiting_approval'").fetchone()["c"])
+elif what == "positions":
+    print(conn.execute("SELECT COUNT(*) c FROM lots WHERE qty_remaining > 0"
+                       ).fetchone()["c"])
+elif what == "schedules-off":
+    # remember what was on, then switch it off so the drain can finish
+    rows = [r["job"] for r in conn.execute(
+        "SELECT job FROM schedules WHERE enabled=1")]
+    conn.execute("UPDATE schedules SET enabled=0 WHERE enabled=1")
+    print(" ".join(rows))          # space-separated: bash reads it directly
+elif what == "schedules-on":
+    jobs = [j for j in sys.argv[2].split() if j]
+    for job in jobs:
+        conn.execute("UPDATE schedules SET enabled=1 WHERE job=?", (job,))
+    print(len(jobs))
+PYEOF
+  )
+}
+
+# ── start ────────────────────────────────────────────────────────────────
+cmd_start() {
+  [ -f "$ENV_FILE" ] || die "missing $ENV_FILE"
+  mkdir -p "$LOG_DIR"
+  local started=0
+  for svc in api dashboards; do
+    local pat mod
+    if [ "$svc" = api ]; then pat="$API_PAT"; mod="app.api.server"
+    else pat="$DASH_PAT"; mod="app.dashboards"; fi
+    if [ -n "$(pids_for "$pat")" ]; then
+      warn "$svc already running (pid $(pids_for "$pat" | tr '\n' ' '))"
+      continue
+    fi
+    ( set -a; . "$ENV_FILE"; set +a
+      cd "$ROOT"
+      setsid "$PY" -m "$mod" </dev/null >>"$LOG_DIR/$svc.log" 2>&1 & )
+    started=1
+  done
+  [ "$started" = 1 ] && sleep 6
+  cmd_status
+}
+
+# ── status ───────────────────────────────────────────────────────────────
+cmd_status() {
+  local api dash
+  api="$(pids_for "$API_PAT")"; dash="$(pids_for "$DASH_PAT")"
+  if [ -n "$api" ]; then
+    ok "claire-api      pid ${api//$'\n'/ }  $(curl -fsS -m 3 "$API_URL/status" \
+        2>/dev/null | head -c 120 || echo 'not answering yet')"
+  else say "  claire-api      ${c_dim}stopped${c_off}"; fi
+  if [ -n "$dash" ]; then
+    local code; code="$(curl -s -m 3 -o /dev/null -w '%{http_code}' \
+      "$DASH_URL/" 2>/dev/null || echo '---')"
+    ok "claire-dashboards pid ${dash//$'\n'/ }  HTTP $code  → $DASH_URL"
+  else say "  claire-dashboards ${c_dim}stopped${c_off}"; fi
+  if [ -f "$ROOT/var/desk.db" ]; then
+    dim "  in flight: $(dbq inflight text)"
+    dim "  awaiting your approval: $(dbq waiting) · open positions: $(dbq positions)"
+  fi
+}
+
+# ── stop ─────────────────────────────────────────────────────────────────
+restore_schedules() {
+  [ -f "$DRAIN_STATE" ] || return 0
+  local n; n="$(dbq schedules-on "$(cat "$DRAIN_STATE")")"
+  rm -f "$DRAIN_STATE"
+  [ "$n" -gt 0 ] && dim "  schedules restored ($n job(s))"
+  return 0
+}
+
+drain() {
+  # pause the schedules first — draining while the scheduler keeps launching
+  # new runs never finishes. Restored on every exit path, including Ctrl-C.
+  trap restore_schedules EXIT INT TERM
+  local saved; saved="$(dbq schedules-off)"
+  printf '%s' "$saved" > "$DRAIN_STATE"
+  dim "  paused $(printf '%s' "$saved" | wc -w) schedule(s) so nothing new starts"
+
+  local waited=0
+  while [ "$waited" -lt "$DRAIN_TIMEOUT" ]; do
+    if [ "$(dbq inflight total)" = 0 ]; then ok "nothing in flight"; return 0; fi
+    printf '\r  waiting for %s to settle… %ss/%ss ' \
+      "$(dbq inflight text)" "$waited" "$DRAIN_TIMEOUT"
+    sleep 5; waited=$((waited + 5))
+  done
+  printf '\n'
+  warn "still busy after ${DRAIN_TIMEOUT}s — NOT stopping."
+  say  "  Approvals waiting on you do not clear themselves: decide them at"
+  say  "  $DASH_URL/approvals, or run: claire stop --kill"
+  return 1
+}
+
+cmd_stop() {
+  local mode="graceful"
+  case "${1:-}" in
+    --kill|-k) mode=kill ;;
+    --graceful|-g|'') mode=graceful ;;
+    *) die "unknown option $1 (use --graceful or --kill)" ;;
+  esac
+
+  if [ -z "$(pids_for "$API_PAT")$(pids_for "$DASH_PAT")" ]; then
+    warn "nothing running"; return 0
+  fi
+
+  if [ "$mode" = graceful ]; then
+    say "Graceful shutdown — letting work in flight finish."
+    drain || return 1
+    restore_schedules
+    trap - EXIT INT TERM
+  else
+    local total; total="$(dbq inflight total)"
+    [ "$total" != 0 ] && warn "killing with $total item(s) in flight ($(dbq inflight text)) — the custodian will reconcile any placed order on next start"
+  fi
+
+  local sig=TERM; [ "$mode" = kill ] && sig=KILL
+  for pat in "$DASH_PAT" "$API_PAT"; do          # UI first, engine last
+    for p in $(pids_for "$pat"); do kill "-$sig" "$p" 2>/dev/null || true; done
+  done
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    [ -z "$(pids_for "$API_PAT")$(pids_for "$DASH_PAT")" ] && break
+    sleep 1
+  done
+  if [ -n "$(pids_for "$API_PAT")$(pids_for "$DASH_PAT")" ]; then
+    warn "did not exit on $sig — escalating to KILL"
+    for pat in "$DASH_PAT" "$API_PAT"; do
+      for p in $(pids_for "$pat"); do kill -KILL "$p" 2>/dev/null || true; done
+    done
+    sleep 2
+  fi
+  ok "stopped"
+}
+
+# ── reset ────────────────────────────────────────────────────────────────
+cmd_reset() {
+  [ "${1:-}" = "--yes" ] || {
+    say "This erases every trade and every run, and returns the desk to a"
+    say "fresh paper book: 3 accounts, 100,000 USD each, nothing held."
+    say ""
+    say "  DELETED  work items · events · agent runs & reports · orders ·"
+    say "           executions · lots · cash movements · alerts · narratives ·"
+    say "           graph checkpoints · accounts (recreated on next start)"
+    say "  KEPT     providers · agents & prompts · schedules · MCP servers ·"
+    say "           instruments · watchlist · exchange sessions"
+    say ""
+    say "A timestamped backup is taken first."
+    printf 'Type %sreset%s to confirm: ' "$c_yel" "$c_off"
+    read -r reply
+    [ "$reply" = "reset" ] || die "cancelled"
+  }
+  [ -z "$(pids_for "$API_PAT")$(pids_for "$DASH_PAT")" ] || \
+    die "stop the desk first: claire stop"
+
+  local stamp backup
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  backup="$ROOT/var/backup-$stamp"
+  mkdir -p "$backup"
+  cp -a "$ROOT/var/desk.db" "$backup/" 2>/dev/null || true
+  cp -a "$ROOT/var/checkpoints.db" "$backup/" 2>/dev/null || true
+  [ -d "$ROOT/var/narratives" ] && cp -a "$ROOT/var/narratives" "$backup/"
+  ok "backup → $backup"
+
+  ( cd "$ROOT" && "$PY" - <<'PYEOF'
+from app.accounting import db
+conn = db.connect("var/desk.db")
+# Trade and run history. Accounts go too: the API recreates them on boot with
+# the opening deposit, so that bootstrap stays the single definition of base.
+TABLES = ["lot_closures", "lots", "executions", "orders", "cash_transactions",
+          "broker_snapshots", "corporate_actions", "price_alerts",
+          "agent_reports", "agent_runs", "events", "work_items",
+          "broker_accounts", "service_health", "chat_threads"]
+for t in TABLES:
+    try:
+        conn.execute(f"DELETE FROM {t}")
+    except Exception as e:                      # noqa: BLE001
+        print(f"  skip {t}: {e}")
+conn.execute("DELETE FROM sqlite_sequence")
+print("  cleared:", ", ".join(TABLES))
+PYEOF
+  )
+  rm -f "$ROOT/var/checkpoints.db"
+  rm -rf "$ROOT/var/narratives"
+  ok "desk reset to base"
+  dim "  run 'claire start' — accounts and opening balances are recreated"
+}
+
+case "${1:-}" in
+  start)   shift; cmd_start "$@" ;;
+  stop)    shift; cmd_stop "$@" ;;
+  restart) shift; cmd_stop "$@" && cmd_start ;;
+  status)  shift; cmd_status ;;
+  reset)   shift; cmd_reset "$@" ;;
+  *) cat <<EOF
+Claire desk control
+
+  claire start                 start claire-api (:7788) + dashboards (:7787)
+  claire stop [--graceful]     pause schedules, let work in flight finish,
+                               then stop  (default; CLAIRE_DRAIN_TIMEOUT=${DRAIN_TIMEOUT}s)
+  claire stop --kill           stop now, abandoning anything in flight
+  claire restart [--kill]      stop then start
+  claire status                what is running, and what is in flight
+  claire reset                 erase all trades and runs, back to a fresh
+                               paper book (backs up first, asks to confirm)
+EOF
+    exit 1 ;;
+esac

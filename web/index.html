@@ -55,7 +55,10 @@ const L = {railX: 12, railW: 152, railH: 44, railGap: 14, railTop: 46,
   stageX: 200, stageW: 128, pitch: 148, nodeH: 40, nodeGap: 8, band: 122,
   gIn: 180, gLoop: 170};
 const STAGES = [
-  {label: 'SCREEN · PREPARE', ids: ['screener', 'prepare']},
+  // screener and prepare are one step on the map: prepare is deterministic
+  // bookkeeping the screener's pick flows straight through, and drawing it
+  // as its own box implied a handover that is not there
+  {label: 'SCREEN · PREPARE', ids: ['screener']},
   {label: 'ANALYZE ∥', ids: ['fundamental', 'technical', 'news']},
   {label: 'DEBATE', ids: ['bull', 'bear']},
   {label: 'ARBITRATE', ids: ['arbiter']},
@@ -63,7 +66,6 @@ const STAGES = [
   {label: 'EXECUTE', ids: ['execute']},
   {label: 'RECORD', ids: ['recorder']}];
 const DET = {
-  prepare: ['prepare', 'instrument · no LLM'],
   gate: ['🔒 approve', 'your token ⏸'],
   execute: ['execute', 'guards · place']};
 
@@ -80,17 +82,23 @@ function jobNext(prefix) {
 const cut = (s, n) => { s = String(s ?? '');
   return s.length > n ? s.slice(0, n - 1) + '…' : s; };
 
-function node(id, x, y, w, h, title, sub, cls, extra, tip) {
+/* `href` makes the box a real link instead of a drawer trigger — used for the
+   entry points, where the useful thing is to GO to the page that starts a
+   run, not to read about it in a side panel. */
+function node(id, x, y, w, h, title, sub, cls, extra, tip, href) {
   const sel = selected === id ? ' sel' : '';
   const dot = /entry/.test(cls) ? ''
     : `<circle class="dot" cx="${w - 11}" cy="12" r="3.5"/>`;
-  return `<g class="mnode ${cls}${sel}" transform="translate(${x},${y})"
-    onclick="openDrawer('${id}')">
-    <rect class="body" width="${w}" height="${h}" rx="7"/>
+  const inner = `<rect class="body" width="${w}" height="${h}" rx="7"/>
     ${dot}
     <text class="nt" x="10" y="17">${esc(cut(title, 17))}</text>
     <text class="ns" x="10" y="30">${esc(cut(sub, 22))}</text>
-    ${extra || ''}<title>${esc(tip || sub)}</title></g>`;
+    ${extra || ''}<title>${esc(tip || sub)}</title>`;
+  if (href)
+    return `<a href="${href}" class="mnode ${cls}${sel}"
+      transform="translate(${x},${y})">${inner}</a>`;
+  return `<g class="mnode ${cls}${sel}" transform="translate(${x},${y})"
+    onclick="openDrawer('${id}')">${inner}</g>`;
 }
 function renderMap() {
   const g = GRAPH, h = g.health || {}, parts = [], edges = [];
@@ -102,14 +110,16 @@ function renderMap() {
 
   /* entry rail */
   parts.push(`<text class="mlabel" x="${L.railX}" y="34">ENTRY POINTS</text>`);
+  // each entry point goes straight to the page you would start a run from
   const entries = [
-    ['you', '👤 You', 'Markets → pipeline'],
+    ['you', '👤 You', 'pick a stock →', '/markets'],
     ['sched', '🗓 Schedule', `scans in ${jobNext('analysis_')} · events ` +
-      jobNext('event_scan')],
-    ['claire', '💬 Claire', 'ask her to run one']];
-  entries.forEach(([id, t, s], i) => {
+      jobNext('event_scan'), '/agents'],
+    ['claire', '💬 Claire', 'ask her to run one', '/claire']];
+  entries.forEach(([id, t, s, href], i) => {
     const y = L.railTop + i * (L.railH + L.railGap);
-    parts.push(node(id, L.railX, y, L.railW, L.railH, t, s, 'entry'));
+    parts.push(node(id, L.railX, y, L.railW, L.railH, t, s, 'entry',
+                    null, `go to ${href}`, href));
     edges.push(`<path class="medge" d="M ${L.railX + L.railW} ${y + L.railH / 2}
       H ${L.gIn} V ${L.band - 10}"/>`);
   });
@@ -259,21 +269,6 @@ async function openDrawer(id) {
          <a href="/trading">Trading runs</a></p>`;
     return;
   }
-  if (['you', 'sched', 'claire'].includes(id)) {
-    const txt = {
-      you: ['You — Markets', 'Pick any stock on <a href="/markets">Markets</a>' +
-        ' and send it to the pipeline. You are also the only thing that can' +
-        ' approve a trade, at the amber gate.'],
-      sched: ['Schedule', 'Region scans and the hourly event scan launch runs' +
-        ' on their own. Times, cadence and the market-open rule are on' +
-        ' <a href="/agents">Agents &amp; Schedule</a>.'],
-      claire: ['Claire', 'Ask her to run a pipeline, or question the book, on' +
-        ' <a href="/claire">her page</a>. She can research and explain —' +
-        ' she holds no approve, execute or cash tools.']}[id];
-    document.getElementById('d-title').textContent = txt[0];
-    body.innerHTML = `<p class="muted">${txt[1]}</p>`;
-    return;
-  }
   if (g.agents[id]) {
     const a = g.agents[id];
     document.getElementById('d-title').textContent =
@@ -291,6 +286,11 @@ async function openDrawer(id) {
       <p class="muted">${a.tools.length ? 'tools: ' + a.tools.join(', ')
         : 'single structured call — no tools'} · $${fmt(act.cost_24h, 4)}
         spent in 24h</p>
+      ${id === 'screener' ? `<p class="muted">This step also covers
+        <b>prepare</b>: whatever it picks is resolved deterministically —
+        currency from the exchange suffix (GBp→GBP), venue lot size, desk.db
+        registration — before the analysts see it. No LLM in that part.</p>`
+        : ''}
       ${act.current ? `<p class="ok">● running now on
         ${esc(act.current.ticker || act.current.work_item_id || '—')}</p>`
         : '<p class="muted">idle right now</p>'}
@@ -347,8 +347,6 @@ async function openDrawer(id) {
     return;
   }
   const desc = {
-    prepare: 'Resolves the instrument: currency from the exchange suffix ' +
-      '(GBp→GBP), venue lot size, desk.db registration. Deterministic.',
     gate: 'interrupt() — the run suspends here until you present the ' +
       'single-use token from an approval card above. No LLM can pass it.',
     execute: 'Pre-placement guards, then session-aware order placement. ' +
