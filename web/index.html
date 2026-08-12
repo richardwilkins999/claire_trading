@@ -25,8 +25,8 @@
     <span><i style="border-color:#2c4560;border-top-style:solid"></i>run flow</span>
     <span><i style="border-color:#1d6b62;border-top-style:dashed"></i>book
       writes &amp; data</span>
-    <span><i style="border-color:#8a6a2a;border-top-style:dashed"></i>stop
-      breach → sell review</span>
+    <span><i style="border-color:#8a6a2a;border-top-style:dashed"></i>shortcut
+      paths: breach → exit review · override → gate</span>
     <span style="color:var(--purple)">⚙ MCP status sits inside each venue</span>
     <span>hover for detail · click to inspect, question or configure</span>
   </div>
@@ -53,7 +53,7 @@ const typing = () => ['INPUT', 'TEXTAREA', 'SELECT']
 /* ── system map ──────────────────────────────────────────────────── */
 const L = {railX: 12, railW: 152, railH: 44, railGap: 14, railTop: 46,
   stageX: 200, stageW: 128, pitch: 148, nodeH: 40, nodeGap: 8, band: 122,
-  gIn: 180, gLoop: 170};
+  gIn: 180};
 const STAGES = [
   // screener and prepare are one step on the map: prepare is deterministic
   // bookkeeping the screener's pick flows straight through, and drawing it
@@ -165,7 +165,7 @@ function renderMap() {
   const hc = k => (h[k] || {}).state || 'idle';
   parts.push(node('watcher', 450, 300, 128, 50, 'watcher', hs('watcher'),
     hc('watcher'),
-    `<text class="ns" x="10" y="43">breach → sell review</text>`,
+    `<text class="ns" x="10" y="43">trail peak → exit review</text>`,
     `watcher is ${hs('watcher')} — last checked ${
       (h.watcher || {}).checked_at ? ago((h.watcher || {}).checked_at) : 'never'}`));
   parts.push(node('book', 640, 300, 128, 50, 'desk.db',
@@ -218,8 +218,22 @@ function renderMap() {
     d="M 640 325 H 580"/>`);
   edges.push(`<path class="medge info" marker-end="url(#ai)"
     d="M 254 300 V 214 H ${anX} V 190"/>`);
+  // a breach launches an EXIT REVIEW, which enters at news — not at the
+  // screener, and not through the debate
   edges.push(`<path class="medge loop" marker-end="url(#al)"
-    d="M 450 325 H ${L.gLoop} V ${L.band + 10} H ${L.stageX}"/>`);
+    d="M 460 300 V 190"/>`);
+  edges.push(`<text class="ns" x="340" y="238"
+    fill="#8a6a2a">breach ↑ exit review</text>`);
+  // the exit review's shortcut: news → arbiter, skipping the debate
+  edges.push(`<path class="medge loop" marker-end="url(#al)"
+    d="M 476 176 H 708 V 142"/>`);
+  edges.push(`<text class="ns" x="500" y="190"
+    fill="#8a6a2a">exit review skips the debate</text>`);
+  // a human override of a PASS enters the pipeline AT the gate
+  edges.push(`<path class="medge loop" marker-end="url(#al)"
+    d="M 856 208 V 142"/>`);
+  edges.push(`<text class="ns" x="786" y="222"
+    fill="#8a6a2a">human override (Approvals)</text>`);
 
   document.getElementById('map').innerHTML = edges.join('') + parts.join('');
 }
@@ -348,13 +362,17 @@ async function openDrawer(id) {
   }
   const desc = {
     gate: 'interrupt() — the run suspends here until you present the ' +
-      'single-use token from an approval card above. No LLM can pass it.',
+      'single-use token from an approval card. No LLM can pass it. Every ' +
+      'path to execute crosses this gate: full runs, exit reviews, and ' +
+      'human overrides of a PASS all enter here.',
     execute: 'Pre-placement guards, then session-aware order placement. ' +
       'Positive quantity required, cash must cover cost + fee, risk caps ' +
       'checked, exits capped at held quantity. No LLM in this file.',
-    watcher: 'LLM-free stop-loss monitor: session-aware, escalating ' +
-      're-alerts, launches sell_reviews back into the pipeline. Publishes ' +
-      'its own health so a dead safety net is visible.',
+    watcher: 'LLM-free trailing-stop monitor: tracks the best price since ' +
+      'entry per position (shorts too — lowest wins there), fires when the ' +
+      'price falls a set % off that peak, escalates while it worsens, and ' +
+      'launches an exit review (news → arbiter, not the full pipeline). ' +
+      'Publishes its own health so a dead safety net is visible.',
     custodian: 'The asynchronous back half of execute: polls venues for ' +
       'fills and writes them to the book, places queued orders at the open, ' +
       'expires approvals at the gate, cancels orders past TTL, flags drift.',
