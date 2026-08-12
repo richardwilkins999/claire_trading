@@ -9,15 +9,15 @@
 #   --graceful  let work in flight finish first. Pauses the schedules so no
 #               NEW run starts, waits for running pipelines, approved orders
 #               and unfilled orders to settle, then stops. Use this normally.
+#   --kill      stop now. In-flight runs die where they stand. The book is
+#               safe either way (every write is committed synchronously), but
+#               an order placed and not yet recorded as filled will need the
+#               custodian to reconcile it on next start.
 #
 # A run suspended at the approval gate is NOT drained for, and does not need
 # to be: the LangGraph checkpoint and the minted token both persist, so the
 # card is still there after a restart and the same token still resumes it.
 # Draining for one would mean waiting on a human, which is not a shutdown.
-#   --kill      stop now. In-flight runs die where they stand. The book is
-#               safe either way (every write is committed synchronously), but
-#               an order placed and not yet recorded as filled will need the
-#               custodian to reconcile it on next start.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

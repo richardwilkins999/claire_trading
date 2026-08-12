@@ -45,10 +45,9 @@ def build_tools(conn, repo, desk, market):
     def list_pending_approvals() -> str:
         """Theses awaiting human approval (summaries only — approving happens
         on the dashboard, never in chat)."""
-        rows = [{k: r[k] for k in ("id", "ticker", "kind", "thesis_json",
-                                   "expires_at")}
-                for r in conn.execute(
-                    "SELECT * FROM work_items WHERE state='awaiting_approval'")]
+        rows = [dict(r) for r in conn.execute(
+            "SELECT id, ticker, kind, thesis_json, expires_at"
+            " FROM work_items WHERE state='awaiting_approval'")]
         return json.dumps(rows, default=str)
 
     @tool

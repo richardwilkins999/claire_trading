@@ -287,8 +287,14 @@ def approval_gate(state):
     return {"approval": Approval(**decision)}
 ```
 
-A sell-review run (triggered by the watcher) is the same graph with
-`kind=sell_review` — selling requires approval exactly like buying.
+A sell-review run (triggered by the watcher) is a REDUCED graph — news →
+arbitrate → gate → execute → record. A stop breach is not a fresh investment
+question: the analysis that opened the position is attached to the state
+(`prior_evidence`, from `work_items.prior_run`) and the only new input bought
+is what has happened since. The arbiter is told a `pass` verdict means HOLD.
+Selling requires approval exactly like buying. A human override of a PASS
+verdict is a third graph — gate → execute → record — carrying a
+human-authored thesis (see §10).
 
 ---
 
@@ -388,7 +394,7 @@ transaction.
 -- ── lifecycle ─────────────────────────────────────────────────────────────
 CREATE TABLE work_items (
   id TEXT PRIMARY KEY,
-  kind TEXT NOT NULL,                      -- pipeline | sell_review | screen
+  kind TEXT NOT NULL,                      -- pipeline | sell_review | override | screen
   ticker TEXT NOT NULL,
   state TEXT NOT NULL,                     -- running | awaiting_approval | approved
                                            -- | executing | done | rejected
@@ -511,7 +517,8 @@ CREATE TABLE broker_snapshots (            -- broker-reported truth, for reconci
 CREATE TABLE price_alerts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   instrument_id TEXT NOT NULL,
-  rule TEXT NOT NULL,                      -- below_price | above_price | drop_pct_from_entry
+  rule TEXT NOT NULL,                      -- below_price | above_price | trail_pct
+  peak_base REAL,                          -- best price since entry (trailing ref)
   threshold REAL NOT NULL, armed INTEGER NOT NULL DEFAULT 1,
   last_fired_at INTEGER, fire_count_today INTEGER DEFAULT 0,
   fire_count_date TEXT                     -- YYYY-MM-DD the counter belongs to;
@@ -825,16 +832,20 @@ LLM, no network:
 
 Deterministic loop in the dashboards process (no LLM cost), every 10 minutes:
 
-- Every open position automatically gets a **down-8%-from-entry** rule; users
-  add `below_price` / `above_price` / `drop_pct_from_entry` rules per
-  instrument.
+- Every open position — long or SHORT — automatically gets a **trailing 8%**
+  rule (`trail_pct`): measured from the best price seen since entry
+  (`price_alerts.peak_base`, ratcheted each tick, never backwards; for a
+  short the best price is the LOWEST). Users add `below_price` /
+  `above_price` / `trail_pct` rules per instrument.
 - **Session-aware:** rules are evaluated only while the instrument's exchange
   is open (§14a), plus a 30-minute grace after close. Outside hours the
   position tile shows `market closed — next open …`, never an `ok` computed
   from stale prices.
 - **Escalating re-alerts:** fire on first breach, then only after each further
-  3% decline, capped at 6/instrument/day — a worsening position keeps nudging
-  without spamming.
+  3% adverse move, capped at 6/instrument/day. Reviews never stack: if one is
+  already open for the ticker, an escalation rewrites that review's trigger to
+  the current price and logs a `watcher_escalation` event, so the approval
+  card always shows the latest number.
 - On breach → launch a `sell_review` pipeline run → the arbiter's sell thesis
   lands as `awaiting_approval` like any other. **Selling requires the same
   human approval as buying.**

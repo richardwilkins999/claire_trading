@@ -11,7 +11,6 @@ stays in one place.
 
 Network is injectable (`_get`) so unit tests run offline.
 """
-import json
 import time
 from decimal import Decimal
 

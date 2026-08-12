@@ -31,29 +31,55 @@ class Deps:
     prepare: Callable = field(default=lambda s: {})  # instrument/FX enrichment
 
 
+def _guarded(name, fn, key):
+    """LLM nodes degrade honestly: an exception becomes an errors entry, and
+    the arbitrate conditional routes a thesis-less run to record."""
+    def node(state):
+        try:
+            return {key: fn(state)} if key != "reports" else {
+                "reports": [fn(state)]}
+        except Exception as e:                      # noqa: BLE001
+            return {"errors": [f"{name}: {e}"]}
+    return node
+
+
+def _money_tail(g, deps):
+    """gate → execute → record, identical in EVERY graph. This is the part
+    where being one function matters: an approval fix that landed in the full
+    pipeline but not the override graph would be a security bug, not a style
+    problem. execute/record are deterministic and deliberately NOT guarded —
+    money errors must fail loudly."""
+    g.add_node("gate", approval_gate)
+    g.add_node("execute", deps.execute)
+    g.add_node("record", deps.record)
+    g.add_conditional_edges(
+        "gate",
+        lambda s: {"approved": "execute", "rejected": "record",
+                   "expired": "record"}[s.approval.status],
+        ["execute", "record"])
+    g.add_edge("execute", "record")
+    g.add_edge("record", END)
+
+
+def _arbitrate_or_record(g):
+    """Only buy/sell verdicts face the gate. A 'pass' — including 'hold' on an
+    exit review — completes the run without ever creating an approval."""
+    g.add_conditional_edges(
+        "arbitrate",
+        lambda s: "gate" if s.thesis and s.thesis.direction in ("buy", "sell")
+        else "record",
+        ["gate", "record"])
+
+
 def build_pipeline(deps: Deps, checkpointer):
     g = StateGraph(PipelineState)
-
-    def _guarded(name, fn, key):
-        """LLM nodes degrade honestly: an exception becomes an errors entry,
-        and the arbitrate conditional routes a thesis-less run to record."""
-        def node(state):
-            try:
-                return {key: fn(state)} if key != "reports" else {
-                    "reports": [fn(state)]}
-            except Exception as e:                  # noqa: BLE001
-                return {"errors": [f"{name}: {e}"]}
-        return node
-
     g.add_node("prepare", deps.prepare)
     for a in ANALYSTS:
         g.add_node(a, _guarded(a, deps.analysts[a], "reports"))
     g.add_node("bull", _guarded("bull", deps.bull, "bull"))
     g.add_node("bear", _guarded("bear", deps.bear, "bear"))
     g.add_node("arbitrate", _guarded("arbiter", deps.arbiter, "thesis"))
-    g.add_node("gate", approval_gate)
-    g.add_node("execute", deps.execute)             # deterministic — NOT guarded:
-    g.add_node("record", deps.record)               # money errors must fail loudly
+    _money_tail(g, deps)
 
     g.add_edge(START, "prepare")
     for a in ANALYSTS:
@@ -61,22 +87,11 @@ def build_pipeline(deps: Deps, checkpointer):
     g.add_edge(list(ANALYSTS), "bull")              # explicit barrier: ALL analysts
     g.add_edge("bull", "bear")                      # bear STRICTLY after bull
     g.add_edge("bear", "arbitrate")
-    g.add_conditional_edges(
-        "arbitrate",
-        lambda s: "gate" if s.thesis and s.thesis.direction in ("buy", "sell")
-        else "record",
-        ["gate", "record"])
-    g.add_conditional_edges(
-        "gate",
-        lambda s: {"approved": "execute", "rejected": "record",
-                   "expired": "record"}[s.approval.status],
-        ["execute", "record"])
-    g.add_edge("execute", "record")
-    g.add_edge("record", END)
+    _arbitrate_or_record(g)
     return g.compile(checkpointer=checkpointer)
 
 
-def build_sell_review_pipeline(deps, checkpointer):
+def build_sell_review_pipeline(deps: Deps, checkpointer):
     """An exit review: news → arbitrate → gate → execute → record.
 
     A stop-loss breach is not a fresh investment question, and re-running six
@@ -84,46 +99,22 @@ def build_sell_review_pipeline(deps, checkpointer):
     that opened the position is attached instead (state.prior_evidence), and
     the only thing bought new is the one input that has actually changed since
     then: what happened. The arbiter weighs that against the original thesis
-    and the breach, and the exit still needs the same human approval a buy
-    does — nothing here sells anything on its own."""
-    from langgraph.graph import END, START, StateGraph
+    and the breach — a 'pass' verdict here means HOLD — and the exit still
+    needs the same human approval a buy does."""
     g = StateGraph(PipelineState)
-
-    def guarded(name, fn, key):
-        def node(state):
-            try:
-                return {key: [fn(state)]} if key == "reports" \
-                    else {key: fn(state)}
-            except Exception as e:                  # noqa: BLE001
-                return {"errors": [f"{name}: {e}"]}
-        return node
-
     g.add_node("prepare", deps.prepare)
-    g.add_node("news", guarded("news", deps.analysts["news"], "reports"))
-    g.add_node("arbitrate", guarded("arbiter", deps.arbiter, "thesis"))
-    g.add_node("gate", approval_gate)
-    g.add_node("execute", deps.execute)
-    g.add_node("record", deps.record)
+    g.add_node("news", _guarded("news", deps.analysts["news"], "reports"))
+    g.add_node("arbitrate", _guarded("arbiter", deps.arbiter, "thesis"))
+    _money_tail(g, deps)
+
     g.add_edge(START, "prepare")
     g.add_edge("prepare", "news")
     g.add_edge("news", "arbitrate")
-    g.add_conditional_edges(
-        "arbitrate",
-        # a 'pass' here means hold — the desk looked and decided not to exit
-        lambda s: "gate" if s.thesis and s.thesis.direction in ("buy", "sell")
-        else "record",
-        ["gate", "record"])
-    g.add_conditional_edges(
-        "gate",
-        lambda s: {"approved": "execute", "rejected": "record",
-                   "expired": "record"}[s.approval.status],
-        ["execute", "record"])
-    g.add_edge("execute", "record")
-    g.add_edge("record", END)
+    _arbitrate_or_record(g)
     return g.compile(checkpointer=checkpointer)
 
 
-def build_override_pipeline(deps, checkpointer):
+def build_override_pipeline(deps: Deps, checkpointer):
     """The money half of the pipeline on its own: gate → execute → record.
 
     A PASS verdict routes arbitrate → record, so the graph RUNS TO COMPLETION
@@ -133,19 +124,9 @@ def build_override_pipeline(deps, checkpointer):
     token burning and execution stay the code that is already proven. The
     analysis nodes are deliberately absent: an override re-uses the original
     run's evidence rather than paying to think again."""
-    from langgraph.graph import END, START, StateGraph
     g = StateGraph(PipelineState)
-    g.add_node("gate", approval_gate)
-    g.add_node("execute", deps.execute)
-    g.add_node("record", deps.record)
+    _money_tail(g, deps)
     g.add_edge(START, "gate")
-    g.add_conditional_edges(
-        "gate",
-        lambda s: {"approved": "execute", "rejected": "record",
-                   "expired": "record"}[s.approval.status],
-        ["execute", "record"])
-    g.add_edge("execute", "record")
-    g.add_edge("record", END)
     return g.compile(checkpointer=checkpointer)
 
 

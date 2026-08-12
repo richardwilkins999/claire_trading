@@ -182,6 +182,8 @@ def test_market_partitions_by_plan_coverage():
                     "stale": False, "series": [], "src": "tradingview"}
                 for s in symbols}
 
+    from app.tools.market import MarketError
+
     def yahoo_down(url, params=None, need_crumb=False):
         raise MarketError("429")
     m = Market(_get=yahoo_down, primary=USOnly(), tv_quotes=tv,

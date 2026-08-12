@@ -13,7 +13,6 @@ candidates it was shown (hallucinated tickers are dropped at validation), and
 any failure raises — the caller falls back to a deterministic picker, so a
 missing API key or provider outage never kills a scheduled run.
 """
-import json
 import time
 
 from pydantic import BaseModel, Field

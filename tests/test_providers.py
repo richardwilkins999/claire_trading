@@ -1,7 +1,6 @@
 """Provider layer tests (DESIGN.md §18 layer 4) — offline, fake LLMs."""
 import pytest
-from langchain_core.language_models.fake_chat_models import (
-    FakeListChatModel, FakeMessagesListChatModel)
+from langchain_core.language_models.fake_chat_models import FakeListChatModel
 
 from app.accounting import db
 from app.providers import health, registry, seeds

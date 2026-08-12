@@ -2,8 +2,6 @@
 import json
 from datetime import datetime, timezone
 
-import pytest
-
 from app.graph.state import AnalystReport, DebateCase, Thesis
 from app.tools.lc_tools import MAX_TOOL_FAILURES, build_tool_registry
 from app.tools.market import Market

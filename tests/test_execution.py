@@ -219,7 +219,7 @@ def test_watcher_escalating_alerts_launch_one_sell_review():
     r = watcher.tick()                          # same price: escalation gate
     assert r["fired"] == []                     # needs a further 3% decline
     w.market.price = Decimal("86")
-    open_review = w.conn.execute(               # pretend review still open
+    w.conn.execute(                             # pretend review still open
         "INSERT INTO work_items (id, kind, ticker, state, thread_id,"
         " created_at, updated_at) VALUES ('wi_sr', 'sell_review', 'NVDA',"
         " 'awaiting_approval', 'wi_sr', ?, ?)", (w.clock(), w.clock()))

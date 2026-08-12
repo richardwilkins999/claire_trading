@@ -11,8 +11,8 @@ from . import sessions
 from .accounting.money import from_micro
 from .tools.market import yahoo_symbol
 
-AUTO_DROP_PCT = 8       # every open position gets a down-8%-from-entry rule
-ESCALATE_PCT = 3        # re-fire per further 3% decline
+AUTO_DROP_PCT = 8       # default trail: 8% off the best price since entry
+ESCALATE_PCT = 3        # re-fire per further 3% adverse move
 MAX_FIRES_PER_DAY = 6
 GRACE = timedelta(minutes=30)   # still watch briefly after the close
 

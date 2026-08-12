@@ -5,7 +5,6 @@ other run.
 """
 import argparse
 import json
-import os
 
 import httpx
 

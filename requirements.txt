@@ -16,5 +16,12 @@ fastapi==0.141.1
 uvicorn[standard]==0.52.1
 httpx==0.28.1
 pytest==9.1.1
+# the run_python sandbox invokes THIS venv's interpreter and promises agents
+# "numpy/pandas analysis" (tools/lc_tools.py) — they were installed but never
+# pinned, so a fresh install would break every run_python call
+numpy==2.5.2
+pandas==3.0.5
+# dev-only:
+pyflakes==3.4.0
 # optional, install when activating IBKR market data (see app/tools/ibkr.py):
 # ib-insync
