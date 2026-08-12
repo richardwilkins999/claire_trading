@@ -10,7 +10,9 @@ from pathlib import Path
 
 from app.accounting import db
 
-SCRIPT = Path(__file__).resolve().parent.parent / "bin" / "claire"
+BIN = Path(__file__).resolve().parent.parent / "bin"
+SCRIPT = BIN / "claire"
+RESET = BIN / "claire-reset"
 
 
 def _tables():
@@ -21,7 +23,7 @@ def _tables():
 
 
 def _reset_list():
-    m = re.search(r"TABLES = \[(.*?)\]", SCRIPT.read_text(), re.S)
+    m = re.search(r"TABLES = \[(.*?)\]", RESET.read_text(), re.S)
     return re.findall(r'"([a-z_]+)"', m.group(1))
 
 
@@ -82,6 +84,26 @@ def test_graceful_stop_pauses_and_restores_schedules():
 
 
 def test_reset_refuses_to_run_against_a_live_desk():
-    text = SCRIPT.read_text()
-    assert "stop the desk first" in text
+    text = RESET.read_text()
+    assert "stop it first" in text
     assert 'backup="$ROOT/var/backup-$stamp"' in text   # and backs up first
+
+
+def test_destroying_the_book_is_not_in_the_everyday_script():
+    """start/stop is run daily; wiping the book is run once. They must not
+    share an entry point — a typo should not be able to reach the DELETEs."""
+    daily = SCRIPT.read_text()
+    assert "DELETE FROM" not in daily
+    assert "cmd_reset" not in daily
+    assert RESET.exists() and RESET.stat().st_mode & 0o111   # and executable
+
+
+def test_the_gate_is_documented_as_surviving_a_restart():
+    """A stop does not drain for an approval, because it does not need to:
+    the checkpoint and token persist. Verified live — keep it written down
+    so nobody 'fixes' the drain by adding awaiting_approval to it."""
+    text = SCRIPT.read_text()
+    assert "checkpoint" in text and "persist" in text
+    # the drain must NOT wait on a human decision
+    inflight = re.search(r'if what == "inflight":(.*?)elif', text, re.S).group(1)
+    assert "awaiting_approval" not in inflight

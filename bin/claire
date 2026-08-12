@@ -1,10 +1,19 @@
 #!/usr/bin/env bash
-# Claire desk control: start / stop / status / reset.
+# Claire desk control: start / stop / restart / status.
+#
+# Nothing here destroys data. Wiping the book lives in bin/claire-reset, on
+# purpose: the command you run every day should not be one typo away from the
+# command you run once.
 #
 # Two shutdown modes, because they answer different questions:
 #   --graceful  let work in flight finish first. Pauses the schedules so no
 #               NEW run starts, waits for running pipelines, approved orders
 #               and unfilled orders to settle, then stops. Use this normally.
+#
+# A run suspended at the approval gate is NOT drained for, and does not need
+# to be: the LangGraph checkpoint and the minted token both persist, so the
+# card is still there after a restart and the same token still resumes it.
+# Draining for one would mean waiting on a human, which is not a shutdown.
 #   --kill      stop now. In-flight runs die where they stand. The book is
 #               safe either way (every write is committed synchronously), but
 #               an order placed and not yet recorded as filled will need the
@@ -121,7 +130,12 @@ cmd_status() {
   else say "  claire-dashboards ${c_dim}stopped${c_off}"; fi
   if [ -f "$ROOT/var/desk.db" ]; then
     dim "  in flight: $(dbq inflight text)"
-    dim "  awaiting your approval: $(dbq waiting) · open positions: $(dbq positions)"
+    local w; w="$(dbq waiting)"
+    dim "  awaiting your approval: $w · open positions: $(dbq positions)"
+    # asked often enough to be worth saying in the tool: a stop does not
+    # discard these. The suspended run and its token both persist.
+    [ "$w" != 0 ] && dim "  (approvals survive a restart — same token, same" \
+      "expiry; a stop never discards one)"
   fi
 }
 
@@ -150,9 +164,12 @@ drain() {
     sleep 5; waited=$((waited + 5))
   done
   printf '\n'
-  warn "still busy after ${DRAIN_TIMEOUT}s — NOT stopping."
-  say  "  Approvals waiting on you do not clear themselves: decide them at"
-  say  "  $DASH_URL/approvals, or run: claire stop --kill"
+  warn "still busy after ${DRAIN_TIMEOUT}s — NOT stopping ($(dbq inflight text))."
+  say  "  An unfilled order is usually waiting on the venue: the custodian"
+  say  "  polls for fills, and an order placed out of hours sits until the"
+  say  "  market opens. Give it longer with CLAIRE_DRAIN_TIMEOUT=1800, or"
+  say  "  stop anyway with 'claire stop --kill' — the order is already at the"
+  say  "  broker either way, and the custodian reconciles it on next start."
   return 1
 }
 
@@ -196,65 +213,12 @@ cmd_stop() {
   ok "stopped"
 }
 
-# ── reset ────────────────────────────────────────────────────────────────
-cmd_reset() {
-  [ "${1:-}" = "--yes" ] || {
-    say "This erases every trade and every run, and returns the desk to a"
-    say "fresh paper book: 3 accounts, 100,000 USD each, nothing held."
-    say ""
-    say "  DELETED  work items · events · agent runs & reports · orders ·"
-    say "           executions · lots · cash movements · alerts · narratives ·"
-    say "           graph checkpoints · accounts (recreated on next start)"
-    say "  KEPT     providers · agents & prompts · schedules · MCP servers ·"
-    say "           instruments · watchlist · exchange sessions"
-    say ""
-    say "A timestamped backup is taken first."
-    printf 'Type %sreset%s to confirm: ' "$c_yel" "$c_off"
-    read -r reply
-    [ "$reply" = "reset" ] || die "cancelled"
-  }
-  [ -z "$(pids_for "$API_PAT")$(pids_for "$DASH_PAT")" ] || \
-    die "stop the desk first: claire stop"
-
-  local stamp backup
-  stamp="$(date +%Y%m%d-%H%M%S)"
-  backup="$ROOT/var/backup-$stamp"
-  mkdir -p "$backup"
-  cp -a "$ROOT/var/desk.db" "$backup/" 2>/dev/null || true
-  cp -a "$ROOT/var/checkpoints.db" "$backup/" 2>/dev/null || true
-  [ -d "$ROOT/var/narratives" ] && cp -a "$ROOT/var/narratives" "$backup/"
-  ok "backup → $backup"
-
-  ( cd "$ROOT" && "$PY" - <<'PYEOF'
-from app.accounting import db
-conn = db.connect("var/desk.db")
-# Trade and run history. Accounts go too: the API recreates them on boot with
-# the opening deposit, so that bootstrap stays the single definition of base.
-TABLES = ["lot_closures", "lots", "executions", "orders", "cash_transactions",
-          "broker_snapshots", "corporate_actions", "price_alerts",
-          "agent_reports", "agent_runs", "events", "work_items",
-          "broker_accounts", "service_health", "chat_threads"]
-for t in TABLES:
-    try:
-        conn.execute(f"DELETE FROM {t}")
-    except Exception as e:                      # noqa: BLE001
-        print(f"  skip {t}: {e}")
-conn.execute("DELETE FROM sqlite_sequence")
-print("  cleared:", ", ".join(TABLES))
-PYEOF
-  )
-  rm -f "$ROOT/var/checkpoints.db"
-  rm -rf "$ROOT/var/narratives"
-  ok "desk reset to base"
-  dim "  run 'claire start' — accounts and opening balances are recreated"
-}
 
 case "${1:-}" in
   start)   shift; cmd_start "$@" ;;
   stop)    shift; cmd_stop "$@" ;;
   restart) shift; cmd_stop "$@" && cmd_start ;;
   status)  shift; cmd_status ;;
-  reset)   shift; cmd_reset "$@" ;;
   *) cat <<EOF
 Claire desk control
 
@@ -264,8 +228,8 @@ Claire desk control
   claire stop --kill           stop now, abandoning anything in flight
   claire restart [--kill]      stop then start
   claire status                what is running, and what is in flight
-  claire reset                 erase all trades and runs, back to a fresh
-                               paper book (backs up first, asks to confirm)
+
+Resetting the book is deliberately NOT in this script — see bin/claire-reset.
 EOF
     exit 1 ;;
 esac

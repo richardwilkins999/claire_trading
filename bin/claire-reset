@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# Return the desk to a fresh paper book: no trades, no runs, no history.
+#
+# Deliberately a separate command from bin/claire. Start and stop are routine;
+# this is not, and it should not sit one typo away from them.
+#
+# What survives is the desk's identity — providers, agents and their prompts,
+# schedules, MCP servers, instruments, exchange sessions. What goes is
+# everything that records activity, plus the broker accounts: the API recreates
+# those with their opening balance on boot, so that bootstrap stays the single
+# definition of "base" rather than this script inventing a second one.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PY="$ROOT/venv/bin/python3"
+API_PAT='app\.api\.server'
+DASH_PAT='app\.dashboards'
+
+c_red=$'\033[31m'; c_grn=$'\033[32m'; c_yel=$'\033[33m'; c_dim=$'\033[2m'
+c_off=$'\033[0m'
+say()  { printf '%s\n' "$*"; }
+ok()   { printf '%s✔%s %s\n' "$c_grn" "$c_off" "$*"; }
+die()  { printf '%s✘%s %s\n' "$c_red" "$c_off" "$*" >&2; exit 1; }
+dim()  { printf '%s%s%s\n' "$c_dim" "$*" "$c_off"; }
+
+pids_for() { pgrep -f "$1" 2>/dev/null || true; }
+
+ASSUME_YES=0
+case "${1:-}" in
+  --yes|-y) ASSUME_YES=1 ;;
+  --help|-h) say "usage: claire-reset [--yes]"; exit 0 ;;
+  '') ;;
+  *) die "unknown option $1" ;;
+esac
+
+[ -z "$(pids_for "$API_PAT")$(pids_for "$DASH_PAT")" ] || \
+  die "the desk is running — stop it first: bin/claire stop"
+
+if [ "$ASSUME_YES" != 1 ]; then
+  say "This erases every trade and every run, and returns the desk to a"
+  say "fresh paper book: 3 accounts, 100,000 USD each, nothing held."
+  say ""
+  say "  DELETED  work items · events · agent runs & reports · orders ·"
+  say "           executions · lots · cash movements · alerts · narratives ·"
+  say "           graph checkpoints · accounts (recreated on next start)"
+  say "  KEPT     providers · agents & prompts · schedules · MCP servers ·"
+  say "           instruments · watchlist · exchange sessions"
+  say ""
+  # anything pending is about to be destroyed — say so before, not after
+  ( cd "$ROOT" && "$PY" - <<'PYEOF'
+from app.accounting import db
+conn = db.connect("var/desk.db")
+w = conn.execute("SELECT COUNT(*) c FROM work_items WHERE"
+                 " state='awaiting_approval'").fetchone()["c"]
+p = conn.execute("SELECT COUNT(*) c FROM lots WHERE qty_remaining > 0"
+                 ).fetchone()["c"]
+o = conn.execute("SELECT COUNT(*) c FROM orders WHERE status NOT IN"
+                 " ('filled','cancelled','rejected','expired')").fetchone()["c"]
+if w or p or o:
+    print(f"  \033[33m!\033[0m about to discard: {w} approval(s) awaiting you, "
+          f"{p} open position(s), {o} live order(s)")
+PYEOF
+  )
+  say "A timestamped backup is taken first."
+  printf 'Type %sreset%s to confirm: ' "$c_yel" "$c_off"
+  read -r reply
+  [ "$reply" = "reset" ] || die "cancelled"
+fi
+
+stamp="$(date +%Y%m%d-%H%M%S)"
+backup="$ROOT/var/backup-$stamp"
+mkdir -p "$backup"
+cp -a "$ROOT/var/desk.db" "$backup/" 2>/dev/null || true
+cp -a "$ROOT/var/checkpoints.db" "$backup/" 2>/dev/null || true
+[ -d "$ROOT/var/narratives" ] && cp -a "$ROOT/var/narratives" "$backup/"
+ok "backup → $backup"
+
+( cd "$ROOT" && "$PY" - <<'PYEOF'
+from app.accounting import db
+conn = db.connect("var/desk.db")
+# Ordered so foreign keys unwind cleanly: closures before lots, lots before
+# executions, executions before orders, orders before the accounts they cite.
+TABLES = ["lot_closures", "lots", "executions", "orders", "cash_transactions",
+          "broker_snapshots", "corporate_actions", "price_alerts",
+          "agent_reports", "agent_runs", "events", "work_items",
+          "broker_accounts", "service_health", "chat_threads"]
+for t in TABLES:
+    try:
+        conn.execute(f"DELETE FROM {t}")
+    except Exception as e:                      # noqa: BLE001
+        print(f"  skip {t}: {e}")
+conn.execute("DELETE FROM sqlite_sequence")
+print("  cleared:", ", ".join(TABLES))
+PYEOF
+)
+# the graph's own memory: leaving it would resurrect suspended runs whose
+# desk.db rows no longer exist
+rm -f "$ROOT/var/checkpoints.db"
+rm -rf "$ROOT/var/narratives"
+ok "desk reset to base"
+dim "  run 'bin/claire start' — accounts and opening balances are recreated"
