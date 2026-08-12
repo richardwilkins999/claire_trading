@@ -107,3 +107,35 @@ def test_the_gate_is_documented_as_surviving_a_restart():
     # the drain must NOT wait on a human decision
     inflight = re.search(r'if what == "inflight":(.*?)elif', text, re.S).group(1)
     assert "awaiting_approval" not in inflight
+
+
+# ── network exposure ────────────────────────────────────────────────────────
+def test_dashboards_bind_is_configurable_but_defaults_to_loopback():
+    """Putting the desk on the LAN must be a deliberate setting, not the
+    default a fresh clone inherits."""
+    import inspect
+    from app import dashboards
+    sig = inspect.signature(dashboards.create_server)
+    assert sig.parameters["bind"].default == "127.0.0.1"
+
+
+def test_claire_api_is_never_exposed_off_loopback():
+    """The dashboards may go on the LAN; claire-api may not. It owns
+    /internal/resume — the one endpoint that turns a click into a trade — and
+    its host guard is the last line of defence, so the bind must not become
+    configurable alongside the dashboards'."""
+    src = (Path(__file__).resolve().parent.parent / "app" / "api"
+           / "server.py").read_text()
+    assert 'host="127.0.0.1"' in src
+    assert "CLAIRE_DASHBOARD_BIND" not in src
+
+
+def test_the_money_path_is_gated_by_the_key_not_by_the_network():
+    """Read routes are open to whoever can reach the port, so every action
+    that moves money must check pairing itself rather than relying on the
+    listener being loopback."""
+    src = (Path(__file__).resolve().parent.parent / "app"
+           / "dashboards.py").read_text()
+    for route in ("/api/thesis-action", "/api/override"):
+        i = src.index(route)
+        assert "_paired()" in src[i:i + 400], f"{route} is not key-gated"

@@ -43,7 +43,13 @@ PIPELINE_EDGES = [("prepare", "fundamental"), ("prepare", "technical"),
 
 def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                   secret="", dash_key="", narratives=None, clock=time.time,
-                  port=7787, env=None, cal=None, sse_interval=2.0):
+                  port=7787, env=None, cal=None, sse_interval=2.0,
+                  bind="127.0.0.1"):
+    """`bind` is the dashboards' listen address. 0.0.0.0 puts the desk on the
+    LAN so another machine can use it; the approval key still gates every
+    action, but READ routes are open to anyone who can reach the port — see
+    CLAIRE_DASHBOARD_BIND in etc/claire.env. claire-api stays on loopback
+    regardless: it holds /internal/resume, and nothing off-box may call it."""
     resume_post = approvals.default_resume_post(api_base, secret)
     env = env or {}
     status_cache = {"t": 0.0, "ok": False}
@@ -958,7 +964,7 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                 return
             super().handle_error(request, client_address)
 
-    return Server(("127.0.0.1", port), Handler)
+    return Server((bind, port), Handler)
 
 
 def start_watcher_thread(conn, repo, market, *, api_base, interval=600,
@@ -1044,10 +1050,23 @@ def main():
     cal = sessions.load(conn) or None
     start_watcher_thread(conn, repo, market,
                          api_base="http://127.0.0.1:7788", cal=cal)
+    bind = os.environ.get("CLAIRE_DASHBOARD_BIND", "127.0.0.1")
     srv = create_server(conn, repo, market, secret=secret, dash_key=dash_key,
                         narratives=Narratives(var / "narratives"),
-                        env=os.environ, cal=cal)
-    print("dashboards on http://127.0.0.1:7787")
+                        env=os.environ, cal=cal, bind=bind)
+    print(f"dashboards on http://{bind}:7787")
+    if bind not in ("127.0.0.1", "localhost"):
+        import socket
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))          # no packet sent; reads the route
+            lan = s.getsockname()[0]
+            s.close()
+            print(f"  reachable on your network at http://{lan}:7787")
+        except OSError:
+            pass
+        print("  anyone on this network can READ the desk; approving, "
+              "overriding and moving cash still need the dashboard key")
     srv.serve_forever()
 
 

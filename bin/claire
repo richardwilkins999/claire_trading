@@ -111,7 +111,7 @@ cmd_start() {
       setsid "$PY" -m "$mod" </dev/null >>"$LOG_DIR/$svc.log" 2>&1 & )
     started=1
   done
-  [ "$started" = 1 ] && sleep 6
+  if [ "$started" = 1 ]; then sleep 6; fi
   cmd_status
 }
 
@@ -127,6 +127,14 @@ cmd_status() {
     local code; code="$(curl -s -m 3 -o /dev/null -w '%{http_code}' \
       "$DASH_URL/" 2>/dev/null || echo '---')"
     ok "claire-dashboards pid ${dash//$'\n'/ }  HTTP $code  → $DASH_URL"
+    # when it is on the LAN, print the address another machine can use —
+    # nobody should have to go looking for their own IP
+    if grep -qs '^CLAIRE_DASHBOARD_BIND=0\.0\.0\.0' "$ENV_FILE"; then
+      local lan; lan="$(hostname -I 2>/dev/null | awk '{print $1}')"
+      if [ -n "$lan" ]; then
+        dim "    from another device: http://$lan:7787"
+      fi
+    fi
   else say "  claire-dashboards ${c_dim}stopped${c_off}"; fi
   if [ -f "$ROOT/var/desk.db" ]; then
     dim "  in flight: $(dbq inflight text)"
@@ -134,8 +142,9 @@ cmd_status() {
     dim "  awaiting your approval: $w · open positions: $(dbq positions)"
     # asked often enough to be worth saying in the tool: a stop does not
     # discard these. The suspended run and its token both persist.
-    [ "$w" != 0 ] && dim "  (approvals survive a restart — same token, same" \
-      "expiry; a stop never discards one)"
+    if [ "$w" != 0 ]; then
+      dim "  (approvals survive a restart — same token, same expiry; a stop never discards one)"
+    fi
   fi
 }
 
@@ -144,7 +153,7 @@ restore_schedules() {
   [ -f "$DRAIN_STATE" ] || return 0
   local n; n="$(dbq schedules-on "$(cat "$DRAIN_STATE")")"
   rm -f "$DRAIN_STATE"
-  [ "$n" -gt 0 ] && dim "  schedules restored ($n job(s))"
+  if [ "$n" -gt 0 ]; then dim "  schedules restored ($n job(s))"; fi
   return 0
 }
 
@@ -192,7 +201,9 @@ cmd_stop() {
     trap - EXIT INT TERM
   else
     local total; total="$(dbq inflight total)"
-    [ "$total" != 0 ] && warn "killing with $total item(s) in flight ($(dbq inflight text)) — the custodian will reconcile any placed order on next start"
+    if [ "$total" != 0 ]; then
+      warn "killing with $total item(s) in flight ($(dbq inflight text)) — the custodian reconciles any placed order on next start"
+    fi
   fi
 
   local sig=TERM; [ "$mode" = kill ] && sig=KILL

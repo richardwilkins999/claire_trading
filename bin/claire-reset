@@ -72,7 +72,7 @@ backup="$ROOT/var/backup-$stamp"
 mkdir -p "$backup"
 cp -a "$ROOT/var/desk.db" "$backup/" 2>/dev/null || true
 cp -a "$ROOT/var/checkpoints.db" "$backup/" 2>/dev/null || true
-[ -d "$ROOT/var/narratives" ] && cp -a "$ROOT/var/narratives" "$backup/"
+if [ -d "$ROOT/var/narratives" ]; then cp -a "$ROOT/var/narratives" "$backup/"; fi
 ok "backup → $backup"
 
 ( cd "$ROOT" && "$PY" - <<'PYEOF'
