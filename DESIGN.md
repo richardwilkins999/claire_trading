@@ -8,6 +8,9 @@ deterministic Python — no LLM ever touches money.
 
 - **Source repo:** `claire_trading` (private, GitHub)
 - **Deploy target:** `/opt/Claire` on a single Linux machine, systemd-managed
+  (design target; on the current machine the repo instead lives at
+  `/mnt/projects/claire_trading`, symlinked from `~/claire_trading` — same
+  idea, different path. See §3 and §16 for what that changes in practice.)
 - **Stack:** Python 3.14, LangGraph + LangChain 1.x, SQLite, stdlib HTTP for
   dashboards. No Node.js anywhere.
 - **Scope:** paper/simulation trading only, single user, localhost only.
@@ -132,7 +135,9 @@ column, `work_items.thread_id`.
 
 ## 3. Repository and deploy layout
 
-Repo `claire_trading` mirrors the deploy tree:
+Repo `claire_trading` mirrors the deploy tree (as designed — see the
+current-machine note at the top of this document for the actual path in
+use here):
 
 ```
 claire_trading/                    →  /opt/Claire/
@@ -178,6 +183,11 @@ python3.14 -m venv /opt/Claire/venv
 /opt/Claire/venv/bin/pip install -r requirements.txt   # PINNED versions
 cp etc/claire.env.example etc/claire.env && chmod 600 etc/claire.env
 ```
+
+(On the current machine, this landed at `/mnt/projects/claire_trading`
+instead, with `~/claire_trading` symlinked to it — no `/opt` involved, no
+root step needed. See the README's "Deploy" section for the actual
+systemd unit in use, which differs from §16 below.)
 
 **Pin every dependency and upgrade deliberately.** The LangChain ecosystem
 moves fast — a checkpoint-library context-manager API changed between releases
@@ -876,6 +886,18 @@ timers state their times in each region's own IANA zone — systemd `OnCalendar`
 supports this natively, so DST shifts are systemd's problem, not ours.
 Autonomous runs are started by a CLI (`claire-run --autonomous`), not by
 prompting a chat model — starting work needs no LLM.
+
+**What's actually installed on the current machine: only the first two
+rows**, and not even as separate `Restart=always` units — a single
+`claire.service` wrapper (see README "Deploy") starts/stops both via
+`bin/claire`, because installing `claire-api.service`/
+`claire-dashboards.service` directly would fight the script's graceful-stop
+logic. None of the timers (`claire-custodian`, the three regional analysis
+timers, `claire-reconcile`) are installed — no autonomous pre-open runs,
+no scheduled custodian pass, no reconcile timer are currently active. This
+table is the design target, not the current operational state; installing
+the rest is a real decision (what schedule, what regions matter) rather
+than a docs fix.
 
 ---
 
