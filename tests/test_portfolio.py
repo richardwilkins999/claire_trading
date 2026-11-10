@@ -240,3 +240,43 @@ def test_trailing_level_is_drawn_in_the_stocks_own_currency():
     # no live rate: the rate at the opening fill is used instead
     assert levels_for(conn, pos, fills)["alert"] == pytest.approx(
         14.775 * 0.9, rel=1e-3)
+
+
+def test_a_fired_alert_shows_the_level_that_is_live_now():
+    """STVN, 2026-11-10: the alert fired at 10%, the review said hold, and
+    the price sat below the 10% line — the watcher now waits for 13%. The
+    card must show 13% (and why), not a level the price has already
+    passed."""
+    import json as _json
+    import time as _time
+    from app.accounting import db as _db
+    from app.portfolio import levels_for
+    conn = _db.connect(":memory:")
+    _db.init(conn)
+    now = 1_794_339_331
+    today = _time.strftime("%Y-%m-%d", _time.gmtime(now))
+    conn.execute("INSERT INTO instruments (id, ticker, exchange, currency)"
+                 " VALUES ('NYSE:STVN','STVN','NYSE','USD')")
+    conn.execute("INSERT INTO price_alerts (instrument_id, rule, threshold,"
+                 " armed, peak_base, account_id, side, last_fired_at,"
+                 " fire_count_today, fire_count_date) VALUES"
+                 " ('NYSE:STVN','trail_pct',10,1,14.76,'saxo-paper',1,?,1,?)",
+                 (now - 3000, today))
+    conn.execute("INSERT INTO work_items (id, kind, ticker, state, thread_id,"
+                 " created_at, updated_at, thesis_json) VALUES ('wi_r',"
+                 " 'sell_review','STVN','done','wi_r',?,?,?)",
+                 (now - 2999, now - 2900, _json.dumps({"direction": "pass"})))
+    pos = {"instrument_id": "NYSE:STVN", "account_id": "saxo-paper",
+           "qty": 68}
+    fills = [{"side": "buy", "qty": 68, "price_native": 14.62,
+              "fx_rate": 1.0, "work_item_id": None}]
+    lv = levels_for(conn, pos, fills, fx=1.0, now=now)
+    assert lv["alert"] == pytest.approx(14.76 * 0.87)         # 10% + 3%
+    assert lv["alert_set_level"] == pytest.approx(14.76 * 0.90)
+    assert lv["alert_pct"] == 10 and lv["alert_live_pct"] == 13
+    assert lv["alert_review"] == {"id": "wi_r", "state": "done",
+                                  "verdict": "pass"}
+    # a new day: back to the level you set
+    lv = levels_for(conn, pos, fills, fx=1.0, now=now + 86400)
+    assert lv["alert"] == pytest.approx(14.76 * 0.90)
+    assert "alert_fired_today" not in lv

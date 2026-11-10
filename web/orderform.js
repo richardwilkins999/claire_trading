@@ -151,15 +151,34 @@ function ladder(pts, ccy, refs = [], opt = {}) {
   const DRAGGABLE = {stop: 1, entry: 1, target: 1, trail: 1};
   const zone = (a, b, cls) => a != null && b != null
     ? `<div class="lz ${cls}" style="left:${x(Math.min(a, b))};width:calc(${x(Math.max(a, b))} - ${x(Math.min(a, b))})"></div>` : '';
-  return `<div class="ladder${opt.drag ? ' can-drag' : ''}" data-lo="${lo}" data-hi="${hi}">
+  /* labels that would overlap go up a lane: markers labelled ABOVE the
+     line (now, trailing, what you paid, 2-year refs) and BELOW it (stop,
+     purchase price, target) are stacked separately */
+  const ABOVE = {now: 1, trail: 1, paid: 1, ref: 1};
+  const marks = [...pts.filter(p => p.v != null), ...refs.map(r => ({...r, k: 'ref'}))]
+    .map(p => ({...p, at: (Math.min(hi, Math.max(lo, p.v)) - lo) / (hi - lo) * 100}));
+  /* the price NOW is placed first, so it always keeps the row nearest
+     the line; the others take the first row where they do not overlap */
+  const GAP = opt.labelGap || 13, lanes = {up: [], down: []};
+  marks.slice().sort((p, q) => (q.k === 'now') - (p.k === 'now') || p.at - q.at).forEach(p => {
+    const side = ABOVE[p.k] ? lanes.up : lanes.down;
+    let lane = 0;
+    while (side[lane] && side[lane].some(x => Math.abs(p.at - x) < GAP)) lane++;
+    (side[lane] = side[lane] || []).push(p.at); p.lane = lane;
+  });
+  const LANE = 26, upN = lanes.up.length, downN = lanes.down.length;
+  const lab = p => p.lane ? ` style="${ABOVE[p.k] ? `bottom:${30 + p.lane * LANE}px` : `position:relative;top:${p.lane * LANE}px`}"` : '';
+  return `<div class="ladder${opt.drag ? ' can-drag' : ''}" data-lo="${lo}" data-hi="${hi}"${
+    upN > 1 || downN > 1 ? ` style="margin-top:calc(2.1rem + ${Math.max(0, upN - 1) * LANE}px);height:${66 + Math.max(0, downN - 1) * LANE}px"` : ''}>
     <div class="lbar"></div>
     ${zone(P.stop, P.entry, 'loss')}${zone(P.entry, P.target, 'gain')}${(opt.zones || []).map(z => zone(...z)).join('')}
-    ${pts.filter(p => p.v != null).map(p => `<div class="lm ${p.k}${opt.drag && DRAGGABLE[p.k] ? ' drag' : ''}${
+    ${marks.filter(p => p.k !== 'ref').map(p => `<div class="lm ${p.k}${opt.drag && DRAGGABLE[p.k] ? ' drag' : ''}${
       frozen && frozen.k === p.k ? ' held' : ''}" style="left:${x(p.v)}"${opt.drag && DRAGGABLE[p.k]
       ? ` title="drag to change" onpointerdown='ladderGrab(event, ${JSON.stringify(opt.drag)}, "${p.k}")'` : ''}>
-      <span class="ltick"></span><span class="llab"><b>${money(p.v, '')}</b><br>${p.label}</span></div>`).join('')}
-    ${refs.map(r => `<div class="lm ref" style="left:${x(r.v)}" title="${esc(r.tip || '')}">
-      <span class="ltick"></span><span class="llab"><b>${money(r.v, '')}</b><br>${r.label}</span></div>`).join('')}
+      <span class="ltick"></span>${p.k === 'now' ? '<span class="ldot"></span>' : ''}<span class="llab"${lab(p)}>${
+        p.k === 'now' ? `<span class="lnow">NOW <b>${money(p.v, '')}</b></span>` : `<b>${money(p.v, '')}</b><br>${p.label}`}</span></div>`).join('')}
+    ${marks.filter(p => p.k === 'ref').map(r => `<div class="lm ref" style="left:${x(r.v)}" title="${esc(r.tip || '')}">
+      <span class="ltick"></span><span class="llab"${lab(r)}><b>${money(r.v, '')}</b><br>${r.label}</span></div>`).join('')}
   </div>`;
 }
 /* where the price (and this trade) sits in a range: today's and 2 years' */

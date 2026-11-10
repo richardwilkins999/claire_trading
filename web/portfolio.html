@@ -2,6 +2,53 @@
 <link rel="stylesheet" href="/style.css"><script src="/nav.js"></script>
 <script src="/charts.js"></script>
 <link rel="stylesheet" href="/orderform.css"><script src="/orderform.js"></script>
+<style>
+  /* position cards are narrow (two columns): tighter tiles than an order */
+  .pprot { padding:.5rem .6rem; margin:.4rem 0 .5rem; container-type:inline-size; }
+  .ptiles { display:grid; grid-template-columns:1fr 1fr; gap:.5rem; }
+  .ptile.trail { grid-column:1 / -1; }
+  @container (min-width: 620px) {
+    .ptiles { grid-template-columns:repeat(3, minmax(0, 1fr)); }
+    .ptile.trail { grid-column:auto; }
+  }
+  @container (max-width: 330px) { .ptiles { grid-template-columns:1fr; } }
+  .ptile { display:flex; flex-direction:column; gap:.2rem; background:var(--bg);
+    border:1px solid var(--line); border-left:3px solid var(--line); border-radius:8px;
+    padding:.5rem .65rem .45rem; min-width:0; }
+  .ptile.loss { border-left-color:var(--bad); }
+  .ptile.gain { border-left-color:var(--good); }
+  .ptile.trail { border-left-color:var(--warn); }
+  .pt-head { display:flex; justify-content:space-between; align-items:center; gap:.4rem; }
+  .pt-label { color:var(--muted); font-size:.68rem; text-transform:uppercase; letter-spacing:.09em; font-weight:600; }
+  .pt-dist { font-size:.7rem; color:var(--dim); border:1px solid var(--line); border-radius:999px;
+    padding:0 .45rem; white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .pt-price { font-size:1.3rem; font-weight:700; line-height:1.2; font-variant-numeric:tabular-nums; }
+  .pt-price small { font-size:.72rem; font-weight:500; color:var(--dim); }
+  .ptile.loss .pt-price { color:var(--bad); } .ptile.gain .pt-price { color:var(--good); }
+  .ptile.trail .pt-price { color:var(--warn); }
+  .pt-none { font-size:1.1rem; font-weight:600; color:var(--dim); }
+  .pt-out { display:flex; justify-content:space-between; align-items:baseline; gap:.5rem;
+    font-size:.8rem; padding:.15rem 0; }
+  .pt-out span { color:var(--muted); }
+  .pt-out b { font-variant-numeric:tabular-nums; }
+  .pt-out b.ok { color:var(--good); } .pt-out b.bad { color:var(--bad); }
+  .pt-note { font-size:.74rem; color:var(--dim); line-height:1.4; }
+  .pt-orders { display:block; color:var(--muted); }
+  .pt-ord { display:flex; justify-content:space-between; font-variant-numeric:tabular-nums; }
+  .pt-callout { font-size:.74rem; line-height:1.4; margin-top:.15rem; padding:.3rem .45rem;
+    border-radius:6px; background:rgba(255,183,77,.08); border:1px solid rgba(255,183,77,.25); }
+  .pt-callout a { color:inherit; }
+  .pt-foot { margin-top:auto; padding-top:.35rem; border-top:1px solid var(--line);
+    display:flex; justify-content:space-between; align-items:center; gap:.5rem;
+    font-size:.72rem; color:var(--muted); }
+  .pt-dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:.4rem;
+    vertical-align:1px; background:var(--dim); }
+  .pt-dot.auto { background:var(--good); } .pt-dot.ask { background:var(--warn); }
+  .pt-dot.sim { background:var(--accent); } .pt-dot.plan { background:var(--bad); }
+  .pt-btn { font-size:.7rem; padding:.05rem .55rem; }
+  .pfloor { border:1px dashed var(--line); border-radius:8px; padding:.35rem .55rem; margin:.45rem 0 0; }
+  .pprot .ladder { margin-left:.9rem; margin-right:.9rem; }
+</style>
 <script src="/sell.js"></script>
 <script>nav('/portfolio')</script>
 <main>
@@ -165,18 +212,11 @@ function floorAt(p, pct) {
   const ref = floorRef(p);
   return ref && pct ? ref * (1 + (p.side === 'short' ? 1 : -1) * pct / 100) : null;
 }
-function floorRow(p) {
-  const lv = p.levels || {}, cur = (p.market || {}).price, ccy = esc(p.currency || '');
+/* the trailing-alert editor, opened from its tile */
+function floorEditor(p) {
   const k = floorKey(p), a = jsArg(k), ed = FLOOR_ED[k];
-  const head = lv.alert != null
-    ? `<td><b class="warn">${fmt(lv.alert)}</b> ${ccy}</td>
-       <td class="muted">${cur ? fmt((lv.alert - cur) / cur * 100, 1) + '% from now' : ''}</td>
-       <td colspan="2" class="muted" style="font-size:.7rem">${esc(lv.alert_rule || '')} — asks you, never sells${
-         (p.legs || []).some(l => l.trails) ? ' (a backup: the trailing stop at Saxo sells first)' : ''}
-         ${ed ? '' : `<button class="ghost" style="font-size:.7rem;padding:.1rem .5rem;margin-left:.3rem" onclick="floorOpen(${a})">Edit</button>`}</td>`
-    : `<td colspan="4" class="muted">none yet — the watcher sets one on its next check
-         ${ed ? '' : `<button class="ghost" style="font-size:.7rem;padding:.1rem .5rem;margin-left:.3rem" onclick="floorOpen(${a})">Set…</button>`}</td>`;
-  return `<tr><td>🔔 Trailing alert</td>${head}</tr>${ed ? `<tr><td></td><td colspan="4">
+  if (!ed) return '';
+  return `<div class="pfloor">
     <div class="row" style="gap:.5rem;flex-wrap:wrap;align-items:center;margin:.2rem 0">
       <label title="how far below the best price since you bought (above, for a short) the alert sits">Trailing alert
         <input id="fl-${esc(k)}" type="number" min="0.5" max="90" step="0.5" style="width:70px"
@@ -184,7 +224,7 @@ function floorRow(p) {
       <button onclick="floorSave(${a})">Save</button>
       <button class="ghost" onclick="floorClose(${a})">Cancel</button>
     </div>
-    <div id="flp-${esc(k)}" style="font-size:.75rem">${floorPreview(p, ed)}</div></td></tr>` : ''}`;
+    <div id="flp-${esc(k)}" style="font-size:.75rem">${floorPreview(p, ed)}</div></div>`;
 }
 function floorPreview(p, ed) {
   const cur = (p.market || {}).price, ccy = esc(p.currency || ''), lv = p.levels || {};
@@ -231,38 +271,105 @@ async function floorSave(k) {
   }
 }
 
+/* ── what protects the position, in the same shape as a buy's order
+   summary: three tiles (stop-loss · take-profit · trailing alert), then one
+   price line with all of them against what you paid and the price now.
+   Each tile says what it would mean for these shares versus what you paid,
+   and who holds it: an order at the broker, Claire's sim, or only the
+   plan's level (nothing would sell there). */
+/* the alert has fired today: say so, what the review concluded, and why the
+   live level is lower than the one you set (the watcher waits for a further
+   3% before alerting again, up to 6 times a day) */
+function alertFired(lv, ccy, short) {
+  if (!lv.alert_fired_today) return '';
+  const t = lv.alert_last_fired ? new Date(lv.alert_last_fired * 1000)
+    .toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}) : '';
+  const rv = lv.alert_review || {};
+  const said = rv.verdict === 'pass' ? 'the desk reviewed it and said <b>hold</b>'
+    : rv.verdict === 'sell' ? 'the desk reviewed it and said <b>sell</b> — see Approvals'
+    : rv.state === 'failed' ? 'the review it started <b class="bad">failed</b>'
+    : rv.state ? `its review is ${esc(rv.state)}` : 'it started a sell review';
+  const link = rv.id ? ` (<a href="/trading#${esc(rv.id)}">review</a>)` : '';
+  return `<div class="pt-callout"><b class="warn">Hit today${t ? ' at ' + t : ''}</b> at your ${fmt(lv.alert_pct, 1)}% level
+    (${money(lv.alert_set_level, ccy)}) — ${said}${link}. ` +
+    (lv.alert_done_today ? 'It has alerted the most it does in a day; it watches again tomorrow.'
+      : `It alerts again only if the price falls a further 3%, to the level shown.`) + '</div>';
+}
 function protection(p) {
   const m = p.market || {}, lv = p.levels || {}, cur = m.price, avg = lv.avg_cost_native;
-  const ccy = esc(p.currency || '');
-  const byLeg = k => {
-    const g = {};
-    (p.legs || []).filter(l => l.leg === k).forEach(l => { g[l.price] = (g[l.price] || 0) + l.qty; });
-    return Object.entries(g).map(([px, q]) => ({price: Number(px), qty: q}));
+  const ccy = esc(p.currency || ''), short = p.side === 'short', qty = Math.abs(p.qty || 0);
+  const k = floorKey(p), a = jsArg(k), legs = p.legs || [];
+  const pl = v => avg != null && v != null ? (short ? avg - v : v - avg) * qty : null;
+  const sh = q => fmt(q, q % 1 ? 4 : 0);
+  /* several entries → several orders; the one nearest the price acts first */
+  const pick = kind => {
+    const ls = legs.filter(l => l.leg === kind);
+    if (!ls.length) return null;
+    const near = ls.slice().sort((x, y) => kind === 'stop' ? (short ? x.price - y.price : y.price - x.price)
+                                                        : (short ? y.price - x.price : x.price - y.price))[0];
+    return {...near, all: ls, plTotal: avg != null
+      ? ls.reduce((t, l) => t + (short ? avg - l.price : l.price - avg) * l.qty, 0) : null};
   };
-  const row = (label, cls, items, plan, why) => {
-    const list = items.length ? items : plan != null ? [{price: plan, qty: p.qty, plan: true}] : [];
-    if (!list.length) return `<tr><td>${label}</td><td colspan="4" class="muted">none set${why ? ' — ' + why : ''}</td></tr>`;
-    return list.map((x, i) => {
-      const dist = cur ? (x.price - cur) / cur * 100 : null;
-      const pl = avg != null ? (x.price - avg) * x.qty : null;
-      return `<tr><td>${i ? '' : label}</td>
-        <td><b class="${cls}">${fmt(x.price, x.price < 1 ? 4 : 2)}</b> ${ccy}
-          <span class="muted">× ${fmt(x.qty, x.qty % 1 ? 4 : 0)}</span></td>
-        <td class="muted">${dist == null ? '' : (dist >= 0 ? '+' : '') + fmt(dist, 1) + '% from now'}</td>
-        <td>${pl == null ? '' : `<span class="${pl >= 0 ? 'ok' : 'bad'}">${pl >= 0 ? '+' : ''}${fmt(pl, 2)}</span> if hit`}</td>
-        <td class="muted" style="font-size:.7rem">${x.plan ? 'plan only — no order at the broker' : 'order at the broker'}</td></tr>`;
-    }).join('');
-  };
-  const trl = (p.legs || []).find(l => l.leg === 'stop' && l.trails);
-  return `<table class="prot" style="width:100%;font-size:.78rem;margin:.3rem 0">
-    ${trl ? row('🛑 Trailing stop', 'bad', byLeg('stop'), lv.stop_loss) +
-      `<tr><td></td><td colspan="4" class="muted" style="font-size:.7rem">at Saxo: follows the best price
-        ${fmt(trl.trails, 2)} ${ccy} below it (${fmt(trl.trail_pct, 1)}% of what you paid), never moves back,
-        and sells automatically — the price shown is the latest the desk has seen</td></tr>`
-      : row('🛑 Stop-loss', 'bad', byLeg('stop'), lv.stop_loss)}
-    ${row('🎯 Take-profit', 'ok', byLeg('target'), lv.take_profit, 'nothing sells automatically on the way up')}
-    ${floorRow(p)}
-  </table>`;
+  const status = l => !l ? ['plan', 'Plan only — no order, nothing sells here']
+    : String(l.venue_order || '').startsWith('sim-') ? ['sim', "Claire's sim — sells at the live price"]
+    : ['auto', 'At the broker — sells by itself'];
+  const orders = l => l && l.all.length > 1
+    ? `<span class="pt-orders">${l.all.length} orders</span>${l.all.map(x =>
+        `<span class="pt-ord"><span>${sh(x.qty)} shares</span><span>${money(x.price, '')}</span></span>`).join('')}` : '';
+
+  const sl = pick('stop'), stop = sl ? sl.price : lv.stop_loss, trails = sl && sl.trails;
+  const tp = pick('target'), tgt = tp ? tp.price : lv.take_profit;
+  const stopTile = ptile({
+    kind: 'loss', label: trails ? 'Trailing stop' : 'Stop-loss', price: stop, ccy, cur,
+    none: 'Nothing sells on the way down — only the trailing alert warns you.',
+    outLabel: 'If hit', out: sl ? sl.plTotal : pl(stop),
+    notes: [trails ? `Follows the best price ${money(trails, ccy)} below it — never moves back.` : '', orders(sl)],
+    status: stop == null ? null : status(sl)});
+  const tgtTile = ptile({
+    kind: 'gain', label: 'Take-profit', price: tgt, ccy, cur,
+    none: 'Nothing sells automatically on the way up.',
+    outLabel: 'If reached', out: tp ? tp.plTotal : pl(tgt),
+    notes: [orders(tp)], status: tgt == null ? null : status(tp)});
+  const edit = FLOOR_ED[k] ? '' : `<button class="ghost pt-btn" onclick="floorOpen(${a})">${lv.alert != null ? 'Edit' : 'Set…'}</button>`;
+  const alertTile = ptile({
+    kind: 'trail', label: 'Trailing alert', price: lv.alert, ccy, cur,
+    none: 'Not set yet — the watcher sets one on its next check.',
+    outLabel: 'At that price', out: pl(lv.alert),
+    notes: [lv.alert != null ? `${fmt(lv.alert_live_pct ?? lv.alert_pct, 1)}% ${short ? 'above' : 'below'} the best price since you bought
+      (${money(lv.alert_ref ?? avg, ccy)}) — it rises with it.` : '', alertFired(lv, ccy)],
+    status: ['ask', `Asks you before selling${trails ? ' · backup to the trailing stop' : ''}`],
+    action: edit});
+
+  const pts = [
+    {k: 'stop', v: stop, label: trails ? 'trailing stop' : 'stop-loss'},
+    ...(lv.alert != null ? [{k: 'trail', v: lv.alert, label: 'trailing alert'}] : []),
+    ...(avg != null ? [{k: 'paid', v: avg, label: 'you paid'}] : []),
+    ...(cur != null ? [{k: 'now', v: cur, label: 'now'}] : []),
+    {k: 'target', v: tgt, label: 'take-profit'}];
+  const lad = ladder(pts, ccy, [], {zones: avg != null ? [[stop, avg, 'loss'], [avg, tgt, 'gain']] : []});
+  return `<div class="osum pprot">
+    <div class="osum-title">What protects it</div>
+    <div class="ptiles">${stopTile}${tgtTile}${alertTile}</div>
+    ${floorEditor(p)}
+    ${lad}
+  </div>`;
+}
+/* one protection tile: label + distance chip, the price, what it means for
+   these shares, notes, and a footer saying who acts on it */
+function ptile(o) {
+  const {kind, label, price, ccy, cur, none, outLabel, out, notes = [], status, action = ''} = o;
+  const dist = price != null && cur ? (price - cur) / cur * 100 : null;
+  const chip = dist == null ? '' : `<span class="pt-dist" title="from the current price">${dist >= 0 ? '+' : '−'}${fmt(Math.abs(dist), 1)}%</span>`;
+  const body = price == null
+    ? `<div class="pt-none">none</div><div class="pt-note">${none}</div>`
+    : `<div class="pt-price">${money(price, '')} <small>${ccy}</small></div>
+       ${out != null ? `<div class="pt-out"><span>${outLabel}</span><b class="${out >= 0 ? 'ok' : 'bad'}">${out >= 0 ? '+' : '−'}${money(Math.abs(out), ccy)}</b></div>` : ''}
+       ${notes.filter(Boolean).map(n => `<div class="pt-note">${n}</div>`).join('')}`;
+  return `<div class="ptile ${kind}">
+    <div class="pt-head"><span class="pt-label">${label}</span>${chip}</div>
+    ${body}
+    ${status || action ? `<div class="pt-foot">${status ? `<span><i class="pt-dot ${status[0]}"></i>${status[1]}</span>` : '<span></span>'}${action}</div>` : ''}
+  </div>`;
 }
 
 function posCard(p) {

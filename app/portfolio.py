@@ -8,6 +8,7 @@ the usual trader metrics. Market lookups are best-effort: a throttled source
 degrades a card to "price unavailable", it never hides a position you hold.
 """
 import json
+import time
 from decimal import Decimal
 
 from .tools.market import yahoo_symbol
@@ -73,7 +74,7 @@ def fills_for(conn, account_id, instrument_id) -> list[dict]:
                 (account_id, instrument_id))]
 
 
-def levels_for(conn, position, fills, fx=None) -> dict:
+def levels_for(conn, position, fills, fx=None, now=None) -> dict:
     """The lines worth drawing: your average cost, the thesis stop/target
     that justified the trade, and the watcher's alert threshold — all in the
     instrument's own currency. `fx` is native → account base (current); the
@@ -108,7 +109,8 @@ def levels_for(conn, position, fills, fx=None) -> dict:
     # this position's own rule (instrument, account, side); a legacy row
     # with no account/side applies to any position in the name
     alert = conn.execute(
-        "SELECT rule, threshold, peak_base FROM price_alerts"
+        "SELECT rule, threshold, peak_base, last_fired_at, fire_count_today,"
+        " fire_count_date FROM price_alerts"
         " WHERE instrument_id=? AND armed=1 AND rule='trail_pct'"
         " AND (account_id IS NULL OR account_id=?)"
         " AND (side IS NULL OR side=?)"
@@ -127,12 +129,44 @@ def levels_for(conn, position, fills, fx=None) -> dict:
             ref = alert["peak_base"] / rate if rate else None
         if ref:
             sign = 1 if short else -1
-            out["alert"] = ref * (1 + sign * alert["threshold"] / 100)
+            # once it has fired today the watcher waits for a further
+            # ESCALATE_PCT before alerting again (watcher._breached): show
+            # the level that is LIVE now, not the one already passed
+            from .watcher import ESCALATE_PCT, MAX_FIRES_PER_DAY
+            today = time.strftime("%Y-%m-%d", time.gmtime(
+                now if now is not None else time.time()))
+            fired = alert["fire_count_today"] or 0 \
+                if alert["fire_count_date"] == today else 0
+            live_pct = alert["threshold"] + ESCALATE_PCT * fired
+            out["alert"] = ref * (1 + sign * live_pct / 100)
             out["alert_rule"] = (f"trailing {'+' if short else '−'}"
-                                 f"{alert['threshold']:.0f}% of {ref:.2f}")
+                                 f"{live_pct:.0f}% of {ref:.2f}")
             out["alert_peak"] = alert["peak_base"]
-            out["alert_pct"] = float(alert["threshold"])
+            out["alert_pct"] = float(alert["threshold"])   # the % you set
             out["alert_ref"] = ref        # best price since bought (native)
+            if fired:
+                out["alert_set_level"] = ref * (1 + sign *
+                                                alert["threshold"] / 100)
+                out["alert_live_pct"] = float(live_pct)
+                out["alert_fired_today"] = fired
+                out["alert_done_today"] = fired >= MAX_FIRES_PER_DAY
+                out["alert_last_fired"] = alert["last_fired_at"]
+                # what the review it started concluded
+                rv = conn.execute(
+                    "SELECT w.id, w.state, w.thesis_json FROM work_items w"
+                    " JOIN instruments i ON i.ticker=w.ticker WHERE"
+                    " i.id=? AND w.kind='sell_review' AND w.created_at>=?"
+                    " ORDER BY w.created_at DESC LIMIT 1",
+                    (position["instrument_id"],
+                     (alert["last_fired_at"] or 0) - 120)).fetchone()
+                if rv:
+                    try:
+                        verdict = json.loads(rv["thesis_json"] or "{}").get(
+                            "direction")
+                    except ValueError:
+                        verdict = None
+                    out["alert_review"] = {"id": rv["id"], "state": rv["state"],
+                                           "verdict": verdict}
     return out
 
 
