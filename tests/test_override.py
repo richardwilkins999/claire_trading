@@ -351,3 +351,44 @@ def test_override_api_rejects_a_silly_floor():
                           "entry": 10, "stop": 9, "trail_pct": 95,
                           "actor": "human"})
     assert r.status_code == 422
+
+
+def test_two_year_range_from_weekly_bars():
+    from app.dashboards import _range
+    c = {"timestamps": list(range(100, 112)), "high": [10 + i for i in range(12)],
+         "low": [5 + i for i in range(12)]}
+    c["low"][3] = 2.5
+    r = _range(c)
+    assert (r["high"], r["high_at"]) == (21, 111)
+    assert (r["low"], r["low_at"]) == (2.5, 103)
+    assert _range({"high": [1] * 3, "low": [1] * 3}) is None   # too little data
+
+
+def test_override_prefills_shares_account_and_order_type(tmp_path):
+    # the Approvals override form sends what the card should start with
+    conn, repo, desk = _desk(tmp_path)
+    wi = desk.override("wi_pass", direction="buy", entry=106.0, stop=98.0,
+                       trail_pct=10, qty=9, broker="saxo",
+                       order_type="market", background=False)
+    sug = json.loads(conn.execute("SELECT suggested_json FROM work_items"
+                                  " WHERE id=?", (wi,)).fetchone()[0])
+    assert sug == {"qty": 9.0, "broker": "saxo", "trail_pct": 10.0,
+                   "order_type": "market"}
+
+
+def test_london_levels_in_pence_are_brought_to_the_quotes_pounds():
+    # BNC 2026-11-10: quote 9.48 GBP, bars (Yahoo GBp / Saxo "GBP") in pence
+    from app.dashboards import quote_units
+    lv = {"sma20": 934.6, "sma50": 1014.54, "atr14": 31.4025, "low20": 841.0,
+          "high20": 1034.0, "day_high": 951.0, "day_low": 938.0, "bars": 130}
+    out = quote_units(lv, 9.48)
+    assert out["sma20"] == 9.346 and out["atr14"] == 0.314025
+    assert out["day_low"] == 9.38 and out["bars"] == 130
+    r = quote_units({"high": 1120.0, "low": 351.0, "high_at": 1}, 9.48,
+                    ("high", "low"))
+    assert (r["high"], r["low"], r["high_at"]) == (11.2, 3.51, 1)
+    # same units already (a US stock, or a stock that fell a lot): untouched
+    assert quote_units({"sma20": 250.0, "atr14": 4.0}, 246.1) == \
+        {"sma20": 250.0, "atr14": 4.0}
+    assert quote_units({"sma20": 30.0}, 9.48) == {"sma20": 30.0}
+    assert quote_units({}, 9.48) == {} and quote_units(None, 9.48) is None

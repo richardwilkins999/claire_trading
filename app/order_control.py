@@ -118,8 +118,11 @@ def _validated(o, entry, stop, target):
 
 
 def edit(repo, desk, brokers, wi, *, entry, stop=None, target=None,
-         qty=None, ts):
-    """New levels (and optionally share count) for an approved order."""
+         qty=None, trail_pct=None, ts):
+    """New levels (and optionally share count, and a buy's trailing alert)
+    for an approved order. The trailing alert is a watcher rule on the
+    position, not part of the order: on an order Claire still holds it is
+    changed at once; on one at the broker it rides on the new trade's card."""
     conn = repo.conn
     o = entry_order(conn, wi)
     if o["status"] == "partially_filled":
@@ -142,13 +145,17 @@ def edit(repo, desk, brokers, wi, *, entry, stop=None, target=None,
                                         "larger order")
         else:
             new_res = reserved
+        # Claire: the order row's trail_pct is what Saxo receives as the
+        # trailing stop when the custodian sends this order at the open
+        new_trail = float(trail_pct) if trail_pct and o["side"] == "buy" \
+            and stop else (o["trail_pct"] if stop else None)
         cur = conn.execute(
             "UPDATE orders SET limit_price=?, stop_loss=?, take_profit=?,"
-            " qty=?, reserved_base=?, updated_at=? WHERE id=?"
+            " qty=?, reserved_base=?, trail_pct=?, updated_at=? WHERE id=?"
             " AND status='pending_session' AND submitted_at IS NULL",
             (to_micro(entry), to_micro(stop) if stop else None,
-             to_micro(target) if target else None, new_qty, new_res, ts,
-             o["id"]))
+             to_micro(target) if target else None, new_qty, new_res,
+             new_trail, ts, o["id"]))
         if cur.rowcount != 1:
             raise OrderControlError(409, "the order is being sent to the "
                                     "broker right now — edit it there")
@@ -159,13 +166,17 @@ def edit(repo, desk, brokers, wi, *, entry, stop=None, target=None,
                   take_profit=target)
         conn.execute("UPDATE work_items SET thesis_json=?, updated_at=?"
                      " WHERE id=?", (json.dumps(th), ts, wi))
+        if trail_pct and o["side"] == "buy":
+            from .watcher import set_position_floor
+            set_position_floor(conn, o["instrument_id"], o["account_id"],
+                               trail_pct, side=1)
         f = lambda m: float(from_micro(m)) if m else None   # noqa: E731
         repo._event(wi, ts, "human", "executing", "order_edited", payload={
             "order": o["id"],
             "from": {"entry": f(o["limit_price"]), "stop": f(o["stop_loss"]),
                      "target": f(o["take_profit"]), "qty": f(o["qty"])},
             "to": {"entry": entry, "stop": stop, "target": target,
-                   "qty": f(new_qty)}})
+                   "qty": f(new_qty), "trail_pct": trail_pct}})
         return {"ok": True, "where": "desk", "order": o["id"]}
     # at the venue: cancel, then a new trade with the new levels — approved
     # again by the human, never re-priced behind the approval
@@ -173,7 +184,9 @@ def edit(repo, desk, brokers, wi, *, entry, stop=None, target=None,
     new_wi = desk.manual_trade(
         o["ticker"], o["exchange"], o["side"], entry, stop=stop,
         target=target, note=f"edited from {wi}",
-        suggested={"qty": float(from_micro(new_qty)), "broker": o["broker"]},
+        suggested={"qty": float(from_micro(new_qty)), "broker": o["broker"],
+                   **({"trail_pct": float(trail_pct)}
+                      if trail_pct and o["side"] == "buy" else {})},
         source="edit")
     return {"ok": True, "where": "broker", "order": o["id"],
             "new_work_item_id": new_wi}

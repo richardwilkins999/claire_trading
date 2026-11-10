@@ -264,11 +264,12 @@ SAXO_MAX_PCT = 25          # Saxo refuses a stop/target further from entry
 
 
 def _card_levels(row, payload):
-    """The stop / target you set on the approval card, checked BEFORE the
-    trade resumes: the same rules as any plan (stop below a buy's entry,
-    target above it), a buy must keep a stop, and Saxo's 25% limit. Returns
-    {stop_loss, take_profit} only when they differ from the plan, else None.
-    """
+    """The limit price / stop / target you set on the approval card,
+    checked BEFORE the trade resumes: the same rules as any plan (stop below
+    a buy's entry, target above it), a buy must keep a stop, and Saxo's 25%
+    limit. `entry` (a manual limit price) replaces the plan's entry range
+    with that one price. Returns the changed keys of {entry_low, entry_high,
+    stop_loss, take_profit}, or None when nothing differs from the plan."""
     lv = payload.get("levels")
     if lv is None:
         return None
@@ -279,6 +280,14 @@ def _card_levels(row, payload):
     if direction not in ("buy", "sell"):
         return None
     new = {}
+    if lv.get("entry") not in (None, ""):
+        try:
+            e = float(lv["entry"])
+        except (TypeError, ValueError):
+            raise AuthError(400, "the limit price must be a number") from None
+        if not e > 0:
+            raise AuthError(400, "the limit price must be more than zero")
+        new["entry_low"] = new["entry_high"] = e
     for k in ("stop_loss", "take_profit"):
         if k not in lv:
             continue

@@ -24,7 +24,7 @@ def account_for_broker(conn):
     return account_for
 
 
-def build_brokers(env=os.environ, conn=None):
+def build_brokers(env=os.environ, conn=None, *, sim_store=False):
     """The in-process sim is the default venue for every paper account.
     Real Saxo venues activate only when explicitly configured:
 
@@ -34,10 +34,19 @@ def build_brokers(env=os.environ, conn=None):
     - saxo_live (REAL MONEY): only when CLAIRE_LIVE_TRADING=enabled AND a
       live account exists (`bin/claire live setup`). Even then every
       placement passes the live switch (DESIGN.md §22) in submit_order, and
-      the adapter re-checks that the desk is armed as a second lock."""
-    brokers = {"alpaca": PaperSimBroker(fill_mode="instant"),
-               "saxo": PaperSimBroker(fill_mode="instant"),
-               "moomoo": PaperSimBroker(fill_mode="instant")}
+      the adapter re-checks that the desk is armed as a second lock.
+
+    The built-in sims hold a bracket's stop-loss / take-profit as resting
+    orders (protect=True) that the custodian fills when the live price
+    reaches them. `sim_store=True` (claire-api, which owns the sims) keeps
+    them in desk.db so they survive a restart; other callers only read."""
+    store = conn if sim_store and conn is not None else None
+
+    def sim(venue):
+        return PaperSimBroker(fill_mode="instant", protect=True, store=store,
+                              venue=venue)
+    brokers = {"alpaca": sim("alpaca"), "saxo": sim("saxo"),
+               "moomoo": sim("moomoo")}
     from .tools.saxo_broker import SaxoBroker, SaxoSimWithLocalMarkets
     if (env.get("SAXO_SIM_EXECUTION") or "").lower() == "enabled" and \
             env.get("SAXO_SIM_ACCOUNT_KEY"):
@@ -48,7 +57,7 @@ def build_brokers(env=os.environ, conn=None):
             brokers["saxo"] = SaxoSimWithLocalMarkets(
                 SaxoBroker("sim", token=token,
                            account_key=env["SAXO_SIM_ACCOUNT_KEY"]),
-                PaperSimBroker(fill_mode="instant"))
+                sim("saxo-local"))
     from . import live_trading
     if conn is not None and live_trading.env_enabled(env):
         acct = conn.execute("SELECT * FROM broker_accounts WHERE"

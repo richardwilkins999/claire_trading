@@ -90,12 +90,27 @@ class PlacementUnknown(RuntimeError):
 
 
 def _accepts_client_id(adapter) -> bool:
+    return _accepts(adapter, "client_order_id")
+
+
+def _accepts(adapter, param, method="place_bracket") -> bool:
     import inspect
     try:
-        return "client_order_id" in inspect.signature(
-            adapter.place_bracket).parameters
-    except (TypeError, ValueError):
+        return param in inspect.signature(
+            getattr(adapter, method)).parameters
+    except (AttributeError, TypeError, ValueError):
         return False
+
+
+def trail_distance(o) -> Decimal | None:
+    """The approved trailing floor as a price distance: trail_pct of the
+    entry's limit. Saxo trails by a fixed distance, not a percentage, so it
+    is fixed at the entry — as the price rises it is a smaller share of it
+    (8% of 150 = 12, which is 4% at 300). None for an order without a
+    floor, a stop or a limit."""
+    if not (o["trail_pct"] and o["stop_loss"] and o["limit_price"]):
+        return None
+    return from_micro(o["limit_price"]) * Decimal(str(o["trail_pct"])) / 100
 
 
 def submit_order(repo, adapter, order_id, *, symbol, ts, claimed=False):
@@ -129,6 +144,12 @@ def submit_order(repo, adapter, order_id, *, symbol, ts, claimed=False):
               else None)
     if _accepts_client_id(adapter):
         kw["client_order_id"] = o["client_order_id"] or o["id"]
+    trail = trail_distance(o)
+    if trail and _accepts(adapter, "trail_distance"):
+        # Saxo holds the floor itself: the bracket's stop becomes a
+        # trailing stop at this distance (the watcher's alert stays as a
+        # backstop). Venues without venue-side stops ignore it.
+        kw["trail_distance"] = float(trail)
     live = _live_gate(repo, o, ts)               # None unless a live account
     if isinstance(live, PlacedOrder):            # refused: definitive
         repo.mark_order(order_id, "rejected", ts=ts)
@@ -292,7 +313,10 @@ def build_execute(repo, brokers: dict, market, *, account_for,
             if ref_native is not None else None,
             reserved_base=reserve, submitted_at=ts if is_open else None,
             expires_at=int(sessions.close_of(inst.exchange, now,
-                                             cal).timestamp()), ts=ts)
+                                             cal).timestamp()), ts=ts,
+            # the floor rides with the stop it trails; an exit has neither
+            trail_pct=float(ap.trail_pct) if getattr(ap, "trail_pct", None)
+            and th.stop_loss and not closing else None)
         if not is_open:
             _set_trailing_floor(repo, inst, ap, account_id, th.direction)
             return {"order_ids": [oid], **repriced}  # custodian places at next open
@@ -323,6 +347,8 @@ def build_execute(repo, brokers: dict, market, *, account_for,
                              f" {q_ccy}, fx {rate_i}")
         ref_native = quote * rate_q / rate_i       # live price, instrument ccy
         _price_band(th, ref_native, inst)
+        held_now, _, _ = repo_.position(account_id, inst.id)
+        _levels_vs_live(th, ref_native, inst, held_now)
         rate = to_micro(str(rate_i))
         if th.direction == "sell":
             held, _, _ = repo_.position(account_id, inst.id)
@@ -336,13 +362,29 @@ def build_execute(repo, brokers: dict, market, *, account_for,
                 qty = qty.to_integral_value(rounding="ROUND_FLOOR")
             return qty, ref_native, rate, None
         price_base = quote * rate_q
-        # Saxo (and any whole-share venue) cannot fill 9.6 shares: size in
-        # whole shares there, rounding DOWN so the spend never exceeds the
-        # approved amount. The in-process sim keeps 0.1-share fractions.
-        qty = position_qty(Decimal(str(ap.size_base)), price_base,
-                           inst.lot_size,
-                           FRACTION_STEP if _fractional(brokers.get(ap.broker))
-                           else Decimal(1))
+        step = FRACTION_STEP if _fractional(brokers.get(ap.broker)) \
+            else Decimal(1)
+        if ap.qty:
+            # the approval named the SHARES (the card's share count): buy
+            # exactly that, down to what the venue can fill (board lots,
+            # whole shares) — never more than approved
+            want = Decimal(str(ap.qty))
+            if inst.lot_size > 1:
+                qty = Decimal(int(want / inst.lot_size) * inst.lot_size)
+            else:
+                qty = (want / step).to_integral_value(
+                    rounding="ROUND_FLOOR") * step
+            if qty <= 0:
+                raise ValueError(
+                    f"{ap.qty} shares is less than one tradable "
+                    f"{'lot of ' + str(inst.lot_size) if inst.lot_size > 1 else 'share'}"
+                    f" of {inst.id}")
+        else:
+            # Saxo (and any whole-share venue) cannot fill 9.6 shares: size
+            # in whole shares there, rounding DOWN so the spend never exceeds
+            # the approved amount. The in-process sim keeps 0.1 fractions.
+            qty = position_qty(Decimal(str(ap.size_base)), price_base,
+                               inst.lot_size, step)
         # a limit buy fills at or below its limit: reserve the worse of the
         # limit and the quote, so the cash promised covers any fill
         worst = max(price_base, Decimal(str(th.entry_high)) * rate_i
@@ -366,6 +408,33 @@ def _price_band(th, ref_native, inst):
             f"limit {lim} {inst.currency} is {off * 100:.0f}% from the live "
             f"price {ref_native:.4f} — outside the ±{PRICE_BAND * 100:.0f}% "
             "band; the thesis was priced for something else")
+
+
+def _levels_vs_live(th, ref_native, inst, held):
+    """A limit order fills at the live price when that is already better
+    than its limit (a buy limit of 40 with the stock at 33 buys at ~33). The
+    stop-loss and take-profit were only checked against the LIMIT, so a stop
+    of 35 passed — and would sit above the real fill, selling the shares the
+    moment they arrive. Checked against the live price before anything is
+    sent; an order that CLOSES a position carries no stop or target."""
+    buy = th.direction == "buy"
+    if (buy and held < 0) or (not buy and held > 0):
+        return
+    ccy, ref = inst.currency, Decimal(ref_native)
+    stop = Decimal(str(th.stop_loss)) if th.stop_loss else None
+    tgt = Decimal(str(th.take_profit)) if th.take_profit else None
+    px = f"{ref:.4f}".rstrip("0").rstrip(".")
+    if stop is not None and (stop >= ref if buy else stop <= ref):
+        raise ValueError(
+            f"the stop-loss {th.stop_loss} {ccy} is {'at or above' if buy else 'at or below'}"
+            f" the live price {px} — the order fills at about the live price,"
+            f" so the stop would sell straight away. Set the stop-loss"
+            f" {'below' if buy else 'above'} {px} and retry")
+    if tgt is not None and (tgt <= ref if buy else tgt >= ref):
+        raise ValueError(
+            f"the take-profit {th.take_profit} {ccy} is {'at or below' if buy else 'at or above'}"
+            f" the live price {px} — it would sell straight away. Set it"
+            f" {'above' if buy else 'below'} {px} and retry")
 
 
 def _set_trailing_floor(repo, inst, ap, account_id, direction):

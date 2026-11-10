@@ -1,6 +1,7 @@
 <meta charset="utf-8"><title>Claire — Portfolio</title>
 <link rel="stylesheet" href="/style.css"><script src="/nav.js"></script>
 <script src="/charts.js"></script>
+<link rel="stylesheet" href="/orderform.css"><script src="/orderform.js"></script>
 <script src="/sell.js"></script>
 <script>nav('/portfolio')</script>
 <main>
@@ -153,6 +154,83 @@ function pct(v) { return v == null ? '—' : (v >= 0 ? '+' : '') + fmt(v) + '%';
 /* stop-loss / take-profit for one position: the orders resting at the broker
    when there are any (they are what actually sells), else the plan's levels
    (no order behind them — on Claire's paper sim nothing rests at a venue) */
+/* ── the trailing alert: Edit changes its % ───────────────────────────
+   An alert, not an order — it asks you, never sells. Only the % changes;
+   the best price since you bought is kept. FLOOR_ED keeps an open editor
+   across the page's refresh. */
+const FLOOR_ED = {};
+const floorKey = p => p.account_id + '|' + p.instrument_id;
+function floorRef(p) { const lv = p.levels || {}; return lv.alert_ref ?? lv.avg_cost_native; }
+function floorAt(p, pct) {
+  const ref = floorRef(p);
+  return ref && pct ? ref * (1 + (p.side === 'short' ? 1 : -1) * pct / 100) : null;
+}
+function floorRow(p) {
+  const lv = p.levels || {}, cur = (p.market || {}).price, ccy = esc(p.currency || '');
+  const k = floorKey(p), a = jsArg(k), ed = FLOOR_ED[k];
+  const head = lv.alert != null
+    ? `<td><b class="warn">${fmt(lv.alert)}</b> ${ccy}</td>
+       <td class="muted">${cur ? fmt((lv.alert - cur) / cur * 100, 1) + '% from now' : ''}</td>
+       <td colspan="2" class="muted" style="font-size:.7rem">${esc(lv.alert_rule || '')} — asks you, never sells${
+         (p.legs || []).some(l => l.trails) ? ' (a backup: the trailing stop at Saxo sells first)' : ''}
+         ${ed ? '' : `<button class="ghost" style="font-size:.7rem;padding:.1rem .5rem;margin-left:.3rem" onclick="floorOpen(${a})">Edit</button>`}</td>`
+    : `<td colspan="4" class="muted">none yet — the watcher sets one on its next check
+         ${ed ? '' : `<button class="ghost" style="font-size:.7rem;padding:.1rem .5rem;margin-left:.3rem" onclick="floorOpen(${a})">Set…</button>`}</td>`;
+  return `<tr><td>🔔 Trailing alert</td>${head}</tr>${ed ? `<tr><td></td><td colspan="4">
+    <div class="row" style="gap:.5rem;flex-wrap:wrap;align-items:center;margin:.2rem 0">
+      <label title="how far below the best price since you bought (above, for a short) the alert sits">Trailing alert
+        <input id="fl-${esc(k)}" type="number" min="0.5" max="90" step="0.5" style="width:70px"
+          value="${esc(ed.pct ?? '')}" oninput="floorTyped(${a})"> %</label>
+      <button onclick="floorSave(${a})">Save</button>
+      <button class="ghost" onclick="floorClose(${a})">Cancel</button>
+    </div>
+    <div id="flp-${esc(k)}" style="font-size:.75rem">${floorPreview(p, ed)}</div></td></tr>` : ''}`;
+}
+function floorPreview(p, ed) {
+  const cur = (p.market || {}).price, ccy = esc(p.currency || ''), lv = p.levels || {};
+  const pct = Number(ed.pct), short = p.side === 'short';
+  if (ed.msg) return ed.msg;
+  if (!(pct >= 0.5 && pct <= 90)) return '<b class="bad">Enter a % between 0.5 and 90.</b>';
+  const at = floorAt(p, pct), ref = floorRef(p);
+  if (at == null) return '<span class="muted">No reference price yet.</span>';
+  const was = lv.alert != null ? `moves from <b>${fmt(lv.alert)}</b> to` : 'sits at';
+  const fires = cur != null && (short ? cur >= at : cur <= at);
+  return `The alert ${was} <b class="warn">${fmt(at)}</b> ${ccy} — ${pct}% ${short ? 'above' : 'below'} ${
+    lv.alert_ref != null ? 'the best price since you bought' : 'what you paid'} (${fmt(ref)})` +
+    (cur != null ? `, ${fmt(Math.abs(at - cur) / cur * 100, 1)}% ${at < cur ? 'below' : 'above'} now.` : '.') +
+    (fires ? ` <b class="bad">The price is already past it — it alerts (and starts a sell review) at once.</b>` : '') +
+    ' <span class="muted">It rises with the price, never falls. Nothing is sold without your approval.</span>' +
+    ((p.legs || []).some(l => l.trails) ? ' <span class="warn">This changes only the desk\'s backup alert — the trailing stop at Saxo keeps its distance.</span>' : '');
+}
+function floorPos(k) { return Object.values((DATA || {}).exchanges || {}).flat().find(p => floorKey(p) === k); }
+function floorOpen(k) {
+  const p = floorPos(k); if (!p) return;
+  FLOOR_ED[k] = {pct: (p.levels || {}).alert_pct ?? 8};
+  renderCols(); sellRestore();
+}
+function floorClose(k) { delete FLOOR_ED[k]; renderCols(); sellRestore(); }
+function floorTyped(k) {
+  const ed = FLOOR_ED[k], p = floorPos(k); if (!ed || !p) return;
+  ed.pct = document.getElementById('fl-' + k).value; ed.msg = '';
+  document.getElementById('flp-' + k).innerHTML = floorPreview(p, ed);
+}
+async function floorSave(k) {
+  const ed = FLOOR_ED[k], p = floorPos(k); if (!ed || !p) return;
+  const pct = Number(ed.pct);
+  if (!(pct >= 0.5 && pct <= 90)) return floorTyped(k);
+  try {
+    await api('/api/position-floor', {instrument_id: p.instrument_id, account_id: p.account_id,
+                                      side: p.side, pct});
+    delete FLOOR_ED[k];
+    toast(`${p.ticker} trailing alert set to ${pct}% ✓`);
+    refresh();
+  } catch (e) {
+    ed.msg = `<b class="bad">${esc(e.message)}</b>`;
+    document.getElementById('flp-' + k).innerHTML = ed.msg;
+    ed.msg = '';
+  }
+}
+
 function protection(p) {
   const m = p.market || {}, lv = p.levels || {}, cur = m.price, avg = lv.avg_cost_native;
   const ccy = esc(p.currency || '');
@@ -175,12 +253,15 @@ function protection(p) {
         <td class="muted" style="font-size:.7rem">${x.plan ? 'plan only — no order at the broker' : 'order at the broker'}</td></tr>`;
     }).join('');
   };
+  const trl = (p.legs || []).find(l => l.leg === 'stop' && l.trails);
   return `<table class="prot" style="width:100%;font-size:.78rem;margin:.3rem 0">
-    ${row('🛑 Stop-loss', 'bad', byLeg('stop'), lv.stop_loss)}
+    ${trl ? row('🛑 Trailing stop', 'bad', byLeg('stop'), lv.stop_loss) +
+      `<tr><td></td><td colspan="4" class="muted" style="font-size:.7rem">at Saxo: follows the best price
+        ${fmt(trl.trails, 2)} ${ccy} below it (${fmt(trl.trail_pct, 1)}% of what you paid), never moves back,
+        and sells automatically — the price shown is the latest the desk has seen</td></tr>`
+      : row('🛑 Stop-loss', 'bad', byLeg('stop'), lv.stop_loss)}
     ${row('🎯 Take-profit', 'ok', byLeg('target'), lv.take_profit, 'nothing sells automatically on the way up')}
-    ${lv.alert != null ? `<tr><td>🔔 Trailing alert</td><td><b class="warn">${fmt(lv.alert)}</b> ${ccy}</td>
-      <td class="muted">${cur ? fmt((lv.alert - cur) / cur * 100, 1) + '% from now' : ''}</td>
-      <td colspan="2" class="muted" style="font-size:.7rem">${esc(lv.alert_rule || '')} — asks you, never sells</td></tr>` : ''}
+    ${floorRow(p)}
   </table>`;
 }
 
@@ -210,7 +291,8 @@ function posCard(p) {
   if (p.qty > 0) sellRegister(sk, {ticker: p.ticker, exchange: p.exchange,
     broker: p.broker, account_id: p.account_id, label: p.account_id,
     held: p.qty, price: m.price, currency: m.currency || p.currency,
-    whole: String(p.broker).startsWith('saxo'), source: 'portfolio'});
+    whole: String(p.broker).startsWith('saxo'), source: 'portfolio',
+    avg: lv.avg_cost_native, symbol: p.symbol || m.symbol});
   return `<div class="poscard ${p.is_open ? '' : 'closedmkt'}" id="pc-${esc(id)}">
     <div class="poshead">
       <div><span class="tk">${esc(p.ticker)}</span>

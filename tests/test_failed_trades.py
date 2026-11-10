@@ -160,3 +160,15 @@ def test_a_parked_refused_trade_does_not_degrade_the_custodian(conn):
     report = {"flags": []}
     c._orphans(report)
     assert not [f for f in report["flags"] if "no order" in f]
+
+
+def test_retry_can_buy_exact_shares_at_the_current_price(conn):
+    # the Approvals retry panel sends the share count it shows and the
+    # order type; both reach the resume (execution buys exactly qty)
+    _failed(conn)
+    sent = []
+    approvals.retry_failed(conn, "wi_ovr", lambda b: sent.append(b) or (200, {}),
+                           changes={"qty": 27, "size_base": 989.74,
+                                    "order_type": "market", "trail_pct": 10})
+    b = sent[0]
+    assert (b["qty"], b["order_type"], b["trail_pct"]) == (27, "market", 10)

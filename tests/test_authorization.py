@@ -265,3 +265,27 @@ def test_an_unknown_order_type_is_refused(world):
     with pytest.raises(AuthError, match="order_type"):
         thesis_action(conn, approve_payload(conn, wi, order_type="stop"),
                       resume_post, clock=CLOCK)
+
+
+# ── a limit price you type on the card (manual order, 2026-11-10) ──────
+def test_card_limit_price_replaces_the_entry(world):
+    conn, desk, client, resume_post, wi, script, app = world
+    thesis_action(conn, approve_payload(
+        conn, wi, levels={"entry": 172.5, "stop_loss": 160.0,
+                          "take_profit": 200.0}), resume_post, clock=CLOCK)
+    th = graph_thesis(desk, wi)
+    assert (th.entry_low, th.entry_high) == (172.5, 172.5)
+    assert th.stop_loss == 160.0
+
+
+@pytest.mark.parametrize("levels, why", [
+    ({"entry": 159.0, "stop_loss": 160.0}, "below the entry"),
+    ({"entry": -1, "stop_loss": 160.0}, "more than zero"),
+    ({"entry": "abc", "stop_loss": 160.0}, "must be a number"),
+])
+def test_bad_card_limit_price_is_refused(world, levels, why):
+    conn, desk, client, resume_post, wi, script, app = world
+    with pytest.raises(AuthError, match=why):
+        thesis_action(conn, approve_payload(conn, wi, levels=levels),
+                      resume_post, clock=CLOCK)
+    assert row(conn, wi)["state"] == "awaiting_approval"

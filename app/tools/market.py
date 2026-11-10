@@ -52,11 +52,38 @@ def build_market(env=None) -> "Market":
         primary = twelvedata.Client(
             env["TWELVEDATA_API_KEY"],
             all_exchanges=bool(env.get("TWELVEDATA_ALL_EXCHANGES")))
-    fallback = None
+    fallback = saxo_search = None
     if not env.get("CLAIRE_NO_SAXO_CHARTS"):
         from . import saxo_chart
-        fallback = saxo_chart.chart
-    return Market(primary=primary, chart_fallback=fallback)
+        fallback, saxo_search = saxo_chart.chart, saxo_chart.search
+    return Market(primary=primary, chart_fallback=fallback,
+                  search_fallback=combined_search(saxo_search))
+
+
+def combined_search(saxo_search):
+    """Saxo's hits first (instruments Saxo can trade, marked so), then
+    TradingView's for the desk's other listings (SGX, HKEX… that Saxo SIM
+    does not offer as shares). Either may fail; both failing raises."""
+    from . import tradingview
+
+    def search(q):
+        out, seen, errors = [], set(), []
+        for name, fn in (("saxo", saxo_search), ("tradingview",
+                                                 tradingview.search)):
+            if fn is None:
+                continue
+            try:
+                for r in fn(q):
+                    if r["symbol"] not in seen:
+                        seen.add(r["symbol"])
+                        r["at_saxo"] = name == "saxo"
+                        out.append(r)
+            except Exception as e:              # noqa: BLE001 — try the next
+                errors.append(f"{name}: {str(e)[:80]}")
+        if not out and errors:
+            raise MarketError("search unavailable — " + "; ".join(errors))
+        return out
+    return search
 
 
 def yahoo_symbol(ticker: str, exchange: str) -> str:
@@ -109,8 +136,9 @@ class Market:
 
     def __init__(self, *, _get=None, clock=time.time, cache_ttl=300,
                  tv_quotes=None, fx_fallback=None, primary=None,
-                 chart_fallback=None):
+                 chart_fallback=None, search_fallback=None):
         self.clock = clock
+        self._search_fallback = search_fallback
         self.cache_ttl = cache_ttl
         self._cache = {}
         self._stale_keys = set()
@@ -355,12 +383,22 @@ class Market:
     # ── search & listings ────────────────────────────────────────────────
     def search(self, q: str) -> list[dict]:
         """Twelve Data's reference search (free tier, worldwide, not billed
-        as a quote credit); Yahoo only if that is unavailable."""
+        as a quote credit); else Saxo's instrument search (the desk's SIM
+        sign-in — and only instruments Saxo can trade); Yahoo last, as it
+        rate-limits (429) unofficial callers."""
         if self._primary is not None and hasattr(self._primary,
                                                  "symbol_search"):
             try:
                 return self._cached(("search", q), 600,
                                     lambda: self._primary.symbol_search(q))
+            except Exception:                   # noqa: BLE001 — fall through
+                pass
+        if self._search_fallback is not None:
+            try:
+                hits = self._cached(("searchs", q), 600,
+                                    lambda: self._search_fallback(q))
+                if hits:
+                    return hits
             except Exception:                   # noqa: BLE001 — fall through
                 pass
 

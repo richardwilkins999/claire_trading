@@ -178,7 +178,8 @@ class Desk:
 
     # ── human override of a PASS verdict (DESIGN.md §10) ─────────────────
     def override(self, origin_wi, *, direction, entry, stop, target=None,
-                 note=None, trail_pct=None, background=True):
+                 note=None, trail_pct=None, qty=None, broker=None,
+                 order_type=None, background=True):
         """Send a concluded PASS to the approval gate anyway.
 
         The arbiter declining is a decision, not a bug, so overriding it is
@@ -228,11 +229,14 @@ class Desk:
                         conditions=(old.get("conditions") or [])
                         + [f"HUMAN OVERRIDE of a PASS verdict"
                            f"{': ' + note if note else ''}"])
-        # the trailing floor you chose here prefills the approval card; an
-        # exit closes the position, so there is no floor to carry
+        # what you chose here prefills the approval card: the trailing floor
+        # (not on an exit — it closes the position, there is no floor to
+        # carry), the shares, the account and the order type
         exit_ = direction == "sell" and not stop
-        suggested = clean_suggested({"trail_pct": trail_pct}) \
-            if trail_pct and not exit_ else None
+        sug = {"trail_pct": None if exit_ else trail_pct, "qty": qty,
+               "broker": broker, "order_type": order_type}
+        suggested = clean_suggested({k: v for k, v in sug.items()
+                                     if v is not None} or None)
         inst = self._instrument(origin["ticker"], thesis.currency)
         ts = int(self.clock())
         day = time.strftime("%Y-%m-%d", time.gmtime(ts))

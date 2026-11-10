@@ -12,8 +12,12 @@ from .accounting.money import to_micro
 
 class Custodian:
     def __init__(self, conn, repo, brokers, *, resume_post, account_broker,
-                 fx_rate_for, clock=time.time, cal=None, alert=None):
+                 fx_rate_for, clock=time.time, cal=None, alert=None,
+                 quote=None):
         self.conn, self.repo = conn, repo
+        # symbol -> {price, stale} (market.quote): the built-in sims' resting
+        # stop-loss / take-profit orders are checked against it
+        self.quote = quote
         # out-of-band channel for what must reach a human NOW (an unprotected
         # position): app.alerts.send in claire-api; None = flags only
         self.alert = alert
@@ -26,12 +30,14 @@ class Custodian:
     # each duty runs on its own: one failing duty (or one bad order inside
     # it) used to abort run_once, so expiry, retries, orphan checks and drift
     # all stopped — on every run, for as long as the bad order existed (H8)
-    DUTIES = ("_place_pending_session", "_poll_fills", "_expire_orders",
+    DUTIES = ("_place_pending_session", "_sim_triggers", "_poll_fills",
+              "_expire_orders",
               "_reprotect", "_expire_approvals", "_retry_resumes", "_orphans",
               "_drift", "_leg_drift", "_archive", "_broker_sync")
 
     def run_once(self) -> dict:
         report = {"placed": [], "fills": 0, "completed": [], "order_expired": [],
+                  "sim_triggered": [],
                   "approvals_expired": [], "resume_retried": [],
                   "reprotected": [], "flags": [], "sync": {}}
         for duty in self.DUTIES:
@@ -46,6 +52,63 @@ class Custodian:
             " VALUES ('custodian', ?, ?, ?)",
             (int(self.clock()), ok, json.dumps(report, default=str)))
         return report
+
+    def _sim_triggers(self, report):
+        """The built-in sims hold a bracket's stop-loss / take-profit as
+        resting orders (tools/brokers.PaperSimBroker, protect=True) but see
+        no market: here each one is checked against the live price, only
+        while its exchange is open and the quote is fresh. What fires is
+        filled AT THE SIM; _poll_fills (next) books it like a Saxo leg fill,
+        and the OCO sibling is synced as cancelled. Tells you on Telegram."""
+        if self.quote is None:
+            return
+        from datetime import datetime, timezone
+
+        from . import sessions
+        from .tools.market import yahoo_symbol
+        now = int(self.clock())
+        when = datetime.fromtimestamp(now, timezone.utc)
+        seen = {}
+        for o in self.conn.execute(
+                "SELECT o.account_id, i.ticker, i.exchange FROM orders o"
+                " JOIN instruments i ON i.id=o.instrument_id"
+                " WHERE o.leg IS NOT NULL AND o.status IN"
+                " ('placed','partially_filled')").fetchall():
+            adapter = self._adapter(o["account_id"])
+            if adapter is None or not hasattr(adapter, "check_triggers"):
+                continue
+            seen.setdefault(id(adapter), (adapter, {}))[1][
+                yahoo_symbol(o["ticker"], o["exchange"])] = o["exchange"]
+        for adapter, syms in seen.values():
+            mine = {b.symbol for _, b in adapter.resting()}
+            prices = {}
+            for sym, ex in syms.items():
+                if sym not in mine:
+                    continue                    # a Saxo leg: Saxo watches it
+                try:
+                    if not sessions.is_open(ex, when, self.cal):
+                        continue
+                    q = self.quote(sym) or {}
+                except Exception as e:          # noqa: BLE001 — next run
+                    report["flags"].append(f"sim stop check {sym}: {e}")
+                    continue
+                if q.get("price") is None or q.get("stale"):
+                    continue                    # never act on an old price
+                prices[sym] = q["price"]
+            if not prices:
+                continue
+            for f in adapter.check_triggers(prices):
+                report["sim_triggered"].append(f)
+                if self.alert is not None:
+                    what = "Stop-loss" if f["leg"] == "stop" else "Take-profit"
+                    try:
+                        self.alert(f"{'🛑' if f['leg'] == 'stop' else '🎯'} "
+                                   f"{what} reached on the built-in sim: "
+                                   f"{f['side']} {f['qty']} {f['symbol']} at "
+                                   f"{f['price']} (paper)",
+                                   title=f"Claire — {what.lower()} filled")
+                    except Exception:           # noqa: BLE001 — booked anyway
+                        pass
 
     def _live_alarm(self, report):
         """Any doubt about a LIVE order disarms live trading (DESIGN.md §22):

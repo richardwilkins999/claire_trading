@@ -43,10 +43,10 @@ def accounts(conn, repo, env):
     """The card's account list (same labels and live rule as Approvals),
     plus the trigger rule: automatic placement only on paper money."""
     from . import live_trading
-    from .dashboards import _approval_account
+    from .dashboards import _approval_account, ordered_accounts
     live = live_trading.status(conn, env or {})
     out = []
-    for a in conn.execute("SELECT * FROM broker_accounts").fetchall():
+    for a in ordered_accounts(conn, env):
         d = _approval_account(a, repo, env or {}, live)
         d["auto_ok"] = price_triggers.auto_refusal(a) is None
         out.append(d)
@@ -107,6 +107,8 @@ def view(conn, repo, market, *, env=None, clock, cal=None):
                       "stale": bool(q.get("stale")), "src": q.get("src"),
                       "error": q.get("error")}
         r["levels"], r["levels_error"] = lv.get(sym, ({}, None))
+        from .dashboards import quote_units      # London bars are in pence
+        r["levels"] = quote_units(r["levels"], r["quote"]["price"])
         if m.get("day_low") is not None:        # today's range, live source
             r["levels"] = {**r["levels"], "day_low": float(m["day_low"]),
                            "day_high": float(m["day_high"])}

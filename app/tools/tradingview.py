@@ -361,3 +361,48 @@ def recommendations(exchange: str, count: int = 30, *, _client=None) -> dict:
                     "rating_label": rating_label(d.get("Recommend.All"))})
     return {"exchange": exchange, "total": data.get("totalCount"),
             "rows": out}
+
+
+# ── symbol search (no key): the watchlist's search beside Saxo's ──────────
+SEARCH_URL = "https://symbol-search.tradingview.com/symbol_search/v3/"
+# TradingView exchange → (desk exchange, Yahoo suffix)
+_TV_DESK = {"NASDAQ": ("NASDAQ", ""), "NYSE": ("NYSE", ""),
+            "SGX": ("SGX", "SI"), "HKEX": ("HKEX", "HK"), "TSE": ("TSE", "T"),
+            "ASX": ("ASX", "AX"), "XETR": ("XETRA", "DE"), "LSE": ("LSE", "L"),
+            "NSE": ("NSE", "NS")}
+
+
+def search(q: str, *, limit: int = 20, _client=None) -> list[dict]:
+    """Stocks matching `q` on the desk's markets, as Yahoo-style symbols
+    ("0700.HK", "D05.SI"). Other venues (OTC, regional German exchanges,
+    Thai DRs…) are dropped: the desk cannot trade them."""
+    import re
+    c = _client or _shared_client()
+    r = c.get(SEARCH_URL, params={"text": q, "hl": 0, "exchange": "",
+                                  "lang": "en", "search_type": "stocks",
+                                  "domain": "production"},
+              headers={"Origin": "https://www.tradingview.com",
+                       "Referer": "https://www.tradingview.com/"},
+              timeout=10)
+    r.raise_for_status()
+    d = r.json()
+    rows = d.get("symbols", []) if isinstance(d, dict) else d
+    out = []
+    for s in rows:
+        ex = (s.get("exchange") or "").upper()
+        tk = re.sub(r"</?em>", "", s.get("symbol") or "").upper()
+        if ex == "EURONEXT" and (s.get("country") or "").upper() == "FR":
+            desk = ("PARIS", "PA")
+        else:
+            desk = _TV_DESK.get(ex)
+        if not desk or not tk:
+            continue
+        if desk[1] == "HK" and tk.isdigit():
+            tk = tk.zfill(4)
+        out.append({"symbol": tk + (f".{desk[1]}" if desk[1] else ""),
+                    "name": re.sub(r"</?em>", "", s.get("description") or ""),
+                    "exchange": desk[0], "currency": s.get("currency_code"),
+                    "type": s.get("type"), "src": "tradingview"})
+        if len(out) >= limit:
+            break
+    return out

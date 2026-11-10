@@ -52,7 +52,9 @@ STATIC = {"/style.css": ("style.css", "text/css"),
           "/charts.js": ("charts.js", "text/javascript"),
           "/sell.js": ("sell.js", "text/javascript"),
           "/orderinfo.js": ("orderinfo.js", "text/javascript"),
-          "/live.js": ("live.js", "text/javascript")}
+          "/live.js": ("live.js", "text/javascript"),
+          "/orderform.js": ("orderform.js", "text/javascript"),
+          "/orderform.css": ("orderform.css", "text/css")}
 
 PIPELINE_EDGES = [("prepare", "fundamental"), ("prepare", "technical"),
                   ("prepare", "news"), ("fundamental", "bull"),
@@ -112,6 +114,41 @@ def _levels(c):
             "bars": len(bars)}
 
 
+LEVEL_KEYS = ("sma20", "sma50", "atr14", "low20", "high20", "day_high",
+              "day_low")
+
+
+def quote_units(d, price, keys=LEVEL_KEYS, probe=None):
+    """Price levels in the same unit as the live quote. London bars arrive
+    in PENCE — from Yahoo (labelled GBp) and from Saxo's chart (mislabelled
+    GBP) — while the quote is normalised to pounds, so a 9.48 GBP stock had
+    an SMA of 934.6 and an ATR of 31.4 (2026-11-10). When the levels sit
+    ~100× the price, they are pence: divide them by 100."""
+    if not d or not price:
+        return d
+    ref = d.get(probe or keys[0]) or next(
+        (d[k] for k in keys if d.get(k)), None)
+    if not ref or not 30 < float(ref) / float(price) < 300:
+        return d
+    return {**d, **{k: round(d[k] / 100, 6) for k in keys
+                    if isinstance(d.get(k), (int, float))}}
+
+
+def _range(c):
+    """{high, low, high_at, low_at} over a chart's bars (weekly bars: their
+    high/low include every day of the week) — the 2-year range on the card."""
+    ts = c.get("timestamps") or []
+    pts = [(h, l, t) for h, l, t in zip(c.get("high") or [], c.get("low") or [],
+                                         ts or [None] * len(c.get("high") or []))
+           if h is not None and l is not None]
+    if len(pts) < 10:
+        return None
+    hi = max(pts, key=lambda p: p[0])
+    lo = min(pts, key=lambda p: p[1])
+    return {"high": round(hi[0], 4), "low": round(lo[1], 4),
+            "high_at": hi[2], "low_at": lo[2], "bars": len(pts)}
+
+
 def venue_adapter(acct, env) -> str:
     """Which adapter claire-api builds for this account (wiring.build_brokers
     is the rule; this mirrors it for display — it places nothing)."""
@@ -168,6 +205,28 @@ def session_facts(exchange, cal, now):
         return {"is_open": None, "next_open": None}
 
 
+def sim_label(broker):
+    """A paper book Claire simulates itself — no broker ever sees it.
+    Named so it can never be mistaken for a broker's own paper account."""
+    return f"Claire sim · {broker} (simulated, not a broker)"
+
+
+def account_rank(a, env):
+    """Order of every account list, so the first (default) choice is the
+    realistic one: Saxo SIM, then Claire's own sims, then real money."""
+    sim_on = (env.get("SAXO_SIM_EXECUTION") or "").lower() == "enabled"
+    if a["environment"] == "live":
+        return 3
+    if a["broker"] == "saxo" and sim_on:
+        return 0
+    return 2
+
+
+def ordered_accounts(conn, env):
+    return sorted(conn.execute("SELECT * FROM broker_accounts").fetchall(),
+                  key=lambda a: (account_rank(a, env or {}), a["id"]))
+
+
 def _approval_account(a, repo, env, live):
     """One broker choice on the approval card, labelled by the REAL account
     it reaches. A live account is listed always but selectable only while
@@ -182,7 +241,7 @@ def _approval_account(a, repo, env, live):
                  " — paper").replace("  ", " ")
         disabled = None
     else:
-        label, disabled = f"{a['broker']} — built-in paper sim", None
+        label, disabled = sim_label(a["broker"]), None
     return {"id": a["id"], "broker": a["broker"], "ccy": a["base_currency"],
             "environment": a["environment"],
             "cash": repo.cash_balance(a["id"]) / 1e6,
@@ -190,7 +249,13 @@ def _approval_account(a, repo, env, live):
             "label": label, "disabled": disabled,
             # Saxo fills whole shares only; the estimate must say so
             "whole_shares": a["environment"] == "live" or (
-                a["broker"] == "saxo" and sim_on)}
+                a["broker"] == "saxo" and sim_on),
+            # stops (and the trailing floor) rest AT Saxo, except on the
+            # markets saxo-paper simulates itself (Saxo SIM: CFDs only)
+            "venue_stops": a["environment"] == "live" or (
+                a["broker"] == "saxo" and sim_on),
+            "local_exchanges": ["SGX"] if a["broker"] == "saxo" and sim_on
+            and a["environment"] != "live" else []}
 
 
 def default_allowed_hosts(bind):
@@ -814,6 +879,44 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                 if u.path == "/api/approvals-archive":
                     return self._send(200, self._approvals_archive(
                         int(q.get("days", 30) or 30)))
+                if u.path == "/api/range2y":
+                    # the 2-year high / low for a symbol (weekly bars, cached
+                    # by the market layer) — the Watchlist order summary
+                    sym = q.get("symbol", "")
+                    try:
+                        rng = _range(market.chart(sym, "2y", "1wk"))
+                    except Exception as e:      # noqa: BLE001 — optional
+                        return self._send(200, {"range2y": None,
+                                                "error": str(e)[:200]})
+                    try:                        # bars may be in pence
+                        px = market.quote(sym).get("price")
+                    except Exception:           # noqa: BLE001
+                        px = None
+                    return self._send(200, {"range2y": quote_units(
+                        rng, px, ("high", "low"))})
+                if u.path == "/api/arbiter-notes":
+                    # the arbiter's notes in plain English for an approval
+                    # card. Reading a stored explanation is free; writing
+                    # one is an LLM call, so it needs the dashboard key.
+                    from . import arbiter_notes
+                    wi = q.get("id", "")
+                    row = conn.execute("SELECT thesis_json FROM work_items"
+                                       " WHERE id=?", (wi,)).fetchone()
+                    if row is None:
+                        return self._send(404, {"error": "unknown work item"})
+                    notes = arbiter_notes.notes_of(row["thesis_json"])
+                    hit = arbiter_notes.cached(conn, wi, notes) if notes \
+                        else {"summary": None, "notes": []}
+                    if hit is not None:
+                        return self._send(200, hit)
+                    if not self._paired():
+                        raise HTTPError(403, "dashboard not paired")
+                    try:
+                        return self._send(200, arbiter_notes.explain(conn, wi))
+                    except Exception as e:      # noqa: BLE001 — LLM/parse
+                        return self._send(502, {"error": "could not write the"
+                                                " plain-English notes: "
+                                                f"{str(e)[:200]}"})
                 if u.path == "/api/levels-for-override":
                     return self._send(200, self._override_context(
                         q.get("id", "")))
@@ -854,6 +957,11 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                 self._send(404, {"error": "not found"})
             except (BrokenPipeError, ConnectionResetError):
                 return                           # client went away; not news
+            except HTTPError as e:
+                try:
+                    self._send(e.code, {"error": e.message})
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
             except Exception as e:               # noqa: BLE001
                 traceback.print_exc()
                 try:
@@ -905,7 +1013,7 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                     req = {"work_item_id": str(body.get("work_item_id") or ""),
                            "actor": "human",
                            "action": body.get("action")}
-                    for k in ("entry", "stop", "target", "qty"):
+                    for k in ("entry", "stop", "target", "qty", "trail_pct"):
                         if body.get(k) not in (None, ""):
                             req[k] = float(body[k])
                     try:
@@ -938,7 +1046,7 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                                 conn, wi, resume_post,
                                 confirm_live=body.get("confirm_live"),
                                 changes={k: body.get(k) for k in (
-                                    "size_base", "qty", "trail_pct",
+                                    "size_base", "qty", "trail_pct", "order_type",
                                     "broker")})
                         else:
                             out = approvals.cancel_failed(conn, wi,
@@ -1083,6 +1191,14 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                     except price_triggers.TriggerError as e:
                         return self._send(e.code, {"error": e.message})
                     return self._send(200, out)
+                if u.path == "/api/position-floor":
+                    # change a HELD position's trailing alert % (Portfolio →
+                    # Edit). An alert, not an order: breaching it
+                    # only starts a sell review that needs approval. The
+                    # best price since buying is kept.
+                    if not self._paired():
+                        raise HTTPError(403, "dashboard not paired")
+                    return self._send(200, self._position_floor(body))
                 if u.path == "/api/manual-trade":
                     # a trade you start (the Sell button) is a money-path
                     # action: same local re-check as thesis-action. Named so
@@ -1470,7 +1586,7 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
             from . import live_trading
             live = live_trading.status(conn, env or {})
             accounts = [_approval_account(a, repo, env or {}, live)
-                        for a in conn.execute("SELECT * FROM broker_accounts")]
+                        for a in ordered_accounts(conn, env)]
             if not any(a["environment"] == "live" for a in accounts):
                 # always SHOW the real account, so it is obvious where it
                 # is and why it cannot be chosen yet (§22)
@@ -1691,7 +1807,8 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                 " o.stop_loss/1e6 stop_loss, o.take_profit/1e6 take_profit,"
                 " o.status, o.broker_order_id, o.created_at, o.placed_at,"
                 " o.expires_at, o.leg, o.parent_order_id, o.submitted_at,"
-                " i.ticker, i.exchange, i.currency,"
+                " o.instrument_id, i.ticker, i.exchange, i.currency,"
+                " o.trail_pct order_trail_pct,"
                 " (SELECT COALESCE(SUM(e.qty),0)/1e6 FROM executions e"
                 "  WHERE e.order_id=o.id) filled"
                 " FROM orders o JOIN instruments i ON i.id=o.instrument_id"
@@ -1700,9 +1817,27 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
             for r in rows:
                 a = accts.get(r["account_id"]) or {}
                 r["broker"] = a.get("broker")
+                # a buy's trailing alert (a watcher rule on the position, not
+                # part of the order): shown and editable on the Orders page
+                ta = conn.execute(
+                    "SELECT threshold FROM price_alerts WHERE rule='trail_pct'"
+                    " AND instrument_id=? AND account_id=? AND side=1",
+                    (r["instrument_id"], r["account_id"])).fetchone() \
+                    if r["side"] == "buy" and not r["leg"] else None
+                r["trail_pct"] = float(ta[0]) if ta else None
                 r["account"] = self._account_label(a.get("broker"),
                                                    a.get("environment"))
                 r["symbol"] = yahoo_symbol(r["ticker"], r["exchange"])
+                # is the stop/target held AT SAXO? Otherwise (the built-in
+                # sims, and the markets saxo-paper simulates locally — SGX:
+                # Saxo SIM lists those only as CFDs) Claire's sim holds it
+                # and the custodian fills it against the live price
+                from .tools.saxo_broker import SIM_LOCAL_SUFFIXES
+                suf = r["symbol"].rsplit(".", 1)[1] if "." in r["symbol"] \
+                    else ""
+                r["legs_at_broker"] = bool(
+                    (r["broker"] or "").startswith("saxo") and not (
+                        r["broker"] == "saxo" and suf in SIM_LOCAL_SUFFIXES))
                 r["where"] = ("queued — sent when the market opens"
                               if r["status"] == "pending_session" and
                               not r["submitted_at"] else
@@ -1711,6 +1846,24 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                               "part filled at the broker"
                               if r["status"] == "partially_filled" else
                               "working at the broker")
+                # Claire: where Saxo holds the stop, the trail % is a real
+                # trailing stop (the entry's order row carries it, and its
+                # stop leg trails by trail % x the entry's limit)
+                r["trail_is_stop"] = False
+                if r["leg"] == "stop" and r["parent_order_id"] and \
+                        r["legs_at_broker"]:
+                    from .graph.nodes_execution import trail_distance
+                    p = conn.execute("SELECT trail_pct, stop_loss,"
+                                     " limit_price FROM orders WHERE id=?",
+                                     (r["parent_order_id"],)).fetchone()
+                    d = trail_distance(p) if p else None
+                    if d:
+                        r.update(trail_pct=p["trail_pct"], trails=float(d),
+                                 trail_is_stop=True)
+                elif not r["leg"] and r["order_trail_pct"] and \
+                        r["legs_at_broker"] and r["stop_loss"]:
+                    r.update(trail_pct=r["order_trail_pct"],
+                             trail_is_stop=True)
             trig = price_triggers.list_triggers(
                 conn, since=int(clock()) - 7 * 86400, limit=200)
             syms = sorted({r["symbol"] for r in rows} |
@@ -2037,6 +2190,8 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
         def _account_label(broker, env):
             if broker == "saxo":
                 return "Saxo SIM (paper)"
+            if broker in ("alpaca", "moomoo") and env != "live":
+                return sim_label(broker)
             name = {"saxo_live": "Saxo", "alpaca": "Alpaca",
                     "moomoo": "moomoo"}.get(broker, broker or "broker")
             if env == "live":
@@ -2410,7 +2565,7 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                 return {"error": "unknown work item"}
             sym = yahoo_symbol(r["ticker"], r["exchange"] or "NASDAQ")
             out = {"ticker": r["ticker"], "symbol": sym,
-                   "currency": r["currency"],
+                   "currency": r["currency"], "exchange": r["exchange"],
                    # board lot (mirrors wiring.prepare): a buy smaller than
                    # one lot is refused after approval, so the card warns
                    "lot": 100 if r["exchange"] == "SGX" else 1}
@@ -2434,6 +2589,10 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
             try:
                 c = market.chart(sym, "6mo", "1d")
                 out["levels"] = _levels(c)
+                try:                # context only: never blocks the card
+                    out["range2y"] = _range(market.chart(sym, "2y", "1wk"))
+                except Exception:               # noqa: BLE001
+                    out["range2y"] = None
             except Exception as e:              # noqa: BLE001
                 out["levels_error"] = str(e)[:200]
             if not (out.get("levels") or {}).get("atr14"):
@@ -2454,6 +2613,23 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                 " GROUP BY l.account_id", (r["ticker"],)).fetchall()
             out["held"] = {h["account_id"]: h["q"] for h in held}
             out["held_total"] = sum(h["q"] for h in held)
+            # London bars are in pence, the quote in pounds: same units
+            px = (out.get("quote") or {}).get("price")
+            # what the shares still held cost per share (the stock's own
+            # currency) — a sell's summary shows the profit or loss on them
+            out["avg_cost"] = {
+                c["account_id"]: quote_units({"v": c["v"]}, px, ("v",))["v"]
+                for c in conn.execute(
+                    "SELECT l.account_id, SUM(1.0*l.qty_remaining*e.price_native)"
+                    " /SUM(l.qty_remaining)/1e6 AS v FROM lots l"
+                    " JOIN instruments i ON i.id = l.instrument_id"
+                    " JOIN executions e ON e.id = l.open_execution_id"
+                    " WHERE i.ticker=? AND l.qty_remaining > 0"
+                    " AND l.qty_opened > 0 GROUP BY l.account_id",
+                    (r["ticker"],)) if c["v"]}
+            out["levels"] = quote_units(out.get("levels") or {}, px)
+            out["range2y"] = quote_units(out.get("range2y"), px,
+                                         ("high", "low"))
             return out
 
         def _amend(self, wi, body):
@@ -2522,7 +2698,12 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
             if entry <= 0:
                 raise HTTPError(400, "an entry price is required")
             sym = yahoo_symbol(ticker, exchange or "NASDAQ")
-            if side == "buy":
+            if side == "buy" and body.get("qty"):
+                # the card's share count: check exactly that many
+                qty = Decimal(str(body["qty"]))
+                if not getattr(adapter, "fractional", True):
+                    qty = qty.to_integral_value(rounding="ROUND_FLOOR")
+            elif side == "buy":
                 q = Decimal(str(market.quote(sym)["price"]))
                 qty = position_qty(Decimal(str(body.get("size_base") or 0)),
                                    q, 1, FRACTION_STEP if getattr(
@@ -2537,12 +2718,24 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
             held = self._desk_held_on(broker, ticker, exchange)
             exit_ = (side == "sell" and held > 0) or (side == "buy" and
                                                        held < 0)
-            out = adapter.precheck(
-                symbol=sym, side=side, qty=qty, limit=entry,
-                stop_loss=None if exit_ else (float(body["stop"])
-                                              if body.get("stop") else None),
-                take_profit=None if exit_ else (
-                    float(body["target"]) if body.get("target") else None))
+            stop = None if exit_ else (float(body["stop"])
+                                       if body.get("stop") else None)
+            kw = dict(symbol=sym, side=side, qty=qty, limit=entry,
+                      stop_loss=stop,
+                      take_profit=None if exit_ else (
+                          float(body["target"]) if body.get("target")
+                          else None))
+            try:
+                trail = float(body.get("trail_pct") or 0)
+            except (TypeError, ValueError):
+                trail = 0
+            from .graph.nodes_execution import _accepts
+            if stop and 0 < trail <= 90 and \
+                    _accepts(adapter, "trail_distance", "precheck"):
+                # the exact order execution sends: the stop as a trailing
+                # stop, distance = the floor % of the entry
+                kw["trail_distance"] = entry * trail / 100
+            out = adapter.precheck(**kw)
             if out.get("error") and "RateLimitExceeded" in out["error"]:
                 out["error"] = "Saxo asks to slow down — wait a second and " \
                                "check again"
@@ -2570,6 +2763,27 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                 " i.ticker=? AND i.exchange=? AND l.qty_remaining>0",
                 (broker, ticker, exchange)).fetchone()
             return (r["q"] or 0) / 1e6
+
+        def _position_floor(self, body):
+            from .watcher import set_position_floor
+            inst = str(body.get("instrument_id") or "")
+            acct = str(body.get("account_id") or "")
+            side = -1 if body.get("side") == "short" else 1
+            try:
+                pct = float(body.get("pct"))
+            except (TypeError, ValueError):
+                raise HTTPError(422, "the trailing alert must be a number")
+            if not 0.5 <= pct <= 90:
+                raise HTTPError(422, "the trailing alert must be between"
+                                     " 0.5% and 90%")
+            held = conn.execute(
+                "SELECT COUNT(*) FROM lots WHERE instrument_id=? AND"
+                " account_id=? AND qty_remaining > 0 AND"
+                " (qty_opened > 0) = ?", (inst, acct, side > 0)).fetchone()[0]
+            if not held:
+                raise HTTPError(404, "the desk holds no such position")
+            before = set_position_floor(conn, inst, acct, pct, side=side)
+            return {"ok": True, "pct": pct, "before": before}
 
         def _manual_trade(self, body):
             """Forward a trade you started to claire-api (/internal/manual),
@@ -3298,6 +3512,10 @@ def main():
     # back by Bob's bot to /api/telegram-decision)
     from . import telegram_approvals
     telegram_approvals.start_pusher_thread(conn, market, os.environ)
+    # the arbiter's notes in plain English, written as soon as a card
+    # arrives so the Approvals page never waits on the LLM
+    from . import arbiter_notes
+    arbiter_notes.start_writer_thread(conn)
     bind =os.environ.get("CLAIRE_DASHBOARD_BIND", "127.0.0.1")
     # optional extra Host names (e.g. a DNS alias for this box); the
     # loopback + hostname + LAN-IP set is always derived from `bind`

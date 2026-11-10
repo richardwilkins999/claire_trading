@@ -1039,3 +1039,37 @@ def test_cards_portfolio_and_saxo_page_carry_what_the_sell_ui_needs(
     by = {p["symbol"]: p["desk"] for p in sax["positions"]}
     assert by["CSCO:xnas"]["held"] == 9 and by["CSCO:xnas"]["broker"] == "saxo"
     assert by["AAPL:xnas"] is None            # not the desk's: no Sell
+
+
+def test_portfolio_edit_floor_changes_a_held_positions_trailing_alert(dash):
+    """Portfolio → Trailing alert → Edit: the same as Telegram /floor. Needs
+    the key, only for a position the desk holds, 0.5–90%; the best price
+    since buying is kept."""
+    import httpx
+
+    from app.watcher import position_floor
+    base, w, key = dash
+    inst, acct = w.conn.execute(
+        "SELECT instrument_id, account_id FROM lots WHERE qty_remaining > 0"
+    ).fetchone()
+    w.conn.execute("INSERT INTO price_alerts (instrument_id, account_id, side,"
+                   " rule, threshold, armed, peak_base) VALUES"
+                   " (?,?,1,'trail_pct',8,1,110.0)", (inst, acct))
+    body = {"instrument_id": inst, "account_id": acct, "side": "long",
+            "pct": 5}
+    with httpx.Client(timeout=5) as c:
+        assert c.post(base + "/api/position-floor",
+                      json=body).status_code == 403
+        assert position_floor(w.conn, inst, acct)[0] == 8.0
+        h = {"X-Dash-Key": key}
+        for bad in (0.2, 95, "x"):
+            assert c.post(base + "/api/position-floor", json={
+                **body, "pct": bad}, headers=h).status_code == 422
+        assert c.post(base + "/api/position-floor", json={
+            **body, "account_id": "nope"}, headers=h).status_code == 404
+        r = c.post(base + "/api/position-floor", json=body, headers=h)
+    assert r.status_code == 200 and r.json()["before"] == 8.0
+    assert position_floor(w.conn, inst, acct) == (5.0, 110.0)
+    lv = httpx.get(base + "/api/portfolio", headers=h).json()
+    held = [p for ps in lv["exchanges"].values() for p in ps]
+    assert held[0]["levels"]["alert_pct"] == 5.0

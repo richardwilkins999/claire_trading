@@ -77,6 +77,44 @@ def _instrument(symbol, *, which, client):
     return _uic[symbol]
 
 
+# Saxo market code → (desk exchange, Yahoo suffix): the inverse of
+# MIC_BY_SUFFIX, so a search hit becomes the symbol every other page uses
+_DESK_EX = {"xnas": ("NASDAQ", ""), "xnys": ("NYSE", ""), "xses": ("SGX", "SI"),
+            "xhkg": ("HKEX", "HK"), "xtks": ("TSE", "T"), "xasx": ("ASX", "AX"),
+            "xlon": ("LSE", "L"), "xetr": ("XETRA", "DE"), "xpar": ("PARIS", "PA"),
+            "xnse": ("NSE", "NS")}
+
+
+def search(q, *, client=None, limit=20):
+    """Worldwide instrument search at Saxo (the desk's SIM sign-in) — the
+    watchlist's search when Yahoo refuses us. Only markets the desk trades
+    are returned, as Yahoo-style symbols ("IBM", "DBK.DE", "0700.HK")."""
+    own = client is None
+    client = client or httpx.Client(timeout=15)
+    try:
+        found = _get("/ref/v1/instruments/",
+                     {"Keywords": q, "AssetTypes": "Stock,Etf", "$top": 50},
+                     which=_env(), client=client).get("Data", [])
+    finally:
+        if own:
+            client.close()
+    out = []
+    for i in found:
+        tk, _, mic = (i.get("Symbol") or "").partition(":")
+        if mic.lower() not in _DESK_EX or not tk:
+            continue
+        ex, suf = _DESK_EX[mic.lower()]
+        if suf == "HK" and tk.isdigit():        # Saxo 00700 → Yahoo 0700.HK
+            tk = str(int(tk)).zfill(4)
+        out.append({"symbol": tk.upper() + (f".{suf}" if suf else ""),
+                    "name": i.get("Description"), "exchange": ex,
+                    "currency": i.get("CurrencyCode"),
+                    "type": i.get("AssetType"), "src": "saxo"})
+        if len(out) >= limit:
+            break
+    return out
+
+
 def chart(symbol, range_="6mo", interval="1d", *, client=None):
     """Bars in the desk's chart shape (same keys as Market._chart_yahoo)."""
     if interval not in HORIZON:

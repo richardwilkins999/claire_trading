@@ -277,3 +277,59 @@ def test_internal_run_endpoint_needs_the_secret(world):
     with maintenance._lock:
         assert client.post("/internal/maintenance", headers={
             "x-claire-secret": "sec"}).status_code == 409
+
+
+# ── the parts added 2026-11-11: arbiter notes, sim stops ─────────────────
+def by_key(checks):
+    return {c["key"]: c for c in checks}
+
+
+def test_arbiter_notes_check_flags_cards_left_without_them(world):
+    root, conn, m, _ = world
+    item(conn, "wi_a", "awaiting_approval", NOW - 3600)
+    conn.execute("UPDATE work_items SET thesis_json=? WHERE id='wi_a'",
+                 (json.dumps({"conditions": ["SMA20 reclaim"]}),))
+    c = by_key(m.checks())["arbiter_notes"]
+    assert c["status"] == "warn" and "wi_a" in c["detail"]
+    from app import arbiter_notes
+    conn.execute("INSERT INTO arbiter_notes VALUES (?,?,?,?,?)",
+                 ("wi_a", arbiter_notes.notes_hash(["SMA20 reclaim"]), "s",
+                  json.dumps(["plain"]), NOW))
+    assert by_key(m.checks())["arbiter_notes"]["status"] == "ok"
+
+
+def test_sim_stops_check_says_whether_anything_is_checking_them(world):
+    root, conn, m, _ = world
+    assert by_key(m.checks())["sim_stops"]["value"] == "none working"
+    repo = Repo(conn)
+    repo.create_account("alpaca-paper", "alpaca", "paper", "USD",
+                        fee_model={"type": "flat", "per_trade": "0"},
+                        risk_limits={}, ts=NOW)
+    repo.add_instrument("NASDAQ:CSCO", "CSCO", "NASDAQ", "USD")
+    item(conn, "wi_s", "done", NOW)
+    conn.execute(
+        "INSERT INTO orders (id, work_item_id, account_id, instrument_id,"
+        " side, qty, status, broker_order_id, leg, stop_loss, created_at,"
+        " updated_at, expires_at) VALUES ('leg_1','wi_s','alpaca-paper',"
+        " 'NASDAQ:CSCO','sell',9000000,'placed','sim-abc','stop',97000000,"
+        " ?,?,?)", (NOW, NOW, NOW + DAY))
+    c = by_key(m.checks())["sim_stops"]
+    assert c["status"] == "bad" and "NOT being checked" in c["value"]
+    conn.execute("INSERT INTO service_health (service, checked_at, ok,"
+                 " detail) VALUES ('custodian', ?, 'ok', '{}')", (NOW - 120,))
+    c = by_key(m.checks())["sim_stops"]
+    assert c["status"] == "ok" and c["value"].startswith("1 working")
+
+
+def test_housekeeping_drops_only_finished_sim_orders(world):
+    root, conn, m, _ = world
+    from app.tools.brokers import SIM_TABLE
+    conn.execute(SIM_TABLE)
+    old = NOW - 40 * DAY
+    for oid, st, t in (("sim-done", "filled", old), ("sim-rest", "placed", old),
+                       ("sim-new", "cancelled", NOW)):
+        conn.execute("INSERT INTO sim_orders VALUES (?,?,?,?,?)",
+                     (oid, "alpaca", None, json.dumps({"status": st}), t))
+    a = m.prune_sim_orders()
+    left = {r[0] for r in conn.execute("SELECT id FROM sim_orders")}
+    assert left == {"sim-rest", "sim-new"} and a["ok"]      # a resting stop stays

@@ -99,10 +99,12 @@ Notes:
   HK, Tokyo and ASX names are listed there only as CFDs (checked
   2026-11-06), so:
   - **SGX** buys and sells on `saxo-paper` are **simulated by the desk
-    itself**, like the Alpaca/moomoo paper books: they fill at your limit,
-    never reach Saxo, and keep no resting stop/target at a venue (the
-    watcher's trailing alert is the backstop). They do not appear in Saxo's
-    own positions or working orders. The approval card says so instead of
+    itself**, like the Alpaca/moomoo paper books: they fill at your limit
+    and never reach Saxo. Since 2026-11-11 the built-in sim **holds their
+    stop-loss and take-profit** as resting orders (kept in desk.db, so they
+    survive a restart); the custodian checks them against the live price
+    every 5 minutes while the market is open and sells at the price it sees.
+    They do not appear in Saxo's own positions or working orders. The approval card says so instead of
     asking Saxo. (`SIM_LOCAL_SUFFIXES` in `app/tools/saxo_broker.py`;
     never applied to LIVE, where your real account trades SGX shares.)
   - HK / Tokyo / ASX picks are still refused with a clear reason (no exact
@@ -129,12 +131,27 @@ entry fills they work as a pair — whichever fills first cancels the other.
 The desk tracks both legs as orders of their own (they show on the position
 card on **Portfolio** as "at the venue: stop … · target …").
 
+**The trailing floor is a Saxo trailing stop** (since 2026-11-07). The floor %
+you approve with a buy turns the bracket's stop into a `TrailingStopIfTraded`:
+it starts at your stop, then follows the market at a fixed distance of
+*floor % × entry price* (8% of a 150 entry = 12), moving only up, and **sells
+automatically** when hit — at Saxo, whether or not the desk is running. The
+distance is fixed at the entry, so as the price rises it is a smaller share
+of it (12 is 4% at 300). The desk's own trailing alert stays on as a backup.
+On Saxo-simulated SGX trades and the other paper books the trail % stays the
+watcher's **trailing alert** (it asks you before selling); their fixed
+stop-loss / take-profit are held by the built-in sim and do sell by
+themselves. The screens say "trailing stop" or "trailing alert" accordingly.
+Changing the % after the buy (Portfolio → Edit) moves only the alert: the
+trailing stop at Saxo keeps its distance. If a partial sell re-protects the rest, the new
+stop trails too, starting from where the old one had got to.
+
 **Three ways a position is sold:**
 
 | How | What happens |
 |---|---|
-| **Saxo fills a leg** (the price reaches your stop or target) | Saxo sells; the other leg cancels itself. Within ~5 minutes the custodian books the sale on the desk's book (realised P/L, cash) and marks the other leg cancelled. Nothing for you to do. |
-| **Watcher exit review** (the trailing floor is breached) | The desk runs a short exit review and, if it says sell, puts a SELL card on **Approvals**. Nothing sells until you approve it. |
+| **Saxo fills a leg** (the price reaches your stop — fixed or trailing — or your target) | Saxo sells; the other leg cancels itself. Within ~5 minutes the custodian books the sale on the desk's book (realised P/L, cash) and marks the other leg cancelled. Nothing for you to do. |
+| **Watcher exit review** (the trailing floor alert is breached — on Saxo the trailing stop has normally sold first) | The desk runs a short exit review and, if it says sell, puts a SELL card on **Approvals**. Nothing sells until you approve it. |
 | **The Sell button** (Portfolio, or the Saxo accounts page for shares the desk bought there) | A small form: shares (default: all the desk holds), limit price (default: last price), optional note, **Check with Saxo**. *Send to approval* puts a SELL card on **Approvals** with the shares and account filled in; you approve it there. |
 
 **When you approve a sell on Saxo**, the desk:

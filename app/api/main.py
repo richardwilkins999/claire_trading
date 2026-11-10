@@ -56,6 +56,11 @@ class OverrideBody(BaseModel):
     # the trailing floor % the approval card starts with (ignored on an exit)
     trail_pct: float | None = Field(default=None, gt=0, le=90)
     note: str | None = None
+    # what the approval card starts with (all optional): the shares, the
+    # account and the order type you chose on the override form
+    qty: float | None = Field(default=None, gt=0)
+    broker: Literal["alpaca", "saxo", "moomoo", "saxo_live"] | None = None
+    order_type: Literal["limit", "market"] | None = None
     actor: str
 
 
@@ -109,6 +114,7 @@ class OrderControlBody(BaseModel):
     stop: float | None = None
     target: float | None = None
     qty: float | None = None
+    trail_pct: float | None = Field(default=None, gt=0, le=90)
 
 
 def create_app(desk, conn, secret: str, *, clock=time.time,
@@ -235,7 +241,7 @@ def create_app(desk, conn, secret: str, *, clock=time.time,
             return order_control.edit(
                 desk.repo, desk, brokers or {}, body.work_item_id,
                 entry=body.entry, stop=body.stop, target=body.target,
-                qty=body.qty, ts=ts)
+                qty=body.qty, trail_pct=body.trail_pct, ts=ts)
         except order_control.OrderControlError as e:
             raise HTTPException(e.status, str(e)[:300])
         except ValidationError as e:
@@ -255,7 +261,9 @@ def create_app(desk, conn, secret: str, *, clock=time.time,
             wi = desk.override(body.work_item_id, direction=body.direction,
                                entry=body.entry, stop=body.stop,
                                target=body.target, note=body.note,
-                               trail_pct=body.trail_pct)
+                               trail_pct=body.trail_pct, qty=body.qty,
+                               broker=body.broker,
+                               order_type=body.order_type)
         except ValidationError as e:
             # incoherent levels (a stop that is not a floor) — the guard doing
             # its job. Checked BEFORE ValueError: pydantic's error subclasses

@@ -86,7 +86,9 @@ CREATE TABLE IF NOT EXISTS orders (        -- broker order lifecycle; FILLS ARE 
   cancelled_for TEXT,                      -- desk order that cancelled this leg
   protect_state TEXT,                      -- on that desk order: pending | done
                                            -- | not_needed | failed
-  protect_note TEXT, protect_alerted_at INTEGER
+  protect_note TEXT, protect_alerted_at INTEGER,
+  trail_pct REAL                           -- the approved trailing floor %:
+                                           -- Saxo gets it as a trailing stop
 );
 CREATE TABLE IF NOT EXISTS executions (    -- IMMUTABLE; ONE ROW PER FILL —
                                            -- partial fills are multiple rows;

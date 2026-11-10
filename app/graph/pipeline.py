@@ -233,7 +233,7 @@ def approval_gate(state: PipelineState):
         # the stop / target YOU set on the card replace the plan's (the
         # dashboard validated them; the Thesis validator checks them again)
         data = state.thesis.model_dump()
-        for k in ("stop_loss", "take_profit"):
+        for k in ("entry_low", "entry_high", "stop_loss", "take_profit"):
             if k in levels:
                 data[k] = levels[k]
         out["thesis"] = Thesis.model_validate(data)

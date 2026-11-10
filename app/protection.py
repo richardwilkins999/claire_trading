@@ -234,12 +234,23 @@ def reprotect(repo, adapter, order_id, *, symbol, ts):
         if not hasattr(adapter, "place_oco"):
             return finish("failed", f"UNPROTECTED {what}: this venue cannot "
                                     "place a standalone stop")
+        # the new legs protect the same entry the old ones did — and keep
+        # trailing if that entry's stop was a trailing one. The stop row
+        # carries the venue's CURRENT (already trailed) price, so the floor
+        # it had reached is kept, not reset to the original stop.
+        entry = repo.order(parent["parent_order_id"]) \
+            if parent["parent_order_id"] else o
+        from .graph.nodes_execution import _accepts, trail_distance
+        oco = dict(symbol=symbol, side=side, qty=shares,
+                   stop_loss=float(stop) if stop is not None else None,
+                   take_profit=float(target) if target is not None else None,
+                   client_order_id=f"{order_id}-rp")
+        trail = trail_distance(entry) if entry is not None else None
+        if trail and stop is not None and \
+                _accepts(adapter, "trail_distance", "place_oco"):
+            oco["trail_distance"] = float(trail)
         try:
-            placed = adapter.place_oco(
-                symbol=symbol, side=side, qty=shares,
-                stop_loss=float(stop) if stop is not None else None,
-                take_profit=float(target) if target is not None else None,
-                client_order_id=f"{order_id}-rp")
+            placed = adapter.place_oco(**oco)
         except Exception as e:                  # noqa: BLE001 — unknown
             return finish("failed", f"UNPROTECTED? {what}: re-protection "
                           f"outcome unknown ({e}) — check Saxo's working "
@@ -247,9 +258,6 @@ def reprotect(repo, adapter, order_id, *, symbol, ts):
         if placed.status != "accepted":
             return finish("failed", f"UNPROTECTED {what}: the venue refused "
                                     f"the new stop: {placed.detail}")
-        # the new legs protect the same entry the old ones did
-        entry = repo.order(parent["parent_order_id"]) \
-            if parent["parent_order_id"] else o
         new = persist_legs(repo, parent=entry, legs=placed.legs, side=side,
                            qty=to_micro(shares), ts=ts,
                            work_item_id=parent["work_item_id"],

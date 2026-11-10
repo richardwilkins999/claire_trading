@@ -124,7 +124,7 @@ class Repo:
                      limit_price=None, stop_loss=None, take_profit=None,
                      broker_order_id=None, fx_rate=None, ref_price=None,
                      client_order_id=None, submitted_at=None,
-                     reserved_base=None):
+                     reserved_base=None, trail_pct=None):
         """`fx_rate` (instrument ccy → account base, ×1e6) and `ref_price`
         (native, the live quote) feed the notional risk caps — see
         check_risk. `client_order_id` defaults to the row id: it is what the
@@ -138,12 +138,13 @@ class Repo:
             "INSERT INTO orders (id, work_item_id, account_id, instrument_id, side,"
             " qty, limit_price, stop_loss, take_profit, status, broker_order_id,"
             " expires_at, placed_at, updated_at, client_order_id, submitted_at,"
-            " created_at, reserved_base, fx_rate)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " created_at, reserved_base, fx_rate, trail_pct)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (id, work_item_id, account_id, instrument_id, side, qty, limit_price,
              stop_loss, take_profit, status, broker_order_id,
              expires_at, ts if status == "placed" else None, ts,
-             client_order_id or id, submitted_at, ts, reserved_base, fx_rate))
+             client_order_id or id, submitted_at, ts, reserved_base, fx_rate,
+             trail_pct))
         return id
 
     def create_leg_order(self, *, id, parent_order_id, leg, account_id,

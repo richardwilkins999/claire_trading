@@ -1,0 +1,66 @@
+/* the order panel + order summary, shared by Approvals and Watchlist */
+input.locked { opacity:.7; border-style:dashed; }
+.ord input[type=number] { width:105px; }
+.ord label { font-size:.85rem; }
+.ord .row { margin:.3rem 0; gap:.6rem 1rem; }
+.ord { border:1px solid var(--line); border-radius:10px; padding:.6rem .8rem; margin:.3rem 0 .6rem; }
+.osum { background:var(--panel2); border:1px solid var(--line); border-radius:8px;
+  padding:.55rem .8rem; margin:.5rem 0 .2rem; font-size:.88rem; line-height:1.45; }
+.osum-title { font-size:.68rem; letter-spacing:.1em; text-transform:uppercase;
+  color:var(--muted); font-weight:600; margin-bottom:.3rem; }
+.osum dl { display:grid; grid-template-columns:8.5rem 1fr; gap:.25rem .8rem; margin:0; }
+.osum dt { color:var(--muted); }
+.osum dd { margin:0; }
+.osum dd.full { grid-column:1 / -1; }
+.osum-head { font-size:1rem; margin:.1rem 0 .6rem; }
+.osum-line { margin:.35rem 0 0; }
+.otiles { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:.6rem; }
+.otile { border:1px solid var(--line); border-radius:8px; padding:.45rem .7rem; background:var(--bg); }
+.otile span { display:block; color:var(--muted); font-size:.7rem; text-transform:uppercase; letter-spacing:.08em; }
+.otile b { display:block; font-size:1.15rem; margin:.1rem 0; }
+.otile small { color:var(--dim); font-size:.75rem; }
+.otile.loss b { color:var(--bad); } .otile.gain b { color:var(--good); }
+.ladder { position:relative; height:66px; margin:2.1rem .8rem .2rem; }
+.lbar { position:absolute; left:0; right:0; top:14px; height:6px; border-radius:3px; background:var(--line); }
+.lz { position:absolute; top:14px; height:6px; }
+.lz.loss { background:rgba(239,83,80,.55); } .lz.gain { background:rgba(38,166,154,.55); }
+.lm { position:absolute; top:6px; transform:translateX(-50%); text-align:center; font-size:.72rem; color:var(--dim); white-space:nowrap; }
+.ltick { display:block; width:2px; height:22px; margin:0 auto 2px; background:var(--text); }
+.lm.stop .ltick { background:var(--bad); } .lm.target .ltick { background:var(--good); }
+.lm.now .ltick { background:var(--warn); height:22px; } .lm.now { color:var(--warn); }
+.lm.now .llab { position:absolute; bottom:30px; left:50%; transform:translateX(-50%); }
+.llab b { color:var(--text); font-weight:600; } .lm.now .llab b { color:var(--warn); }
+.lm.ref .ltick { background:transparent; border-left:2px dashed var(--purple); width:0; }
+.lm.ref { color:var(--purple); } .lm.ref .llab b { color:var(--purple); }
+.lm.ref .llab { position:absolute; bottom:30px; left:50%; transform:translateX(-50%); }
+.ranges { margin:.6rem .8rem .2rem; font-size:.8rem; }
+.rrow { display:grid; grid-template-columns:4.5rem minmax(120px, 1fr) auto; gap:.7rem; align-items:center; margin:.25rem 0; }
+.rlab { color:var(--muted); font-size:.72rem; text-transform:uppercase; letter-spacing:.08em; }
+.rbar { position:relative; height:12px; }
+.r-span { position:absolute; top:4px; height:4px; border-radius:2px; background:rgba(180,140,255,.4); }
+.r-trade { position:absolute; top:2px; height:8px; border-radius:2px; border:1px solid var(--accent); background:rgba(53,214,255,.12); }
+.r-now { position:absolute; top:-1px; width:3px; height:14px; margin-left:-1px; background:var(--warn); border-radius:1px; }
+@media (max-width: 760px) { .rrow { grid-template-columns:4.5rem 1fr; } .rtxt { grid-column:1 / -1; } }
+@media (max-width: 640px) { .otiles { grid-template-columns:1fr; } }
+
+/* draggable stop-loss / buy / take-profit markers (Approvals card) */
+.ladder.can-drag { touch-action:none; }
+.lm.drag { cursor:ew-resize; padding:0 8px; }
+.lm.drag .ltick { width:4px; height:26px; margin-top:-2px; border-radius:2px; }
+.lm.drag:hover .ltick, .lm.held .ltick { box-shadow:0 0 0 3px rgba(53,214,255,.35); }
+.lm.held { z-index:3; }
+.ladder-hint { color:var(--dim); font-size:.72rem; margin:-.1rem .8rem .3rem; }
+body.ladder-dragging, body.ladder-dragging * { cursor:ew-resize !important; user-select:none; }
+
+/* the trailing alert: where it starts (dashed amber — it moves up with the price) */
+.lm.trail .ltick { background:transparent; border-left:2px dashed var(--warn); width:0; height:22px; }
+.lm.trail.drag .ltick { border-left-width:3px; width:0; }
+.lm.trail { color:var(--warn); }
+.lm.trail .llab { position:absolute; bottom:30px; left:50%; transform:translateX(-50%); }
+.lm.trail .llab b { color:var(--warn); }
+
+/* a sell: what you paid (dashed, accent) */
+.lm.paid .ltick { background:transparent; border-left:2px dashed var(--accent); width:0; }
+.lm.paid { color:var(--accent); }
+.lm.paid .llab { position:absolute; bottom:30px; left:50%; transform:translateX(-50%); }
+.lm.paid .llab b { color:var(--accent); }

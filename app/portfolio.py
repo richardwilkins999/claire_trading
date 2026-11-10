@@ -131,18 +131,35 @@ def levels_for(conn, position, fills, fx=None) -> dict:
             out["alert_rule"] = (f"trailing {'+' if short else '−'}"
                                  f"{alert['threshold']:.0f}% of {ref:.2f}")
             out["alert_peak"] = alert["peak_base"]
+            out["alert_pct"] = float(alert["threshold"])
+            out["alert_ref"] = ref        # best price since bought (native)
     return out
 
 
 def legs_for(conn, account_id, instrument_id) -> list[dict]:
     """The protective orders resting at the venue for this position (the
     bracket's stop-loss / take-profit, DESIGN.md §11a) — what will actually
-    sell it if the price gets there, as opposed to the thesis levels."""
+    sell it if the price gets there, as opposed to the thesis levels.
+    A stop whose entry carried a trail % on a venue that holds stops (Saxo)
+    is a TRAILING stop there: `trails` is its distance."""
+    from .graph.nodes_execution import trail_distance
+
+    def trails(r):
+        if r["leg"] != "stop" or not r["parent_order_id"] or \
+                not str(r["broker_order_id"] or "").isdigit():
+            return None                     # sim legs ("sim-…") never trail
+        p = conn.execute("SELECT trail_pct, stop_loss, limit_price FROM"
+                         " orders WHERE id=?", (r["parent_order_id"],)
+                         ).fetchone()
+        d = trail_distance(p) if p else None
+        return {"trails": float(d), "trail_pct": p["trail_pct"]} if d \
+            else None
     return [{"leg": r["leg"], "side": r["side"],
              "qty": float(_d(r["qty"])),
              "price": float(_d(r["stop_loss"] if r["leg"] == "stop"
                                else r["limit_price"])),
-             "status": r["status"], "venue_order": r["broker_order_id"]}
+             "status": r["status"], "venue_order": r["broker_order_id"],
+             **(trails(r) or {})}
             for r in conn.execute(
                 "SELECT * FROM orders WHERE account_id=? AND instrument_id=?"
                 " AND leg IS NOT NULL AND status IN ('placed',"

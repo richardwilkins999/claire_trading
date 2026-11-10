@@ -102,3 +102,61 @@ def test_provider_row_cannot_name_a_non_llm_secret(conn):
     with pytest.raises(registry.ProviderError, match="not an LLM provider key"):
         registry.build_llm(conn, "evil", "m",
                            env={"CLAIRE_INTERNAL_SECRET": "s3cret"})
+
+
+# ── watchlist search when Yahoo refuses us (2026-11-10) ──────────────────
+def test_saxo_search_maps_to_desk_symbols(monkeypatch):
+    from app.tools import saxo_chart
+    monkeypatch.setattr(saxo_chart, "_get", lambda *a, **k: {"Data": [
+        {"Symbol": "IBM:xnys", "Description": "IBM Corp.", "AssetType": "Stock"},
+        {"Symbol": "DBK:xetr", "Description": "Deutsche Bank", "AssetType": "Stock"},
+        {"Symbol": "00700:xhkg", "Description": "Tencent", "AssetType": "Stock"},
+        {"Symbol": "XYZ:xmil", "Description": "not a desk market"}]})
+    out = saxo_chart.search("x", client=object())
+    assert [(r["symbol"], r["exchange"]) for r in out] == [
+        ("IBM", "NYSE"), ("DBK.DE", "XETRA"), ("0700.HK", "HKEX")]
+
+
+def test_tradingview_search_keeps_desk_markets_only():
+    from app.tools import tradingview
+
+    class R:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"symbols": [
+                {"symbol": "700", "exchange": "HKEX", "description": "Tencent"},
+                {"symbol": "D05", "exchange": "SGX", "description": "DBS"},
+                {"symbol": "MC", "exchange": "EURONEXT", "country": "FR"},
+                {"symbol": "TCEHY", "exchange": "OTC", "description": "ADR"},
+                {"symbol": "<em>DBK</em>", "exchange": "XETR"}]}
+
+    class C:
+        def get(self, *a, **k):
+            return R()
+    out = tradingview.search("x", _client=C())
+    assert [(r["symbol"], r["exchange"]) for r in out] == [
+        ("0700.HK", "HKEX"), ("D05.SI", "SGX"), ("MC.PA", "PARIS"),
+        ("DBK.DE", "XETRA")]
+
+
+def test_combined_search_puts_saxo_first_and_survives_one_failure():
+    from app.tools import market, tradingview
+    saxo = lambda q: [{"symbol": "IBM", "exchange": "NYSE"}]    # noqa: E731
+    orig = tradingview.search
+    try:
+        tradingview.search = lambda q: [{"symbol": "IBM", "exchange": "NYSE"},
+                                        {"symbol": "D05.SI", "exchange": "SGX"}]
+        out = market.combined_search(saxo)("x")
+        assert [(r["symbol"], r["at_saxo"]) for r in out] == [
+            ("IBM", True), ("D05.SI", False)]
+
+        def boom(q):
+            raise RuntimeError("down")
+        assert market.combined_search(boom)("x")[0]["symbol"] == "IBM"
+        tradingview.search = boom
+        with pytest.raises(market.MarketError, match="search unavailable"):
+            market.combined_search(boom)("x")
+    finally:
+        tradingview.search = orig

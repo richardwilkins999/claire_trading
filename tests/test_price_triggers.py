@@ -325,10 +325,10 @@ def test_amount_buy_and_default_limit():
     assert t["amount_base"] == 1000.0 and t["qty"] is None
     assert t["limit_price"] == t["trigger_price"] == 103.5
     assert t["rule"] == ("Buy 1000.00 worth of CSCO when price ≤ 103.50 "
-                         "(limit 103.50)")
+                         "(purchase price 103.50)")
     assert make(w, trigger_price=5, limit_price=5.01, stop=4.5, target=None,
                 ticker="CSCO")["rule"] == ("Buy 5 CSCO when price ≤ 5.00 "
-                                           "(limit 5.01)")
+                                           "(purchase price 5.01)")
 
 
 # ── auto mode: paper only ────────────────────────────────────────────────

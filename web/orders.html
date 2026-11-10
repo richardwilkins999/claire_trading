@@ -1,5 +1,5 @@
 <meta charset="utf-8"><title>Claire — Orders</title>
-<link rel="stylesheet" href="/style.css"><script src="/nav.js"></script><script src="/orderinfo.js"></script><script src="/live.js"></script>
+<link rel="stylesheet" href="/style.css"><script src="/nav.js"></script><script src="/orderinfo.js"></script><script src="/live.js"></script><script src="/orderform.js"></script>
 <script>nav('/orders')</script>
 <style>
   .ot td { vertical-align:top; font-size:.85rem; }
@@ -7,6 +7,26 @@
   .gap-near { color:var(--warn); font-weight:600; }
   #editor .card { border-color:var(--warn); }
   #editor label { font-size:.85rem; }
+  /* one card per stock; its orders grouped by type */
+  .stock { background:var(--panel); border:1px solid var(--line);
+    border-radius:12px; margin:.7rem 0; overflow:hidden; }
+  .stock-head { display:flex; flex-wrap:wrap; align-items:baseline;
+    gap:.4rem 1rem; padding:.6rem .9rem; border-bottom:1px solid var(--line);
+    background:var(--panel2); }
+  .stock-head .tk { font-size:1.15rem; font-weight:700; letter-spacing:.03em; }
+  .stock-head .px { font-family:var(--mono); }
+  .stock table { border:none; border-radius:0; background:transparent; }
+  .stock td { vertical-align:top; font-size:.85rem; }
+  .stock tr.grp td { background:rgba(255,255,255,.02); color:var(--muted);
+    font-size:.68rem; letter-spacing:.1em; text-transform:uppercase;
+    padding:.35rem .9rem; font-weight:600; }
+  .stock tr.why td { padding-top:0; border-top:none; color:var(--dim);
+    font-size:.75rem; }
+  .stock td.type { white-space:nowrap; font-weight:600; }
+  .stock td.act { white-space:nowrap; text-align:right; }
+  .summary { display:flex; flex-wrap:wrap; gap:.4rem 1.2rem; margin:.2rem 0 .4rem; }
+  .summary b { font-size:1.05rem; }
+  .num { text-align:right; }
 </style>
 <main>
   <div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem">
@@ -16,21 +36,18 @@
   </div>
   <div id="sync" class="small" style="margin:-.2rem 0 .6rem"></div>
   <p class="muted">Everything still outstanding, in one place: orders you
-    approved that have not filled, the stop and target orders guarding your
+    approved that have not filled, the stop-loss and take-profit orders guarding your
     positions, and your price triggers. Edit or cancel any of them here.</p>
   <div id="editor"></div>
 
   <h2>Outstanding orders</h2>
-  <p class="muted small" style="margin-top:-.3rem">Buys and sells you approved
-    that have not filled yet. Under each one: what has to happen for it to go
-    through, against today's price.</p>
-  <div id="entries">loading…</div>
-
-  <h2>Price triggers</h2>
-  <div id="triggers">loading…</div>
-
-  <h2>Protective stops &amp; targets</h2>
-  <div id="legs">loading…</div>
+  <div id="summary" class="summary small"></div>
+  <p class="muted small" style="margin-top:0">One card per stock. Inside it:
+    <b>orders</b> you approved that have not filled, the <b>stop-loss and
+    take-profit</b> that guard the position (or will, once the buy fills), and
+    your <b>price triggers</b> for that stock.</p>
+  <div id="groups">loading…</div>
+  <div id="done-triggers"></div>
 
   <details class="small" style="margin-top:1.5rem" open>
     <summary class="muted">About protective stops &amp; targets, and what the columns mean</summary>
@@ -47,11 +64,19 @@
         target.</li>
       <li>They are a pair: when one fills, the broker cancels the other.</li>
     </ul>
-    <p style="margin:.2rem 0"><b>Shares</b> how many it would sell ·
-      <b>Sells at</b> the stop or target price · <b>Current price</b> the latest
-      price and how far it has to move to reach the order · <b>You paid</b> your
-      buy price · <b>If it fills</b> profit or loss on those shares versus
-      what you paid, before fees · <b>Value</b> shares × the order price.</p>
+    <p style="margin:.2rem 0">Every buy is sent to Saxo <b>together with its
+      stop</b> (and target, if set) in one request. (SGX on the Saxo SIM
+      account and the built-in sims are simulated by Claire: there
+      <b>Claire's sim</b> holds the stop-loss and take-profit and fills them
+      when the live price reaches them — checked every 5 minutes while the
+      market is open, so a fast fall can sell below the stop.) Until the buy fills they are
+      <b>attached</b>; once it fills they are <b>working</b>. A buy still queued
+      here shows its stop-loss and take-profit <b>with the order</b>.</p>
+    <p style="margin:.2rem 0"><b>Price</b> the purchase or sale price, stop-loss, take-profit or trigger price ·
+      <b>Distance</b> how far the price has to move from the last price to reach
+      it · <b>Value / outcome</b> shares × price, or for a stop/target the profit
+      or loss on those shares versus what you paid (or the limit, before the buy
+      fills), before fees.</p>
     <p style="margin:.2rem 0" class="muted">To change them, sell the position
       (Portfolio, Saxo accounts or Watchlist — that cancels them first) or
       change them on Saxo's platform.</p>
@@ -89,35 +114,185 @@ async function apiDelete(path) {
   return data;
 }
 
-/* ── outstanding entry orders ─────────────────────────────────────── */
-function renderEntries() {
-  const rows = DATA.entries || [], el = document.getElementById('entries');
-  if (!rows.length) { el.innerHTML = '<p class="muted">No outstanding orders.</p>'; return; }
-  el.innerHTML = `<table class="ot"><tr><th>Stock</th><th>Order</th><th class="num">Shares</th><th class="num">Limit price<br><span class="muted small">per share</span></th>
-    <th class="num">Value</th><th class="num">Current price</th><th class="num">Stop</th><th class="num">Target</th>
-    <th>Account</th><th>Status</th><th>Expires</th><th></th></tr>${rows.map(o => {
-    const p = last(o.symbol), editable = o.status !== 'partially_filled';
-    return `<tr>
-      <td><b>${esc(o.ticker)}</b><br><span class="muted small">${esc(o.exchange)}</span></td>
-      <td><b>${esc(o.side.toUpperCase())}</b>
-        <br><a class="small" href="/trading#${esc(o.work_item_id || '')}">${esc(o.work_item_id || '')}</a></td>
-      <td class="num"><b>${fmt(o.qty, o.qty % 1 ? 4 : 0)}</b>${o.filled ? `<br><span class="small">${fmt(o.filled, 0)} filled</span>` : ''}</td>
-      <td class="num">${px(o.limit_price)}</td>
-      <td class="num"><b>${o.limit_price ? fmt(o.qty * o.limit_price, 2) : '—'}</b> ${esc(o.currency || '')}</td>
-      <td class="num">${px(p)}<br>${gap(o.limit_price, p)}</td>
-      <td class="num">${px(o.stop_loss)}</td>
-      <td class="num">${px(o.take_profit)}</td>
-      <td>${esc(o.account)}</td>
-      <td>${o.status === 'pending_session' ? '<span class="pill warn">queued</span>'
-        : `<span class="pill ok">${esc(o.status.replace('_', ' '))}</span>`}
-        <br><span class="small muted">${esc(o.where)}</span>
-        <br><span class="small muted">approved ${when(o.created_at)}</span></td>
-      <td class="small">${when(o.expires_at)}</td>
-      <td>${editable && o.work_item_id ? `<button class="ghost" onclick="editOrder(${jsArg(o.id)})">✎ Edit</button>
-        <button class="ghost" onclick="cancelOrder(${jsArg(o.id)})">✖ Cancel</button>`
-        : '<span class="small muted">part filled — sell or manage at Saxo</span>'}</td></tr>
-      <tr><td></td><td colspan="11" class="small" style="padding-top:0;border-top:none">${orderNeeds(o)}</td></tr>`;
-  }).join('')}</table>`;
+/* ── one card per stock, its orders grouped by type ───────────────── */
+function stockKey(o) { return `${o.ticker}|${o.exchange}`; }
+function qtyS(q) { return q == null ? '—' : fmt(q, q % 1 ? 4 : 0); }
+/* Claire: a buy trigger on Saxo (not the SGX shares saxo-paper simulates)
+   gets a real trailing STOP at Saxo; elsewhere the % is the watcher's alert */
+function trigTrailName(t) {
+  const saxo = (t.broker || '').startsWith('saxo');
+  const local = t.broker === 'saxo' && t.exchange === 'SGX';
+  return saxo && !local ? 'trailing stop' : 'trailing alert';
+}
+function legPrice(o) { return o.leg === 'stop' ? (o.stop_loss ?? o.limit_price) : (o.limit_price ?? o.take_profit); }
+function legPL(o, price) {
+  if (!o.entry_price || !price) return null;
+  return (o.side === 'sell' ? price - o.entry_price : o.entry_price - price) * o.qty;
+}
+function signed(v) { return `<b class="${v >= 0 ? 'ok' : 'bad'}">${v >= 0 ? '+' : ''}${fmt(v, 2)}</b>`; }
+
+function groupStocks() {
+  const g = new Map();
+  const get = o => {
+    const k = stockKey(o);
+    if (!g.has(k)) g.set(k, {ticker: o.ticker, exchange: o.exchange, symbol: o.symbol,
+      currency: o.currency, last: null, entries: [], legs: [], triggers: [], accounts: new Set()});
+    const s = g.get(k);
+    if (s.last == null) s.last = o.last ?? last(o.symbol);
+    if (!s.currency && o.currency) s.currency = o.currency;
+    if (o.account) s.accounts.add(o.account);
+    return s;
+  };
+  (DATA.entries || []).forEach(o => get(o).entries.push(o));
+  (DATA.legs || []).forEach(o => get(o).legs.push(o));
+  (DATA.triggers || []).filter(t => t.status === 'active').forEach(t => get(t).triggers.push(t));
+  return [...g.values()].sort((a, b) => a.ticker.localeCompare(b.ticker));
+}
+
+const COLS = 8;
+function grpRow(label, hint) {
+  return `<tr class="grp"><td colspan="${COLS}">${label}${hint ? ` <span style="text-transform:none;letter-spacing:0;font-weight:400"> — ${hint}</span>` : ''}</td></tr>`;
+}
+function entryRows(o) {
+  const editable = o.status !== 'partially_filled';
+  const status = o.status === 'pending_session' ? '<span class="pill warn">queued</span>'
+    : `<span class="pill ok">${esc(o.status.replace('_', ' '))}</span>`;
+  return `<tr>
+    <td class="type">${o.side === 'buy' ? '🟢' : '🔴'} ${esc(o.side.toUpperCase())} <span class="muted small">limit</span>
+      <br><a class="small" href="/trading#${esc(o.work_item_id || '')}">${esc(o.work_item_id || '')}</a></td>
+    <td class="num"><b>${qtyS(o.qty)}</b>${o.filled ? `<br><span class="small">${fmt(o.filled, 0)} filled</span>` : ''}</td>
+    <td class="num">${px(o.limit_price)}${o.trail_pct != null ? (o.trail_is_stop
+      ? `<br><span class="small muted" title="an order at Saxo: the stop-loss follows the best price since you bought at this distance, never moves back, and sells automatically">trailing stop ${fmt(o.trail_pct, 1)}%</span>`
+      : `<br><span class="small muted" title="not an order: the watcher alerts you if the price falls this far below its best since you bought">trailing alert ${fmt(o.trail_pct, 1)}%</span>`) : ''}</td>
+    <td class="num">${gap(o.limit_price, o.last ?? last(o.symbol))}</td>
+    <td class="num">${o.limit_price ? fmt(o.qty * o.limit_price, 2) : '—'} <span class="muted small">${esc(o.currency || '')}</span></td>
+    <td>${esc(o.account)}</td>
+    <td>${status}<br><span class="small muted">${esc(o.where)}</span>
+      <br><span class="small muted">approved ${when(o.created_at)} · expires ${when(o.expires_at)}</span></td>
+    <td class="act">${editable && o.work_item_id ? `<button class="ghost" onclick="editOrder(${jsArg(o.id)})">✎ Edit</button>
+      <button class="ghost" onclick="cancelOrder(${jsArg(o.id)})">✖ Cancel</button>`
+      : '<span class="small muted">part filled — sell or manage at Saxo</span>'}</td></tr>
+    <tr class="why"><td></td><td colspan="${COLS - 1}">${orderNeeds(o)}</td></tr>`;
+}
+function legRow(o, parent) {
+  const attached = !!parent;
+  const price = legPrice(o), sell = o.side === 'sell';
+  /* before the buy fills there is no price paid yet: measure from its limit */
+  const pl = legPL(attached && !o.entry_price && parent.limit_price
+    ? {...o, entry_price: parent.limit_price} : o, price);
+  const vs = attached && !o.entry_price ? `the ${px(parent && parent.limit_price)} limit` : `${px(o.entry_price)} paid`;
+  const stop = o.leg === 'stop';
+  return `<tr>
+    <td class="type">${stop ? (o.trail_is_stop ? '🛑 Trailing stop' : '🛑 Stop-loss') : '🎯 Take-profit'}<br><span class="muted small">${sell ? 'sells' : 'buys back'}${
+      stop && o.trail_is_stop && o.trails ? ` · trails ${fmt(o.trails, 2)} (${fmt(o.trail_pct, 1)}%) below the best price` : ''}</span></td>
+    <td class="num">${qtyS(o.qty)}</td>
+    <td class="num"><b>${px(price)}</b></td>
+    <td class="num">${gap(price, o.last ?? last(o.symbol))}</td>
+    <td class="num">${pl == null ? `${price ? fmt(o.qty * price, 2) : '—'} <span class="muted small">${esc(o.currency || '')}</span>`
+      : `if it fills ${signed(pl)}<br><span class="muted small">vs ${vs}</span>`}</td>
+    <td>${esc(o.account)}</td>
+    <td>${attached ? '<span class="pill warn">attached</span><br><span class="small muted">sent with the buy — works once it fills</span>'
+      : o.legs_at_broker === false
+        ? '<span class="pill ok">working</span><br><span class="small muted">held by Claire\'s sim since ' + when(o.placed_at || o.created_at) + ' — checked against the live price every 5 minutes while the market is open</span>'
+        : '<span class="pill ok">working</span><br><span class="small muted">at the broker since ' + when(o.placed_at || o.created_at) + '</span>'}</td>
+    <td class="act"></td></tr>`;
+}
+/* an entry's stop/target that the broker does not hold yet (the order is
+   still queued here): listed so every buy shows its stop */
+function plannedRows(o) {
+  const out = [];
+  const status = o.legs_at_broker === false
+    ? '<span class="pill">with the order</span><br><span class="small muted">Claire\'s sim holds it once the buy fills, and fills it when the live price reaches it</span>'
+    : '<span class="pill">with the order</span><br><span class="small muted">' +
+      (o.status === 'pending_session' ? 'sent together with the buy when the market opens' : 'part of this order') + '</span>';
+  const prot = o.side === 'buy' ? 'sells' : 'buys back';
+  for (const [kind, price] of [['stop', o.stop_loss], ['target', o.take_profit]]) {
+    if (price == null) continue;
+    out.push(`<tr>
+      <td class="type">${kind === 'stop' ? (o.trail_is_stop ? '🛑 Trailing stop' : '🛑 Stop-loss') : '🎯 Take-profit'}<br><span class="muted small">${prot}${
+        kind === 'stop' && o.trail_is_stop ? ` · starts here, then trails ${fmt(o.trail_pct, 1)}% of the purchase price below the best price` : ''}</span></td>
+      <td class="num">${qtyS(o.qty)}</td><td class="num"><b>${px(price)}</b></td>
+      <td class="num">${gap(price, o.last ?? last(o.symbol))}</td>
+      <td class="num">${o.limit_price ? signed((price - o.limit_price) * o.qty * (o.side === 'buy' ? 1 : -1))
+        + '<br><span class="muted small">vs the ' + px(o.limit_price) + ' limit</span>' : '—'}</td>
+      <td>${esc(o.account)}</td><td>${status}</td><td class="act"></td></tr>`);
+  }
+  return out.join('');
+}
+function triggerRow(t) {
+  return `<tr>
+    <td class="type">🎯 #${esc(t.id)} <span class="muted small">${esc(t.direction || '')}</span></td>
+    <td class="num">${t.qty != null ? qtyS(t.qty) : `<span class="small">${fmt(t.amount_base, 2)}</span>`}</td>
+    <td class="num">${esc(COND[t.condition] || '')} ${px(t.trigger_price)}</td>
+    <td class="num">${gap(t.trigger_price, last(t.symbol))}</td>
+    <td class="small">${esc(t.rule)}${t.stop_loss != null ? `<br><span class="muted">stop-loss ${px(t.stop_loss)}${
+      t.take_profit != null ? ' · take-profit ' + px(t.take_profit) : ''}${t.trail_pct != null ? ' · ' + trigTrailName(t) + ' ' + esc(t.trail_pct) + '%' : ''}</span>` : ''}${
+      t.note ? `<br>📝 ${esc(t.note)}` : ''}</td>
+    <td>${esc(t.account)}</td>
+    <td>${t.mode === 'auto' ? '<b class="warn">⚡ places automatically</b>' : 'asks you'}
+      <br><span class="small muted">expires ${when(t.expires_at)}</span></td>
+    <td class="act"><button class="ghost" onclick="editTrigger(${jsArg(t.id)})">✎ Edit</button>
+      <button class="ghost" onclick="cancelTrigger(${jsArg(t.id)})">✖ Cancel</button></td></tr>`;
+}
+function renderGroups() {
+  const el = document.getElementById('groups'), stocks = groupStocks();
+  const nE = (DATA.entries || []).length, nL = (DATA.legs || []).length;
+  const nT = (DATA.triggers || []).filter(t => t.status === 'active').length;
+  document.getElementById('summary').innerHTML = stocks.length
+    ? `<span><b>${stocks.length}</b> stock${stocks.length === 1 ? '' : 's'}</span>
+       <span><b>${nE}</b> waiting to fill</span><span><b>${nL}</b> stop / target</span>
+       <span><b>${nT}</b> price trigger${nT === 1 ? '' : 's'}</span>` : '';
+  if (!stocks.length) {
+    el.innerHTML = '<p class="muted">Nothing outstanding — no orders waiting, no stops or targets working, no active price triggers. Add a trigger from the <a href="/watchlist">Watchlist</a>.</p>';
+    renderDoneTriggers();
+    return;
+  }
+  el.innerHTML = stocks.map(s => {
+    const entryIds = new Set(s.entries.map(o => o.id));
+    const legParents = new Set(s.legs.map(l => l.parent_order_id));
+    const attached = s.legs.filter(l => entryIds.has(l.parent_order_id));
+    const working = s.legs.filter(l => !entryIds.has(l.parent_order_id))
+      .sort((a, b) => (a.leg === 'stop' ? 0 : 1) - (b.leg === 'stop' ? 0 : 1));
+    let body = '';
+    if (s.entries.length) {
+      body += grpRow(`Orders waiting to fill (${s.entries.length})`);
+      for (const o of s.entries) {
+        body += entryRows(o);
+        const mine = attached.filter(l => l.parent_order_id === o.id)
+          .sort((a, b) => (a.leg === 'stop' ? 0 : 1) - (b.leg === 'stop' ? 0 : 1));
+        if (mine.length) body += mine.map(l => legRow(l, o)).join('');
+        else if (!legParents.has(o.id)) body += plannedRows(o);
+      }
+    }
+    if (working.length) body += grpRow(`Protecting your shares (${working.length})`,
+      'they work at the broker even when Claire is off; when one fills the other is cancelled')
+      + working.map(l => legRow(l, null)).join('');
+    if (s.triggers.length) body += grpRow(`Price triggers (${s.triggers.length})`)
+      + s.triggers.map(triggerRow).join('');
+    const counts = [s.entries.length && `${s.entries.length} order${s.entries.length > 1 ? 's' : ''}`,
+      s.legs.length && `${s.legs.length} stop/target`,
+      s.triggers.length && `${s.triggers.length} trigger${s.triggers.length > 1 ? 's' : ''}`].filter(Boolean).join(' · ');
+    return `<div class="stock">
+      <div class="stock-head"><span class="tk">${esc(s.ticker)}</span>
+        <span class="muted">${esc(s.exchange)}</span>
+        <span>last <b class="px">${px(s.last)}</b> <span class="muted small">${esc(s.currency || '')}</span></span>
+        <span class="muted small">${esc([...s.accounts].join(' · '))}</span>
+        <span class="muted small" style="margin-left:auto">${counts}</span></div>
+      <table><tr><th>Type</th><th class="num">Shares</th><th class="num">Price</th><th class="num">Distance</th>
+        <th class="num">Value / outcome</th><th>Account</th><th>Status</th><th></th></tr>${body}</table></div>`;
+  }).join('');
+  renderDoneTriggers();
+}
+function renderDoneTriggers() {
+  const done = (DATA.triggers || []).filter(t => t.status !== 'active');
+  document.getElementById('done-triggers').innerHTML = done.length
+    ? `<details style="margin-top:.6rem"><summary class="muted small">Price triggers fired, cancelled or expired in the last 7 days (${done.length})</summary>
+       <table class="ot" style="margin-top:.3rem"><tr><th>#</th><th>Stock</th><th>Rule</th><th>Account</th><th>Status</th><th>When</th></tr>${done.map(t => `<tr>
+         <td>#${esc(t.id)}</td><td><b>${esc(t.ticker)}</b> <span class="muted small">${esc(t.exchange)}</span></td>
+         <td>${esc(t.rule)}</td><td>${esc(t.account)}</td>
+         <td><span class="pill ${t.status === 'failed' ? 'bad' : ''}">${esc(t.status)}</span>
+           <br><span class="small">${esc(t.status_reason || t.outcome || '')}</span></td>
+         <td class="small">${when(t.expires_at)}</td></tr>`).join('')}</table></details>` : '';
 }
 function orderBy(id) { return (DATA.entries || []).find(o => o.id === id); }
 async function cancelOrder(id) {
@@ -126,7 +301,7 @@ async function cancelOrder(id) {
   const where = o.status === 'pending_session'
     ? 'Claire is still holding it — nothing has been sent.'
     : 'It is cancelled at ' + o.account + ', together with its stop and target.';
-  if (!confirm(`Cancel ${o.side.toUpperCase()} ${fmt(o.qty, 0)} ${o.ticker} at a limit price of ${o.limit_price} per share?\n\n${where}`)) return;
+  if (!confirm(`Cancel ${o.side.toUpperCase()} ${fmt(o.qty, 0)} ${o.ticker} at ${o.side === 'buy' ? 'a purchase' : 'a sale'} price of ${o.limit_price} per share?\n\n${where}`)) return;
   try {
     await api('/api/order-control', {work_item_id: o.work_item_id, action: 'cancel'});
     toast(o.ticker + ' order cancelled ✓');
@@ -136,81 +311,99 @@ async function cancelOrder(id) {
 function editOrder(id) {
   const o = orderBy(id);
   if (!o) return;
-  const atVenue = o.status !== 'pending_session';
+  const atVenue = o.status !== 'pending_session', buy = o.side === 'buy';
+  const ccy = esc(o.currency || '');
   document.getElementById('editor').innerHTML = `<div class="card">
     <h3 style="font-size:1rem;margin:0">Edit order — ${esc(o.side.toUpperCase())} ${esc(o.ticker)} on ${esc(o.account)}</h3>
     <p class="muted small">${atVenue
-      ? 'This order is at the broker. Saving <b>cancels it there</b> and puts a new order with these levels on Approvals for you to approve.'
+      ? 'This order is at the broker. Saving <b>cancels it there</b> and puts a new order with these prices on Approvals for you to approve.'
       : 'Claire is still holding this order (sent when the market opens), so it is changed in place — no new approval needed.'}
-      Saxo refuses a stop or target more than 25% from the limit price.</p>
-    <div class="row" style="gap:.5rem;flex-wrap:wrap">
-      <label>shares <input id="e-qty" type="number" min="1" step="1" style="width:80px" value="${esc(o.qty)}"></label>
-      <label>limit price <span class="muted small">(per share)</span> <input id="e-entry" type="number" min="0" step="0.01" style="width:100px" value="${esc(o.limit_price ?? '')}"></label>
-      <label>stop <input id="e-stop" type="number" min="0" step="0.01" style="width:100px" value="${esc(o.stop_loss ?? '')}"></label>
-      <label>target <input id="e-target" type="number" min="0" step="0.01" style="width:100px" value="${esc(o.take_profit ?? '')}"></label>
-      <span id="e-val" class="small"></span>
+      Saxo refuses a stop-loss or take-profit more than 25% from the price.</p>
+    <div class="row" style="gap:.5rem 1rem;flex-wrap:wrap">
+      <label>Shares <input id="e-qty" type="number" min="1" step="1" style="width:80px" value="${esc(o.qty)}"></label>
+      <label title="${buy ? 'the most you pay per share — the order buys at this price or lower'
+        : 'the least you accept per share — the order sells at this price or higher'}">${buy ? 'Purchase price' : 'Sale price'}
+        <input id="e-entry" type="number" min="0" step="0.01" style="width:100px" value="${esc(o.limit_price ?? '')}"> ${ccy}</label>
+      <label title="${buy ? 'sells all the shares at the market if the price FALLS to this' : 'buys back at the market if the price RISES to this'}">Stop-loss
+        <input id="e-stop" type="number" min="0" step="0.01" style="width:100px" value="${esc(o.stop_loss ?? '')}"></label>
+      <label title="${buy ? 'sells if the price RISES to this' : 'buys back if the price FALLS to this'} — leave blank for none">Take-profit
+        <input id="e-target" type="number" min="0" step="0.01" style="width:100px" value="${esc(o.take_profit ?? '')}"></label>
+      ${buy ? `<label title="${o.legs_at_broker
+          ? 'an order at Saxo: it replaces the stop-loss, follows the best price since you bought at this distance, never moves back, and sells automatically when hit'
+          : 'not an order: the watcher alerts you (and starts a sell review) if the price falls this far below its best since you bought — it rises with the price, never falls'}">${o.legs_at_broker ? 'Trailing stop' : 'Trailing alert'}
+        <input id="e-trail" type="number" min="0.5" max="90" step="0.5" style="width:70px" value="${esc(o.trail_pct ?? '')}"> %</label>` : ''}
+    </div>
+    <div id="e-val" class="small" style="margin:.4rem 0;line-height:1.5"></div>
+    <div class="row" style="gap:.5rem">
       <button onclick="saveOrder(${jsArg(o.id)})">Save</button>
       <button class="ghost" onclick="closeEditor()">Close</button>
     </div><p id="e-msg" class="small"></p></div>`;
-  const upd = () => {
-    const q = Number(document.getElementById('e-qty').value), l = Number(document.getElementById('e-entry').value);
-    document.getElementById('e-val').innerHTML = q && l ? `≈ <b>${fmt(q * l, 2)} ${esc(o.currency || '')}</b>` : '';
-  };
-  ['e-qty', 'e-entry'].forEach(i => document.getElementById(i).oninput = upd); upd();
+  ['e-qty', 'e-entry', 'e-stop', 'e-target', 'e-trail'].forEach(i => {
+    const el = document.getElementById(i);
+    if (el) el.oninput = () => editSummary(o);
+  });
+  editSummary(o);
   window.scrollTo({top: 0, behavior: 'smooth'});
+}
+function editVals() {
+  const n = k => { const el = document.getElementById('e-' + k); return !el || el.value === '' ? null : Number(el.value); };
+  return {entry: n('entry'), stop: n('stop'), target: n('target'), qty: n('qty'), trail_pct: n('trail')};
+}
+/* what is wrong with the edit — checked against where the order really
+   fills: a buy at a price above the market fills at about the market */
+function editProblems(o, v) {
+  const buy = o.side === 'buy', live = o.last ?? last(o.symbol), out = [];
+  if (!v.entry) return [`Enter a ${buy ? 'purchase' : 'sale'} price.`];
+  const fill = fillPrice(v.entry, live, buy);
+  const at = fill !== v.entry ? `the current price, where it fills (${money(fill, '')})` : `the ${buy ? 'purchase' : 'sale'} price`;
+  if (buy && !v.stop) out.push('A buy needs a stop-loss.');
+  if (v.stop != null && (buy ? v.stop >= fill : v.stop <= fill))
+    out.push(`The stop-loss must be ${buy ? 'below' : 'above'} ${at} — otherwise it ${buy ? 'sells' : 'buys back'} straight away.`);
+  if (v.target != null && (buy ? v.target <= fill : v.target >= fill))
+    out.push(`The take-profit must be ${buy ? 'above' : 'below'} ${at}.`);
+  if (String(o.broker || '').startsWith('saxo'))
+    for (const [nm, x] of [['stop-loss', v.stop], ['take-profit', v.target]])
+      if (x && Math.abs(x - fill) / fill > 0.25) out.push(`Saxo refuses a ${nm} more than 25% from the price.`);
+  if (live && Math.abs(v.entry / live - 1) > 0.25)
+    out.push(`The ${buy ? 'purchase' : 'sale'} price is more than 25% from the current price (${money(live, '')}) — the desk will refuse it.`);
+  if (v.trail_pct != null && (v.trail_pct < 0.5 || v.trail_pct > 90)) out.push('The trailing %% must be between 0.5% and 90%.'.replace('%%', o.legs_at_broker ? 'stop' : 'alert'));
+  return out;
+}
+function editSummary(o) {
+  const el = document.getElementById('e-val');
+  if (!el) return;
+  const v = editVals(), buy = o.side === 'buy', ccy = esc(o.currency || '');
+  const live = o.last ?? last(o.symbol), fill = fillPrice(v.entry, live, buy);
+  const rows = [];
+  if (v.qty && fill) rows.push(`${buy ? 'Buy' : 'Sell'} <b>${fmt(v.qty, 0)}</b> at ${
+    fill !== v.entry ? `about the current price <b>${money(fill, ccy)}</b> (fills straight away)`
+    : `${buy ? 'up to' : 'no less than'} <b>${money(v.entry, ccy)}</b>${live ? ` — now ${money(live, ccy)}` : ''}`} ≈ <b>${money(v.qty * fill, ccy)}</b>`);
+  if (v.qty && fill && v.stop) rows.push(`Most you can lose: <b class="bad">−${money(Math.abs(fill - v.stop) * v.qty, ccy)}</b> (${fmt(Math.abs(fill - v.stop) / fill * 100, 1)}%)` +
+    (v.target ? ` · you could make <b class="ok">+${money(Math.abs(v.target - fill) * v.qty, ccy)}</b> (${fmt(Math.abs(v.target - fill) / fill * 100, 1)}%)` : ''));
+  if (buy) rows.push(trailLine(trailStart(fill, v.trail_pct), v.trail_pct, v.stop, fill, ccy, !!o.legs_at_broker).replace(/^t/, 'T'));
+  editProblems(o, v).forEach(m => rows.push(`<b class="bad">${m}</b>`));
+  el.innerHTML = rows.join('<br>');
 }
 async function saveOrder(id) {
   const o = orderBy(id), msg = document.getElementById('e-msg');
   if (!o) { msg.innerHTML = '<b class="bad">the order is no longer outstanding</b>'; return; }
-  const n = k => { const v = document.getElementById('e-' + k).value; return v === '' ? null : Number(v); };
-  const v = {entry: n('entry'), stop: n('stop'), target: n('target'), qty: n('qty')};
-  const buy = o.side === 'buy';
-  if (!v.entry) { msg.innerHTML = '<b class="bad">enter a limit price</b>'; return; }
-  if (v.stop != null && (buy ? v.stop >= v.entry : v.stop <= v.entry)) {
-    msg.innerHTML = `<b class="bad">the stop must be ${buy ? 'below' : 'above'} the limit price</b>`; return; }
-  if (v.target != null && (buy ? v.target <= v.entry : v.target >= v.entry)) {
-    msg.innerHTML = `<b class="bad">the target must be ${buy ? 'above' : 'below'} the limit price</b>`; return; }
+  const v = editVals(), probs = editProblems(o, v);
+  if (probs.length) { msg.innerHTML = `<b class="bad">${probs[0]}</b>`; return; }
+  const word = o.side === 'buy' ? 'purchase' : 'sale';
   if (o.status !== 'pending_session' && !confirm(
-      `Cancel the ${o.ticker} order at the broker and send a new one (limit price ${v.entry} per share) to Approvals?`)) return;
+      `Cancel the ${o.ticker} order at the broker and send a new one (${word} price ${v.entry} per share) to Approvals?`)) return;
   try {
     const out = await api('/api/order-control', {work_item_id: o.work_item_id, action: 'edit', ...v});
     msg.innerHTML = out.new_work_item_id
       ? '<b class="ok">✔ old order cancelled</b> — approve the new one on <a href="/approvals">Approvals →</a>'
-      : '<b class="ok">✔ saved</b> — Claire sends these levels when the market opens.';
+      : '<b class="ok">✔ saved</b> — Claire sends these prices when the market opens.';
     toast(o.ticker + ' order updated ✓');
     load();
   } catch (e) { msg.innerHTML = `<b class="bad">${esc(e.message)}</b>`; }
 }
 function closeEditor() { document.getElementById('editor').innerHTML = ''; }
 
-/* ── price triggers ───────────────────────────────────────────────── */
-function renderTriggers() {
-  const all = DATA.triggers || [], el = document.getElementById('triggers');
-  const active = all.filter(t => t.status === 'active'), done = all.filter(t => t.status !== 'active');
-  const row = t => {
-    const p = last(t.symbol);
-    return `<tr>
-      <td>#${esc(t.id)}</td>
-      <td>${esc(t.rule)}${t.stop_loss != null ? `<br><span class="muted small">stop ${px(t.stop_loss)}${
-        t.take_profit != null ? ' · target ' + px(t.take_profit) : ''}</span>` : ''}${
-        t.note ? `<br><span class="small">📝 ${esc(t.note)}</span>` : ''}</td>
-      <td class="num">${t.status === 'active' ? px(p) + '<br>' + gap(t.trigger_price, p) : ''}</td>
-      <td>${esc(t.account)}</td>
-      <td>${t.mode === 'auto' ? '<b class="warn">⚡ places automatically</b>' : 'asks you'}</td>
-      <td>${t.status === 'active' ? '<span class="pill ok">active</span>'
-        : `<span class="pill ${t.status === 'failed' ? 'bad' : ''}">${esc(t.status)}</span>
-           <br><span class="small">${esc(t.status_reason || t.outcome || '')}</span>`}</td>
-      <td class="small">${when(t.expires_at)}</td>
-      <td>${t.status === 'active' ? `<button class="ghost" onclick="editTrigger(${jsArg(t.id)})">✎ Edit</button>
-        <button class="ghost" onclick="cancelTrigger(${jsArg(t.id)})">✖ Cancel</button>` : ''}</td></tr>`;
-  };
-  const head = `<tr><th>#</th><th>Rule</th><th class="num">Current price</th><th>Account</th>
-    <th>When it hits</th><th>Status</th><th>Expires</th><th></th></tr>`;
-  el.innerHTML = (active.length ? `<table class="ot">${head}${active.map(row).join('')}</table>`
-      : '<p class="muted">No active triggers — add one from the <a href="/watchlist">Watchlist</a>.</p>') +
-    (done.length ? `<details style="margin-top:.4rem"><summary class="muted small">Fired, cancelled or expired
-      in the last 7 days (${done.length})</summary><table class="ot">${head}${done.map(row).join('')}</table></details>` : '');
-}
+/* ── price triggers: edit / cancel ────────────────────────────────── */
 function trigBy(id) { return (DATA.triggers || []).find(t => String(t.id) === String(id)); }
 async function cancelTrigger(id) {
   const t = trigBy(id);
@@ -232,13 +425,15 @@ function editTrigger(id) {
       <label>when price <select id="g-cond"><option value="lte" ${t.condition === 'lte' ? 'selected' : ''}>falls to ≤</option>
         <option value="gte" ${t.condition === 'gte' ? 'selected' : ''}>rises to ≥</option></select></label>
       <input id="g-trig" type="number" min="0" step="0.01" style="width:95px" value="${esc(t.trigger_price)}">
-      <label title="the most you pay (buy) or the least you accept (sell) once it fires">limit price (per share)
+      <label title="the most you pay (buy) or the least you accept (sell) once it fires">${t.direction === 'sell' ? 'Sale price' : 'Purchase price'}
         <input id="g-lim" type="number" min="0" step="0.01" style="width:95px" value="${esc(t.limit_price)}"></label>
       <span id="g-limnote" class="muted small"></span>
       ${amount ? `<label>amount <input id="g-amt" type="number" min="0" step="0.01" style="width:100px" value="${esc(t.amount_base)}"></label>`
         : `<label>shares <input id="g-qty" type="number" min="0" step="any" style="width:80px" value="${esc(t.qty)}"></label>`}
-      ${exit ? '' : `<label>stop <input id="g-stop" type="number" min="0" step="0.01" style="width:95px" value="${esc(t.stop_loss ?? '')}"></label>
-        <label>target <input id="g-tgt" type="number" min="0" step="0.01" style="width:95px" value="${esc(t.take_profit ?? '')}"></label>`}
+      ${exit ? '' : `<label>Stop-loss <input id="g-stop" type="number" min="0" step="0.01" style="width:95px" value="${esc(t.stop_loss ?? '')}"></label>
+        <label>Take-profit <input id="g-tgt" type="number" min="0" step="0.01" style="width:95px" value="${esc(t.take_profit ?? '')}"></label>
+        ${t.direction === 'buy' ? `<label title="${trigTrailName(t) === 'trailing stop' ? 'an order at Saxo: once it has bought, the stop-loss follows the best price at this distance and sells automatically when hit' : 'not an order: once it has bought, the watcher alerts you if the price falls this far below its best since you bought'}">${trigTrailName(t) === 'trailing stop' ? 'Trailing stop' : 'Trailing alert'}
+          <input id="g-trail" type="number" min="0.5" max="90" step="0.5" style="width:65px" value="${esc(t.trail_pct ?? '')}"> %</label>` : ''}`}
     </div>
     <div class="row" style="gap:.5rem;flex-wrap:wrap;margin-top:.4rem">
       <label>expires in <input id="g-days" type="number" min="1" max="365" step="1" style="width:60px" value="${days}"> days</label>
@@ -253,7 +448,7 @@ function editTrigger(id) {
   const trig = document.getElementById('g-trig'), lim = document.getElementById('g-lim');
   const note = document.getElementById('g-limnote');
   let linked = Number(lim.value) === Number(trig.value);
-  const show = () => { note.textContent = linked ? '= trigger price (follows it)' : 'own limit price — clear it to follow the trigger price'; };
+  const show = () => { note.textContent = linked ? '= trigger price (follows it)' : 'own price — clear it to follow the trigger price'; };
   trig.oninput = () => { if (linked) lim.value = trig.value; show(); };
   lim.oninput = () => { linked = lim.value === '' || Number(lim.value) === Number(trig.value); show(); };
   lim.onblur = () => { if (lim.value === '') { lim.value = trig.value; linked = true; show(); } };
@@ -270,7 +465,11 @@ async function saveTrigger(id) {
     mode: document.getElementById('g-mode').value, expires_in_days: n('days'),
     note: document.getElementById('g-note').value || null};
   if (t.qty == null) body.amount = n('amt'); else body.qty = n('qty');
-  if (t.trail_pct != null) body.trail_pct = t.trail_pct;
+  const trailEl = document.getElementById('g-trail');
+  if (trailEl) body.trail_pct = n('trail');
+  else if (t.trail_pct != null) body.trail_pct = t.trail_pct;
+  if (body.trail_pct != null && (body.trail_pct < 0.5 || body.trail_pct > 90)) {
+    msg.innerHTML = `<b class="bad">the ${trigTrailName(t)} must be between 0.5% and 90%</b>`; return; }
   for (const k of Object.keys(body)) if (body[k] == null) delete body[k];
   if (body.mode === 'auto' && !confirm('AUTOMATIC: you approve this order now. When the price hits, ' +
       'the desk places it without asking again (paper account). Continue?')) return;
@@ -280,28 +479,6 @@ async function saveTrigger(id) {
     toast('trigger updated ✓');
     load();
   } catch (e) { msg.innerHTML = `<b class="bad">${esc(e.message)}</b>`; }
-}
-
-/* ── protective legs ──────────────────────────────────────────────── */
-function renderLegs() {
-  const rows = DATA.legs || [], el = document.getElementById('legs');
-  if (!rows.length) { el.innerHTML = '<p class="muted">No stop or target orders working.</p>'; return; }
-  el.innerHTML = `<table class="ot"><tr><th>Stock</th><th>Type</th><th class="num">Shares</th>
-    <th class="num">Sells at</th><th class="num">Current price</th><th class="num">You paid</th>
-    <th class="num">If it fills</th><th class="num">Value</th><th>Account</th><th>Since</th></tr>${rows.map(o => {
-    const p = o.last ?? last(o.symbol), price = o.leg === 'stop' ? o.stop_loss ?? o.limit_price : o.limit_price ?? o.take_profit;
-    const sell = o.side === 'sell';
-    const pl = o.entry_price && price ? (sell ? price - o.entry_price : o.entry_price - price) * o.qty : null;
-    return `<tr><td><b>${esc(o.ticker)}</b><br><span class="muted small">${esc(o.exchange)}</span></td>
-      <td>${o.leg === 'stop' ? '🛑 stop-loss' : '🎯 take-profit'}<br><span class="muted small">${sell ? 'sells' : 'buys back'}</span></td>
-      <td class="num">${fmt(o.qty, 0)}</td>
-      <td class="num"><b>${px(price)}</b></td>
-      <td class="num">${px(p)}<br>${gap(price, p)}</td>
-      <td class="num">${px(o.entry_price)}</td>
-      <td class="num">${pl == null ? '—' : `<b class="${pl >= 0 ? 'ok' : 'bad'}">${pl >= 0 ? '+' : ''}${fmt(pl, 2)}</b>`}</td>
-      <td class="num">${price ? fmt(o.qty * price, 2) : '—'} ${esc(o.currency || '')}</td>
-      <td>${esc(o.account)}</td><td class="small">${when(o.placed_at || o.created_at)}</td></tr>`;
-  }).join('')}</table>`;
 }
 
 function liveEditing() {
@@ -378,10 +555,10 @@ async function load() {
   loadLive();
   try {
     DATA = await api('/api/orders');
-    renderEntries(); renderTriggers(); renderLegs(); renderSync();
+    renderGroups(); renderSync();
     document.getElementById('stamp').textContent = 'updated ' + new Date().toLocaleTimeString();
   } catch (e) {
-    document.getElementById('entries').innerHTML = `<p class="bad">${esc(e.message)}</p>`;
+    document.getElementById('groups').innerHTML = `<p class="bad">${esc(e.message)}</p>`;
   }
 }
 load();

@@ -130,6 +130,11 @@ MIGRATIONS = [
     "ALTER TABLE orders ADD COLUMN protect_state TEXT",
     "ALTER TABLE orders ADD COLUMN protect_note TEXT",
     "ALTER TABLE orders ADD COLUMN protect_alerted_at INTEGER",
+    # the trailing floor % approved with an entry: a venue that holds stops
+    # (Saxo) gets the bracket's stop as a TRAILING stop at that distance.
+    # On the row, not looked up at send time, so an order queued while the
+    # market is shut carries it to the custodian that places it.
+    "ALTER TABLE orders ADD COLUMN trail_pct REAL",
     "CREATE INDEX IF NOT EXISTS idx_orders_parent ON orders(parent_order_id)",
     # what the approval card should prefill for a manual trade (qty, size,
     # account, trailing floor) — the Sell button's "all 9 shares on Saxo SIM"

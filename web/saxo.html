@@ -1,5 +1,6 @@
 <meta charset="utf-8"><title>Claire — Saxo accounts</title>
 <link rel="stylesheet" href="/style.css"><script src="/nav.js"></script><script src="/charts.js"></script>
+<link rel="stylesheet" href="/orderform.css"><script src="/orderform.js"></script>
 <script src="/sell.js"></script>
 <script>nav('/saxo')</script>
 <style>
@@ -116,7 +117,7 @@ function render(d) {
       account_id: p.desk.account_id, label: ACCOUNT[d.env] + ' (' +
       p.desk.account_id + ')', held: Math.min(p.desk.held, p.amount ?? p.desk.held),
       price: p.current_price, currency: p.currency, whole: true,
-      source: 'saxo'});
+      source: 'saxo', avg: p.avg_open_price, symbol: p.chart_symbol});
   });
   const sellCell = p => !(p.desk && p.desk.held > 0)
     ? `<span class="muted" style="font-size:.7rem" title="The desk can only

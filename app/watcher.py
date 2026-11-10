@@ -18,6 +18,46 @@ MAX_FIRES_PER_DAY = 6
 GRACE = timedelta(minutes=30)   # still watch briefly after the close
 
 
+def position_floor(conn, instrument_id, account_id, side=1):
+    """(trail %, peak_base) the watcher uses for one position. No rule yet
+    means the default it will seed on its next tick."""
+    r = conn.execute("SELECT threshold, peak_base FROM price_alerts WHERE"
+                     " rule='trail_pct' AND instrument_id=? AND account_id=?"
+                     " AND side=?", (instrument_id, account_id, side)
+                     ).fetchone()
+    if r is None:
+        return float(AUTO_DROP_PCT), None
+    return float(r["threshold"]), r["peak_base"]
+
+
+def set_position_floor(conn, instrument_id, account_id, pct, side=1):
+    """Change the trailing floor of a position already held (Telegram
+    /floor). Only the rule's threshold changes: the high-water mark is kept,
+    so the floor still trails from the best price since entry. Returns the
+    previous %. An alert threshold, not an order — breaching it still only
+    starts a sell review that needs approval."""
+    pct = float(pct)
+    if not 0 < pct <= 90:
+        raise ValueError("the trailing alert must be between 0 and 90%")
+    before, _ = position_floor(conn, instrument_id, account_id, side)
+    cur = conn.execute(
+        "UPDATE price_alerts SET threshold=?, armed=1 WHERE rule='trail_pct'"
+        " AND instrument_id=? AND account_id=? AND side=?",
+        (pct, instrument_id, account_id, side))
+    if cur.rowcount == 0:
+        try:
+            conn.execute(
+                "INSERT INTO price_alerts (instrument_id, account_id, side,"
+                " rule, threshold, armed) VALUES (?,?,?,'trail_pct',?,1)",
+                (instrument_id, account_id, side, pct))
+        except sqlite3.IntegrityError:      # the watcher seeded it meanwhile
+            conn.execute(
+                "UPDATE price_alerts SET threshold=?, armed=1 WHERE"
+                " rule='trail_pct' AND instrument_id=? AND account_id=?"
+                " AND side=?", (pct, instrument_id, account_id, side))
+    return before
+
+
 class Watcher:
     def __init__(self, conn, repo, market, start_sell_review, *,
                  clock=time.time, cal=None):
@@ -243,9 +283,9 @@ class Watcher:
                     f"vs threshold {rule['threshold']}")
         needed = Decimal(str(rule["threshold"])) + ESCALATE_PCT * count
         off = (price_base / peak - 1) * 100
-        return (f"watcher: trailing stop breached — last {price_base:.2f}, "
+        return (f"watcher: trailing alert hit — last {price_base:.2f}, "
                 f"{off:+.1f}% from the best price since entry ({peak:.2f}); "
-                f"floor is {needed}%")
+                f"the alert is {needed}%")
 
     def _escalate(self, review, trig, price_base, count) -> bool:
         """A worsening position must reach the human, not just the counter.

@@ -152,14 +152,16 @@ def row_dict(r) -> dict:
 
 
 def describe(t) -> str:
-    """'Buy 50 STVN when price ≤ 5.00 (limit 5.00)' — for cards and alerts."""
+    """'Buy 50 STVN when price ≤ 5.00 (purchase price 5.00)' — for cards
+    and alerts (a sale price for a sell)."""
     size = (f"{from_micro(t['qty']).normalize():f} "
             if t["qty"] is not None
             else f"{fmt_price(t['amount_base'])} worth of ")
     verb = {"buy": "Buy", "exit": "Sell", "short": "Short-sell"}[t["kind"]]
     return (f"{verb} {size}{t['ticker']} when price "
             f"{SYMBOL[t['condition']]} {fmt_price(t['trigger_price'])}"
-            f" (limit {fmt_price(t['limit_price'])})")
+            f" ({'purchase' if t['kind'] == 'buy' else 'sale'} price"
+            f" {fmt_price(t['limit_price'])})")
 
 
 # ── create / cancel / list ───────────────────────────────────────────────

@@ -215,7 +215,7 @@ def test_watcher_escalating_alerts_launch_one_sell_review():
     assert len(r["fired"]) == 1
     assert reviews == ["NASDAQ:NVDA"]
     # the exit review is told WHY it was ordered (it used to start blind)
-    assert "watcher" in triggers[0] and "breached" in triggers[0]
+    assert "watcher" in triggers[0] and "trailing alert hit" in triggers[0]
     r = watcher.tick()                          # same price: escalation gate
     assert r["fired"] == []                     # needs a further 3% decline
     w.market.price = Decimal("86")
@@ -265,3 +265,56 @@ def test_production_deps_wire_the_gate_price_check():
     class Inst:
         ticker, exchange = "C07", "SGX"
     assert _last_price(M())(Inst()) == "31.20"
+
+
+# ── a buy approved by SHARES (the Approvals card's share count) ──────────
+def _shares_state(w, qty, lot=1):
+    st = w.state()
+    inst = st.instrument.model_copy(update={"lot_size": lot})
+    ap = st.approval.model_copy(update={"qty": qty, "size_base": 5000.0})
+    return st.model_copy(update={"approval": ap, "instrument": inst})
+
+
+def test_buy_by_shares_buys_exactly_that_many():
+    w = World()
+    out = w.execute(_shares_state(w, 7))
+    o = w.repo.order(out["order_ids"][0])
+    assert o["qty"] == to_micro("7")          # not re-sized from size_base
+
+
+def test_buy_by_shares_floors_to_the_venue_lot():
+    w = World()
+    out = w.execute(_shares_state(w, 250, lot=100))
+    assert w.repo.order(out["order_ids"][0])["qty"] == to_micro("200")
+    w2 = World()
+    with pytest.raises(Exception, match="less than one tradable lot"):
+        w2.execute(_shares_state(w2, 50, lot=100))
+
+
+# ── stop / target checked against the LIVE price, not just the limit ─────
+def _levels_state(w, stop, target, entry=110.0):
+    st = w.state()
+    th = st.thesis.model_copy(update={"entry_low": entry, "entry_high": entry,
+                                      "stop_loss": stop, "take_profit": target})
+    return st.model_copy(update={"thesis": th})
+
+
+def test_a_stop_above_the_live_price_is_refused_before_sending():
+    # limit 110 with the stock at 100: it fills at ~100, so a 105 stop
+    # (below the limit, so every earlier check passed) would sell at once
+    w = World(price="100")
+    with pytest.raises(ValueError, match="stop would sell straight away"):
+        w.execute(_levels_state(w, stop=105.0, target=130.0))
+    assert w.broker.snapshot()["orders"] == {}          # nothing was sent
+
+
+def test_a_take_profit_below_the_live_price_is_refused():
+    w = World(price="100")
+    with pytest.raises(ValueError, match="take-profit .* would sell straight away"):
+        w.execute(_levels_state(w, stop=90.0, target=99.0, entry=101.0))
+
+
+def test_levels_either_side_of_the_live_price_go_through():
+    w = World(price="100")
+    out = w.execute(_levels_state(w, stop=95.0, target=120.0, entry=110.0))
+    assert out["order_ids"]

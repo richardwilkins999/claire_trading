@@ -148,7 +148,38 @@ def test_orders_page_lists_queued_orders_legs_and_triggers(dash):
     d = httpx.get(base + "/api/orders", headers={"X-Dash-Key": key}).json()
     assert [l["leg"] for l in d["legs"]]                # CSCO stop + target
     assert all(l["status"] == "placed" for l in d["legs"])
+    # every row says whether the venue really holds a stop/target for it
+    assert all(isinstance(l["legs_at_broker"], bool) for l in d["legs"])
     assert d["entries"] == []                           # entry has filled
     assert "triggers" in d
     r = httpx.get(base + "/orders")
     assert r.status_code == 200 and b"Outstanding orders" in r.content
+
+
+def test_edit_a_queued_buy_changes_its_trailing_alert_in_place():
+    """The trailing alert is a watcher rule on the position, not part of the
+    order: editing a queued buy changes it at once."""
+    from app.watcher import position_floor
+    w = World()
+    o = queued(w)
+    oc.edit(w.repo, None, {"saxo": w.venue}, "wi_q", entry=100.0, stop=95.0,
+            target=110.0, trail_pct=6.5, ts=CLOSED)
+    pct, _ = position_floor(w.conn, o["instrument_id"], o["account_id"])
+    assert pct == 6.5
+    # Claire: the queued order itself carries the % — it is what Saxo gets
+    # as the trailing stop when the order is sent at the open
+    assert w.repo.order(o["id"])["trail_pct"] == 6.5
+
+
+def test_edit_at_the_venue_carries_the_trailing_alert_to_the_new_card():
+    w = World()
+    w.buy_with_legs(fill=False)
+    made = []
+
+    class Desk:
+        def manual_trade(self, *a, **kw):
+            made.append(kw)
+            return "wi_new"
+    oc.edit(w.repo, Desk(), {"saxo": w.venue}, "wi_buy", entry=101.0,
+            stop=96.0, target=112.0, trail_pct=9.0, ts=T0)
+    assert made[0]["suggested"]["trail_pct"] == 9.0

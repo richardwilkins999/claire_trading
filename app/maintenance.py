@@ -2,10 +2,13 @@
 
 Daily (and on demand from the Maintenance page) it:
   1. CHECKS — services, the custodian and broker sync, schedules, disk,
-     backups, Saxo sign-ins, and what is growing on disk;
+     backups, Saxo sign-ins, the
+     arbiter's plain-English notes, the stop-losses Claire's built-in sim
+     holds, and what is growing on disk;
   2. HOUSEKEEPS with fixed retention — rotates logs, keeps 7 daily backups,
      prunes finished runs' LangGraph checkpoints and old health rows, archives
-     old narratives, and deletes old Claude SDK transcripts;
+     old narratives, deletes old Claude SDK transcripts, and drops the
+     built-in sim's long-finished orders;
   3. asks the `maintainer` agent for a short plain-English status note.
 
 Plain code does every check and every deletion. The AI only reads the
@@ -37,6 +40,7 @@ HEALTH_DAYS = 30                        # service_health rows
 NARRATIVE_DAYS = 30                     # archived runs' write-ups → tar.gz
 SDK_TRANSCRIPT_DAYS = 30                # Claude SDK session transcripts
 RUNS_KEEP = 90                          # maintenance_runs rows
+SIM_ORDERS_DAYS = 30                    # the built-in sim's finished orders
 
 TERMINAL = ("done", "rejected", "expired", "failed", "cancelled")
 STATUS_RANK = {"ok": 0, "info": 0, "warn": 1, "bad": 2}
@@ -93,7 +97,8 @@ class Maintainer:
         actions = []
         for step in (self.rotate_logs, self.backup, self.prune_checkpoints,
                      self.prune_health, self.archive_narratives,
-                     self.prune_sdk_transcripts, self.prune_runs):
+                     self.prune_sdk_transcripts, self.prune_runs,
+                     self.prune_sim_orders):
             try:
                 actions.append(step())
             except Exception as e:              # noqa: BLE001 — one failing
@@ -158,7 +163,9 @@ class Maintainer:
         for fn in (self._check_services, self._check_custodian,
                    self._check_brokers, self._check_schedules,
                    self._check_disk, self._check_backups,
-                   self._check_signins, self._check_growth):
+                   self._check_signins,
+                   self._check_arbiter_notes, self._check_sim_stops,
+                   self._check_growth):
             try:
                 out.extend(fn(now))
             except Exception as e:              # noqa: BLE001
@@ -291,6 +298,56 @@ class Maintainer:
                               "signed in" if state == "ok" else state))
         return out
 
+    def _check_arbiter_notes(self, now):
+        """The plain-English 'Arbiter's notes' on approval cards are written
+        ahead by a background thread (one LLM call per card). A card that
+        has waited 15 minutes without them means that writer is failing."""
+        from . import arbiter_notes
+        try:
+            waiting = arbiter_notes.pending(self.conn, limit=50)
+        except sqlite3.OperationalError:
+            return []
+        old = [wi for wi in waiting if (self.conn.execute(
+            "SELECT created_at FROM work_items WHERE id=?", (wi,)).fetchone()
+            or {"created_at": now})["created_at"] < now - 15 * 60]
+        if not old:
+            return [_check("arbiter_notes", "Arbiter's notes", "ok",
+                           "written for every waiting card")]
+        return [_check("arbiter_notes", "Arbiter's notes", "warn",
+                       f"{len(old)} card(s) without them",
+                       "the cards show the arbiter's own shorthand instead; "
+                       "check the recorder agent's provider on the Agents "
+                       "page: " + ", ".join(old[:5]))]
+
+    def _check_sim_stops(self, now):
+        """Stop-losses / take-profits held by Claire's built-in sim (not
+        at a broker): filled by the custodian against the live price. The
+        custodian flags a lost one (RECONCILE) and a bare position
+        (UNPROTECTED); this says how many there are and whether it checks."""
+        try:
+            (n,) = self.conn.execute(
+                "SELECT COUNT(*) FROM orders o WHERE o.leg IS NOT NULL AND"
+                " o.status IN ('placed','partially_filled') AND"
+                " o.broker_order_id LIKE 'sim-%'").fetchone()
+        except sqlite3.OperationalError:
+            return []
+        if not n:
+            return [_check("sim_stops", "Stops held by Claire's sim", "info",
+                           "none working")]
+        h = self._health("custodian")
+        age = now - h["checked_at"] if h else None
+        if age is None or age > 15 * 60:
+            return [_check("sim_stops", "Stops held by Claire's sim", "bad",
+                           f"{n} working, NOT being checked",
+                           "the custodian has not run for "
+                           f"{'ever' if age is None else str(age // 60) + ' min'}"
+                           " — nothing would sell at these stops; restart "
+                           "claire-api")]
+        return [_check("sim_stops", "Stops held by Claire's sim", "ok",
+                       f"{n} working, checked {age // 60} min ago",
+                       "checked against the live price every 5 minutes "
+                       "while each market is open")]
+
     def _check_growth(self, now):
         out = []
         items = [
@@ -416,6 +473,38 @@ class Maintainer:
             (cutoff,)).rowcount
         return {"action": "prune_health", "ok": True, "freed": 0,
                 "detail": f"{n} health rows older than {HEALTH_DAYS} days"}
+
+    def prune_sim_orders(self) -> dict:
+        """The built-in sim's memory (sim_orders): finished orders whose
+        book row is finished too, after SIM_ORDERS_DAYS. The book keeps its
+        own orders and executions for good."""
+        cutoff = int(self.clock()) - SIM_ORDERS_DAYS * DAY
+        try:
+            rows = self.conn.execute(
+                "SELECT id, book_json FROM sim_orders WHERE updated_at < ?",
+                (cutoff,)).fetchall()
+        except sqlite3.OperationalError:
+            return {"action": "prune_sim_orders", "ok": True, "freed": 0,
+                    "detail": "no built-in sim orders yet"}
+        gone = []
+        for r in rows:
+            try:
+                st = json.loads(r["book_json"]).get("status")
+            except (TypeError, ValueError):
+                continue
+            if st not in ("filled", "cancelled"):
+                continue                        # still resting: never
+            live = self.conn.execute(
+                "SELECT 1 FROM orders WHERE broker_order_id=? AND status IN"
+                " ('pending_session','placed','partially_filled')",
+                (r["id"],)).fetchone()
+            if live is None:
+                gone.append(r["id"])
+        self.conn.executemany("DELETE FROM sim_orders WHERE id=?",
+                              [(i,) for i in gone])
+        return {"action": "prune_sim_orders", "ok": True, "freed": 0,
+                "detail": f"{len(gone)} built-in sim orders finished over "
+                          f"{SIM_ORDERS_DAYS} days ago"}
 
     def archive_narratives(self) -> dict:
         """Write-ups of runs archived over 30 days ago → one tar.gz each in
