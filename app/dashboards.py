@@ -2913,6 +2913,7 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                     continue
                 avg, amt = p.get("avg_open_price") or 0, p["amount"]
                 p["current_price"] = cur
+                p["market_value"] = round(amt * cur, 2)
                 p["price_src"] = q.get("src") or "desk quote"
                 p["pnl"] = round((cur - avg) * amt, 2) if avg else None
                 p["pnl_pct"] = (round((cur - avg) / avg * 100 *

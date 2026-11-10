@@ -52,7 +52,7 @@ def test_positions_are_flattened(tok):
                      "currency": "SGD", "amount": 100, "avg_open_price": 10,
                      "current_price": 12, "market_value": None, "pnl": 200,
                      "pnl_base": None, "pnl_pct": 20.0,
-                     "exposure_base": 1200}]
+                     "exposure_base": 1200, "price_src": None}]
 
 
 def test_refresh_rotates_and_persists(tok):

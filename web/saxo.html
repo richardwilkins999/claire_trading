@@ -140,7 +140,7 @@ function render(d) {
       <td class="num">${p.cost_basis != null ? money(p.cost_basis, p.currency) : '—'}</td>
       <td class="num">${p.price_missing ? '<span class="warn" title="Saxo sent no price for this market">—</span>'
         : money(p.current_price)}${p.price_src ? `<br><span class="muted" style="font-size:.7rem"
-        title="Saxo sends no live price for this exchange on this account, so this is Claire's own quote">via ${esc(p.price_src)}</span>` : ''}</td>
+        title="${p.price_src === "Saxo's P/L" ? "Saxo sends no live price on this account, so this is the price Saxo used for its own profit/loss" : "Saxo sends no live price for this exchange on this account, so this is Claire's own quote"}">via ${esc(p.price_src)}</span>` : ''}</td>
       <td class="num">${money(p.market_value, p.currency)}</td>
       <td class="num">${signed(p.pnl, p.currency)}</td>
       <td class="num">${pctSigned(p.pnl_pct)}</td>

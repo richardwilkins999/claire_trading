@@ -337,9 +337,34 @@ def _get(what, which=None, *, env=os.environ, client=None, clock=time.time,
     return r.json()
 
 
+def _price_from_pl(view, amount):
+    """Saxo sends CurrentPrice 0 (CurrentPriceType "None") where the account
+    has no market data for that exchange — every position on the SIM
+    account, 2026-11-10. A zero price is NO price: it made every position
+    read "-100%". Saxo still values the position (ProfitLossOnTrade), so the
+    price it used is recovered from that: avg + P/L ÷ amount (a short's
+    negative amount gives the right sign too). Market value and exposure
+    follow; the base-currency rate is Saxo's own (P/L base ÷ P/L)."""
+    if view.get("CurrentPrice") or not amount:
+        return view
+    avg, pl = view.get("AverageOpenPrice"), view.get("ProfitLossOnTrade")
+    if not avg or pl is None:
+        return view
+    cur = avg + pl / amount
+    if cur <= 0:
+        return view
+    v = dict(view, CurrentPrice=round(cur, 6), _price_src="Saxo's P/L")
+    if not v.get("MarketValue"):
+        v["MarketValue"] = round(amount * cur, 2)
+    plb = view.get("ProfitLossOnTradeInBaseCurrency")
+    if not view.get("ExposureInBaseCurrency") and pl and plb is not None:
+        v["ExposureInBaseCurrency"] = round(abs(amount * cur * plb / pl), 2)
+    return v
+
+
 def _pct(cur, avg, amount):
     try:
-        if not avg:
+        if not avg or not cur:              # no price is not a -100% loss
             return None
         sign = 1 if (amount or 0) >= 0 else -1
         return round((cur - avg) / avg * 100 * sign, 2)
@@ -353,6 +378,7 @@ def positions(which=None, **kw):
     for p in _get("positions", which, **kw).get("Data", []):
         base, view = p.get("NetPositionBase", {}), p.get("NetPositionView", {})
         disp = p.get("DisplayAndFormat", {})
+        view = _price_from_pl(view, base.get("Amount"))
         out.append({
             "symbol": disp.get("Symbol"), "name": disp.get("Description"),
             "asset_type": base.get("AssetType"),
@@ -366,6 +392,8 @@ def positions(which=None, **kw):
             "pnl_pct": _pct(view.get("CurrentPrice"),
                             view.get("AverageOpenPrice"), base.get("Amount")),
             "exposure_base": view.get("ExposureInBaseCurrency"),
+            # set when Saxo sent no price and it was worked out from P/L
+            "price_src": view.get("_price_src"),
             "_net_id": p.get("NetPositionId"),
         })
     try:

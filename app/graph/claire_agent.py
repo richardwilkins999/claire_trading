@@ -69,19 +69,33 @@ def build_tools(conn, repo, desk, market):
 
     @tool
     def portfolio_summary() -> str:
-        """Positions, average costs, cash per account."""
+        """Positions, average costs, cash per account, from the desk's own
+        book. Two currencies per position — never mix them: the price per
+        share is in the STOCK's currency (avg_cost_per_share +
+        stock_currency, comparable with a broker's average open price), the
+        totals are in the ACCOUNT's base currency (cost_total_base +
+        base_currency, e.g. SGD for saxo-paper)."""
         out = {}
         for acct in conn.execute("SELECT id, broker, base_currency"
                                  " FROM broker_accounts"):
             positions = []
             for r in conn.execute(
-                    "SELECT instrument_id,"
-                    " SUM(CASE WHEN qty_opened<0 THEN -qty_remaining"
-                    "     ELSE qty_remaining END)/1e6 AS qty,"
-                    " SUM(qty_remaining*cost_per_share_base/1e12) AS cost"
-                    " FROM lots WHERE account_id=? AND qty_remaining>0"
-                    " GROUP BY instrument_id", (acct["id"],)):
-                positions.append(dict(r))
+                    "SELECT l.instrument_id, i.currency AS stock_currency,"
+                    " SUM(CASE WHEN l.qty_opened<0 THEN -l.qty_remaining"
+                    "     ELSE l.qty_remaining END)/1e6 AS qty,"
+                    " SUM(l.qty_remaining*e.price_native/1e12) /"
+                    "  (SUM(l.qty_remaining)/1e6) AS avg_cost_per_share,"
+                    " SUM(l.qty_remaining*l.cost_per_share_base/1e12)"
+                    "  AS cost_total_base"
+                    " FROM lots l JOIN executions e ON e.id=l.open_execution_id"
+                    " JOIN instruments i ON i.id=l.instrument_id"
+                    " WHERE l.account_id=? AND l.qty_remaining>0"
+                    " GROUP BY l.instrument_id", (acct["id"],)):
+                d = dict(r)
+                d["avg_cost_per_share"] = round(d["avg_cost_per_share"], 4)
+                d["cost_total_base"] = round(d["cost_total_base"], 2)
+                d["base_currency"] = acct["base_currency"]
+                positions.append(d)
             out[acct["id"]] = {
                 "broker": acct["broker"],
                 "cash": repo.cash_balance(acct["id"]) / 1e6,
