@@ -225,7 +225,7 @@ def _refusing_claire(conn, monkeypatch, refuse):
     from app.graph.claire_agent import Claire
     calls = []
 
-    def fake_stream(chat, system, prompt, tools):
+    def fake_stream(chat, system, prompt, tools, **kw):
         calls.append((chat.model, prompt))
         if chat.model in refuse or ("history" in refuse and "old" in prompt):
             raise RuntimeError("API Error: Opus 5's safeguards flagged this "
@@ -267,7 +267,7 @@ def test_other_errors_are_not_retried(conn, monkeypatch):
     from app.graph.claire_agent import Claire
     calls = []
 
-    def boom(chat, system, prompt, tools):
+    def boom(chat, system, prompt, tools, **kw):
         calls.append(chat.model)
         raise RuntimeError("network down")
         yield  # noqa — generator

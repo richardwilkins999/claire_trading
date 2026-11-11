@@ -4,12 +4,16 @@ act on it — approve/resume/execute/cash tools are deliberately absent, and
 pending-approval listings NEVER include tokens.
 """
 import json
+import logging
 
 from langchain_core.tools import tool
 
+from ..logsetup import swallowed
 from ..providers import registry
 from ..tools.market import currency_for, yahoo_symbol
 from ..exchanges import lot_size as board_lot
+
+log = logging.getLogger(__name__)
 
 MAX_TURNS_PER_THREAD = 50      # context hygiene (§17): auto-reset, desk.db is
                                # the durable record so nothing of note is lost
@@ -184,6 +188,10 @@ class Claire:
         self.conn, self.repo, self.desk, self.market = conn, repo, desk, market
         self.env = env
         self._histories = {}                    # cache over chat_threads table
+        # thread -> id of the Claude SDK session holding that conversation.
+        # In memory only (chat_threads has no column for it): after a restart
+        # the first turn of a thread starts a new session from a short recap.
+        self._sessions = {}
         self._agent = None
         self._sdk_chat = None                   # (model, system, tools) on SDK
 
@@ -221,9 +229,10 @@ class Claire:
                                            system_prompt=system)
         return self._agent
 
-    # a refusal by the model's safety filter, not a desk error. Once a long
-    # thread trips it, EVERY later call resends that history and trips it
-    # again (2026-11-06: 16 of 17 calls failed) — so retry, don't repeat.
+    # a refusal by the model's safety filter, not a desk error. A refused
+    # message stays in the session it was sent to, so that session is never
+    # resumed again (2026-11-06: 16 of 17 calls failed, each one resending
+    # the history that had tripped it) — retry on something else instead.
     REFUSED = ("safeguards flagged", "usage policy", "aup")
 
     @classmethod
@@ -231,59 +240,117 @@ class Claire:
         e = str(err).lower()
         return any(m in e for m in cls.REFUSED)
 
-    def _ask_stream_sdk(self, history, thread):
-        """Answer on the subscription. If the model refuses: try the backup
-        model; if that refuses too, try once more on a FRESH conversation
-        (only this question) and keep that as the thread from now on."""
+    def _sdk_attempts(self, history, session_id):
+        """What to try for this turn, in order: (label, model, prompt,
+        session to resume). A turn normally needs only the first.
+
+          resume   the thread's own session, sent just the new message
+          primary  a NEW session primed with a short recap of recent turns —
+                   the first turn after a restart, or when the session could
+                   not be resumed or was refused
+          backup   the same on the backup model, if the primary refused
+          fresh    a new session with ONLY this question, if that was
+                   refused too
+        """
         from ..providers import claude_sdk
-        chat, system, tools = self._sdk_chat
-        attempts = [("primary", chat, history)]
+        chat = self._sdk_chat[0]
+        text = history[-1]["content"]
+        recap = claude_sdk.recap_prompt(
+            [(m["role"], m["content"]) for m in history[:-1]], text)
+        backup = None
         if chat.fallback_model and chat.fallback_model != chat.model:
-            attempts.append(("backup", chat._copy(model=chat.fallback_model,
-                                                  fallback_model=None),
-                             history))
-        attempts.append(("fresh", chat._copy(
-            model=chat.fallback_model or chat.model, fallback_model=None),
-            [history[-1]]))
-        last_err = None
-        for label, model, msgs_in in attempts:
-            msgs = [(m["role"], m["content"]) for m in msgs_in]
-            _, prompt = claude_sdk.split_messages(msgs)
-            final, streamed = "", False
-            try:
-                for kind, payload in claude_sdk.stream_chat(model, system,
-                                                            prompt, tools):
-                    if kind == "tool":
-                        streamed = True
-                        yield json.dumps({"kind": "tool", **payload},
-                                         default=str) + "\n"
-                    elif kind == "text":
-                        streamed = True
-                        yield json.dumps({"kind": "text",
-                                          "text": payload}) + "\n"
-                    elif kind == "done":
-                        final = payload or final
-            except Exception as e:              # noqa: BLE001
-                last_err = e
-                # only a refusal before anything was said is worth another
-                # try; anything else (or a half-streamed answer) is final
-                if self._refused(e) and not streamed:
-                    continue
-                break
-            if label == "fresh":
-                # the old history kept being refused: start over from here
-                history[:] = [history[-1]]
-                yield json.dumps({"kind": "text", "text":
-                                  "\n\n_(I started a fresh conversation — "
-                                  "the earlier one kept being refused by "
-                                  "the model's safety filter.)_"}) + "\n"
-            history.append({"role": "assistant", "content": final})
-            self._save(thread)
+            backup = chat._copy(model=chat.fallback_model, fallback_model=None)
+        plan = []
+        if session_id:
+            plan.append(("resume", chat, text, session_id))
+        plan.append(("primary", chat, recap, None))
+        if backup:
+            plan.append(("backup", backup, recap, None))
+        plan.append(("fresh", backup or chat._copy(fallback_model=None),
+                     text, None))
+        out, seen = [], set()
+        for label, model, prompt, resume in plan:
+            key = (model.model, prompt, resume)
+            if key not in seen:         # a first message has no recap: the
+                seen.add(key)           # same call is not worth making twice
+                out.append((label, model, prompt, resume))
+        return out
+
+    def _ask_stream_sdk(self, history, thread):
+        """Answer on the subscription, as one more turn of the thread's SDK
+        session (B8): only the new message is sent, not the history.
+
+        chat_threads stays the record; the session is the model's working
+        copy of it and is kept only while the two agree. Its id is forgotten
+        the moment a turn starts and remembered again only when that turn has
+        been answered and saved — so a turn that fails, is refused, or is
+        abandoned half-way is never resumed into; the next one starts a new
+        session from the record instead."""
+        from ..providers import claude_sdk
+        _, system, tools = self._sdk_chat
+        question = history[-1]
+        session_id = self._sessions.pop(thread, None)
+        last_err, answered = None, False
+        try:
+            for label, model, prompt, resume in self._sdk_attempts(
+                    history, session_id):
+                final, streamed, new_session = "", False, None
+                try:
+                    for kind, payload in claude_sdk.stream_chat(
+                            model, system, prompt, tools, resume=resume):
+                        if kind == "tool":
+                            streamed = True
+                            yield json.dumps({"kind": "tool", **payload},
+                                             default=str) + "\n"
+                        elif kind == "text":
+                            streamed = True
+                            yield json.dumps({"kind": "text",
+                                              "text": payload}) + "\n"
+                        elif kind == "session":
+                            new_session = payload
+                        elif kind == "done":
+                            final = payload or final
+                except Exception as e:          # noqa: BLE001
+                    last_err = e
+                    # a half-streamed answer is final, and so is a turn that
+                    # ran out of time: nobody is still waiting for a retry
+                    if streamed or isinstance(e, claude_sdk.SdkTimeout):
+                        break
+                    if self._refused(e):
+                        swallowed(log, "chat turn refused by the model's "
+                                       "safety filter — trying another way",
+                                  e)
+                        continue
+                    if label == "resume":
+                        # expired, missing, CLI error: not worth failing the
+                        # turn over when the record can prime a new session
+                        swallowed(log, "chat session could not be resumed — "
+                                       "starting a new one from a recap", e)
+                        continue
+                    break                       # anything else is final
+                if label == "fresh":
+                    # the earlier turns kept being refused: start over from
+                    # here, in the record as well as in the session
+                    history[:] = [question]
+                    yield json.dumps({"kind": "text", "text":
+                                      "\n\n_(I started a fresh conversation "
+                                      "— the earlier one kept being refused "
+                                      "by the model's safety filter.)_"}) + "\n"
+                history.append({"role": "assistant", "content": final})
+                self._save(thread)
+                answered = True
+                if new_session:
+                    self._sessions[thread] = new_session
+                yield json.dumps({"kind": "done"}) + "\n"
+                return
+            yield json.dumps({"kind": "error",
+                              "text": str(last_err)[:400]}) + "\n"
             yield json.dumps({"kind": "done"}) + "\n"
-            return
-        history.pop()                           # don't keep an unanswered turn
-        yield json.dumps({"kind": "error", "text": str(last_err)[:400]}) + "\n"
-        yield json.dumps({"kind": "done"}) + "\n"
+        finally:
+            # don't keep an unanswered turn — also when the reader hangs up
+            # mid-answer and this generator is simply closed
+            if not answered and history and history[-1] is question:
+                history.pop()
 
     def ask_stream(self, text: str, thread: str = "main"):
         """NDJSON generator: {kind: text|tool|done|error}."""
@@ -297,6 +364,7 @@ class Claire:
         history = self._load(thread)            # survives restarts (§17)
         if len(history) > MAX_TURNS_PER_THREAD * 2:
             history.clear()                     # §17 auto-reset
+            self._sessions.pop(thread, None)    # ... of the session too
         history.append({"role": "user", "content": text})
         if self._sdk_chat is not None:
             yield from self._ask_stream_sdk(history, thread)

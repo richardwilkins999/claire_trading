@@ -68,7 +68,10 @@ def subprocess_env():
 
 def base_options(*, model, fallback_model=None, system_prompt="",
                  max_turns=STRUCTURED_MAX_TURNS, mcp_tools=None,
-                 output_format=None):
+                 output_format=None, resume=None):
+    """Options for one conversation. `resume` is the id of an earlier
+    session in WORK_DIR to continue: the CLI reloads that session's messages
+    from its own transcript, so only the new prompt is sent."""
     sdk = _sdk()
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     servers, allowed = {}, []
@@ -84,6 +87,8 @@ def base_options(*, model, fallback_model=None, system_prompt="",
         kw["fallback_model"] = fallback_model
     if output_format:
         kw["output_format"] = output_format
+    if resume:
+        kw["resume"] = resume
     return sdk.ClaudeAgentOptions(**kw)
 
 
@@ -352,12 +357,42 @@ def split_messages(messages):
 
 
 def render_history(turns, latest):
-    """Earlier turns as context, the newest as the request. The SDK takes one
-    prompt per query; the conversation itself lives in desk.db (§17)."""
+    """Earlier turns as context, the newest as the request — for a caller
+    that hands invoke() a multi-turn message list. Claire's chat no longer
+    comes through here: a chat thread is a resumed SDK session (B8), and
+    recap_prompt covers the case where that session is gone."""
     lines = ["Conversation so far:"]
     for role, content in turns:
         who = "Richard" if role in ("user", "human") else "You"
         lines.append(f"{who}: {content}")
+    return "\n".join(lines) + f"\n\nRichard's new message:\n{latest}"
+
+
+RECAP_TURNS = 6                 # messages, i.e. the last three exchanges
+RECAP_CHARS = 400               # of each
+
+
+def _clip(text, limit):
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
+def recap_prompt(turns, latest, *, max_turns=RECAP_TURNS,
+                 max_chars=RECAP_CHARS):
+    """The prompt that starts a NEW session for a chat thread whose earlier
+    session cannot be resumed (service restart, expired transcript, CLI
+    error): short notes on the last few exchanges, then the new message.
+    Deliberately brief and not a transcript — replaying the whole history as
+    one "Richard: … You: …" prompt is what B8 suspects of tripping the
+    safety filter, and it cost 20-30k tokens a turn."""
+    recent = [(r, c) for r, c in turns if str(c or "").strip()][-max_turns:]
+    if not recent:
+        return latest
+    lines = ["Context: this continues an earlier chat with Richard. Notes on "
+             "the last few exchanges, oldest first (clipped):"]
+    for role, content in recent:
+        who = "Richard asked" if role in ("user", "human") else "You answered"
+        lines.append(f"- {who}: {_clip(content, max_chars)}")
     return "\n".join(lines) + f"\n\nRichard's new message:\n{latest}"
 
 
@@ -543,15 +578,21 @@ def run_tool_loop(chat: SdkChat, system, task, lc_tools, *,
 
 
 def stream_chat(chat: SdkChat, system, prompt, lc_tools, *, max_turns=25,
-                timeout_s=None):
+                resume=None, timeout_s=None):
     """Synchronous generator over a tool-using conversation: yields
     ("text", str) / ("tool", {name, args}) as they arrive, then
-    ("done", final_text). Bridges the SDK's async stream onto a thread."""
+    ("session", id) and ("done", final_text). Bridges the SDK's async stream
+    onto a thread.
+
+    `resume` continues an earlier session by id, so `prompt` is only the new
+    message; the id yielded at the end is the one to resume next time. A
+    session that cannot be resumed fails like any other conversation — the
+    caller decides what to start instead."""
     sdk = _sdk()
     q = chat._query or sdk.query
     opts = base_options(model=chat.model, fallback_model=chat.fallback_model,
                         system_prompt=system, max_turns=max_turns,
-                        mcp_tools=lc_to_sdk_tools(lc_tools))
+                        mcp_tools=lc_to_sdk_tools(lc_tools), resume=resume)
     out = queue.Queue()
     END = object()
     box = {"result": None}
@@ -598,6 +639,8 @@ def stream_chat(chat: SdkChat, system, prompt, lc_tools, *, max_turns=25,
         raise err
     if result is not None and result.is_error:
         raise SdkError(_result_error(result))
+    if result is not None and result.session_id:
+        yield "session", result.session_id
     yield "done", (result.result if result and result.result else final)
 
 
