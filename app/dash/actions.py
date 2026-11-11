@@ -9,7 +9,6 @@ import logging
 from html import escape as html_escape
 from urllib.parse import urlparse
 
-import httpx
 
 from .. import approvals
 from ..providers import registry
@@ -19,6 +18,7 @@ from .common import PROVIDER_KINDS
 from .common import _ID_RE
 from .common import _MODEL_RE
 from .common import _CCY_RE
+from . import claire_api
 from .common import HTTPError
 
 log = logging.getLogger(__name__)
@@ -40,15 +40,11 @@ class Actions:
                                              want["target"]):
             return                              # unchanged: nothing to do
         try:
-            r = httpx.post(f"{self.ctx.api_base}/internal/amend",
-                           json={"work_item_id": wi, "actor": "human",
-                                 **want},
-                           headers={"x-claire-secret": self.ctx.secret}, timeout=30)
-        except Exception as e:                  # noqa: BLE001
-            raise approvals.AuthError(502, f"claire-api unreachable ({e})")
-        if r.status_code != 200:
-            raise approvals.AuthError(r.status_code, (r.json() or {}).get(
-                "detail", f"amend failed ({r.status_code})"))
+            claire_api.post(self.ctx, "/internal/amend",
+                            {"work_item_id": wi, "actor": "human", **want},
+                            what="amend")
+        except HTTPError as e:      # callers of _amend expect an AuthError
+            raise approvals.AuthError(e.code, e.message) from e
 
     def _trade_check(self, body):
         """'Check with Saxo': size the edited order exactly as execution
@@ -158,21 +154,8 @@ class Actions:
             fwd["ticker"] = desk_ticker(fwd["ticker"].upper().strip(),
                                         fwd["exchange"].upper().strip())
         fwd["actor"] = "human"
-        try:
-            r = httpx.post(f"{self.ctx.api_base}/internal/manual", json=fwd,
-                           headers={"x-claire-secret": self.ctx.secret}, timeout=30)
-        except Exception as e:      # noqa: BLE001
-            return self._send(502, {"error":
-                                    f"claire-api unreachable ({e})"})
-        out = r.json() if r.headers.get("content-type", "") \
-            .startswith("application/json") else {}
-        if r.status_code != 200:
-            detail = out.get("detail", "manual trade failed")
-            if isinstance(detail, list):    # pydantic 422 shape
-                detail = "; ".join(str(d.get("msg")) for d in detail
-                                   if isinstance(d, dict)) or "invalid"
-            return self._send(r.status_code, {"error": detail})
-        return self._send(200, out)
+        return self._send(200, claire_api.post(
+            self.ctx, "/internal/manual", fwd, what="manual trade"))
 
     def _saxo_login_start(self, body):
         """Begin a Saxo sign-in from the Saxo accounts page. Needs the
@@ -373,16 +356,8 @@ class Actions:
         fwd = {k: body[k] for k in ("ticker", "exchange", "currency",
                                     "kind", "lot_size", "instrument_id",
                                     "trigger") if k in body}
-        try:
-            r = httpx.post(f"{self.ctx.api_base}/api/run", json=fwd, timeout=10)
-        except Exception as e:              # noqa: BLE001
-            return self._send(502, {"error":
-                                    f"claire-api unreachable ({e})"})
-        try:
-            out = r.json()
-        except ValueError:
-            out = {"error": f"claire-api {r.status_code}"}
-        return self._send(r.status_code, out)
+        return self._send(200, claire_api.post(
+            self.ctx, "/api/run", fwd, timeout=10, what="starting the run"))
 
     def _assign_agent(self, body):
         # model / provider ids end up in pages and in provider API calls:

@@ -36,6 +36,7 @@ from .common import _validate_schedule_patch
 from .views_system import SystemViews
 from .views_runs import RunViews
 from .views_orders import OrderViews
+from . import claire_api
 from . import common
 from .actions import Actions
 
@@ -354,21 +355,9 @@ class Handler(SystemViews, RunViews, OrderViews, Actions, BaseHTTPRequestHandler
                 for k in ("entry", "stop", "target", "qty", "trail_pct"):
                     if body.get(k) not in (None, ""):
                         req[k] = float(body[k])
-                try:
-                    r = httpx.post(f"{self.ctx.api_base}/internal/order", json=req,
-                                   headers={"x-claire-secret": self.ctx.secret},
-                                   timeout=60)
-                except Exception as e:          # noqa: BLE001
-                    return self._send(502, {"error":
-                                            f"claire-api unreachable ({e})"})
-                try:
-                    data = r.json()
-                except ValueError:
-                    data = {}
-                if r.status_code != 200:
-                    return self._send(r.status_code, {"error": str(
-                        data.get("detail") or f"HTTP {r.status_code}")})
-                return self._send(200, data)
+                return self._send(200, claire_api.post(
+                    self.ctx, "/internal/order", req, timeout=60,
+                    what="order change"))
             if u.path in ("/api/trade-retry", "/api/trade-cancel"):
                 # money path: re-checked locally, like thesis-action
                 if not self._paired():
@@ -401,21 +390,9 @@ class Handler(SystemViews, RunViews, OrderViews, Actions, BaseHTTPRequestHandler
                 # the AI agent); the page polls /api/maintenance
                 if not self._paired():
                     raise HTTPError(403, "dashboard not paired")
-                try:
-                    r = httpx.post(f"{self.ctx.api_base}/internal/maintenance",
-                                   headers={"x-claire-secret": self.ctx.secret},
-                                   timeout=10)
-                except Exception as e:          # noqa: BLE001
-                    return self._send(502, {"error":
-                                            f"claire-api unreachable ({e})"})
-                try:
-                    data = r.json()
-                except ValueError:
-                    data = {}
-                if r.status_code != 200:
-                    return self._send(r.status_code, {"error": str(
-                        data.get("detail") or f"HTTP {r.status_code}")})
-                return self._send(200, data)
+                return self._send(200, claire_api.post(
+                    self.ctx, "/internal/maintenance", timeout=10,
+                    what="maintenance run"))
             if u.path == "/api/live-arm":
                 # ARMING from the dashboard (§22.1): paired key + the
                 # typed phrase + a browser on THIS PC (loopback). A LAN
@@ -480,21 +457,9 @@ class Handler(SystemViews, RunViews, OrderViews, Actions, BaseHTTPRequestHandler
                 # re-check as thesis-action, on top of the global gate
                 if not self._paired():
                     raise HTTPError(403, "dashboard not paired")
-                try:
-                    r = httpx.post(f"{self.ctx.api_base}/internal/override",
-                                   json={**body, "actor": "human"},
-                                   headers={"x-claire-secret": self.ctx.secret},
-                                   timeout=30)
-                except Exception as e:      # noqa: BLE001
-                    return self._send(502, {"error":
-                                            f"claire-api unreachable ({e})"})
-                out = r.json() if r.headers.get("content-type", "") \
-                    .startswith("application/json") else {}
-                if r.status_code != 200:
-                    return self._send(r.status_code,
-                                      {"error": out.get("detail",
-                                                        "override failed")})
-                return self._send(200, out)
+                return self._send(200, claire_api.post(
+                    self.ctx, "/internal/override",
+                    {**body, "actor": "human"}, what="override"))
             if u.path == "/api/telegram-decision":
                 # money path (Telegram buttons, relayed by Bob's bot):
                 # key re-checked locally like the approval route; the
