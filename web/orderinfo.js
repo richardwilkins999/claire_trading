@@ -5,16 +5,9 @@
    is_open, next_open (epoch s), filled, expires_at, account, exchange, leg,
    entry_price. */
 function oiPx(n) { return n == null ? '—' : fmt(n, Math.abs(n) < 10 ? 3 : 2); }
-function oiWhen(t) {
-  if (!t) return '?';
-  const d = new Date(t * 1000);
-  const s = d.toLocaleString([], {weekday: 'short', day: 'numeric', month: 'short',
-                                  hour: '2-digit', minute: '2-digit'});
-  const mins = Math.round((t * 1000 - Date.now()) / 60000);
-  if (mins <= 0) return s;
-  const h = Math.floor(mins / 60), m = mins % 60;
-  return `${s} (in ${h ? h + 'h ' : ''}${m}m)`;
-}
+/* "in 2 h 10 m (16:00 SGT)" — nav.js fmtUntil: your own time, its zone,
+   and how long until it */
+function oiWhen(t) { return t ? fmtUntil(t) : '?'; }
 /* how far the price must move to reach `to`: "needs to fall 3.2% (5.80)" */
 function oiMove(last, to) {
   if (last == null || !to) return '';
@@ -26,7 +19,7 @@ function orderNeeds(o) {
   const buy = o.side === 'buy', L = o.limit_price, last = o.last;
   const now = last != null ? `The current price is <b>${oiPx(last)}</b>` : 'No current price available';
   const closed = o.is_open === false
-    ? ` ${esc(o.exchange || 'The market')} is closed — nothing can fill until it opens ${esc(oiWhen(o.next_open))}.` : '';
+    ? ` ${esc(o.exchange || 'The market')} is closed — nothing can fill until it opens, ${esc(oiWhen(o.next_open))}.` : '';
   const parts = [];
   if (o.leg) {
     const stop = o.leg === 'stop';
@@ -45,7 +38,7 @@ function orderNeeds(o) {
       parts.push(`If it fills: <b class="${pl >= 0 ? 'ok' : 'bad'}">${pl >= 0 ? '+' : ''}${fmt(pl, 2)}</b>
         vs the ${oiPx(o.entry_price)} you paid (before fees).`);
     }
-    parts.push('<span class="muted">The stop and the target are a pair: when one fills, the broker cancels the other.</span>');
+    parts.push('<span class="muted">The stop-loss and the take-profit are a pair: when one fills, the broker cancels the other.</span>');
     return parts.join(' ') + closed;
   }
   const verb = buy ? 'buy' : 'sell';
@@ -55,7 +48,7 @@ function orderNeeds(o) {
   const reached = last != null && L && (buy ? last <= L : last >= L);
   if (o.status === 'pending_session' && !o.submitted_at) {
     parts.push(`<b>Waiting for the market to open.</b> Claire is holding the order and sends it to
-      ${esc(o.account || 'the broker')} when ${esc(o.exchange || 'the market')} opens ${esc(oiWhen(o.next_open))}.`);
+      ${esc(o.account || 'the broker')} when ${esc(o.exchange || 'the market')} opens, ${esc(oiWhen(o.next_open))}.`);
     parts.push(`${fillRule}. ${now}${reached
       ? ` — already ${buy ? 'at or below' : 'at or above'} your limit price, so it should fill soon after the open (if the price is still there).`
       : `; ${oiMove(last, L)}.`}`);
@@ -71,6 +64,6 @@ function orderNeeds(o) {
   if (reached) parts.push(`${fillRule}. ${now} — already ${buy ? 'at or below' : 'at or above'} your limit price, so it should fill
     as soon as there are enough shares on offer at that price.${o.is_open === false ? '' : ' If it stays unfilled, check it on the broker\'s platform.'}`);
   else parts.push(`${fillRule}. ${now}; ${oiMove(last, L)} before it can ${verb}.`);
-  if (o.expires_at) parts.push(`<span class="muted">If it has not filled by ${esc(oiWhen(o.expires_at))}, it is cancelled.</span>`);
+  if (o.expires_at) parts.push(`<span class="muted">If it has not filled when it expires, ${esc(oiWhen(o.expires_at))}, it is cancelled.</span>`);
   return parts.join(' ') + closed;
 }
