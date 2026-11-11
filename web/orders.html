@@ -53,7 +53,7 @@
   <div id="done-triggers"></div>
 
   <details class="small" style="margin-top:1.5rem" open>
-    <summary class="muted">About protective stops &amp; targets, and what the columns mean</summary>
+    <summary class="muted">About the stop-loss and take-profit orders, and what the columns mean</summary>
     <p style="margin:.3rem 0">When a buy fills, Claire leaves two orders at the
       broker to guard the shares — they work even when Claire, this PC or the
       internet is down:</p>
@@ -63,12 +63,12 @@
         hit it sells at the market, so the fill can be a little below it
         (CSCO's 96.97 stop filled at 96.90).</li>
       <li><b>🎯 Take-profit</b> — sells the shares if the price <b>rises</b>
-        to the target, locking in the gain. It never sells below the
-        target.</li>
+        to the take-profit price, locking in the gain. It never sells below
+        that price.</li>
       <li>They are a pair: when one fills, the broker cancels the other.</li>
     </ul>
     <p style="margin:.2rem 0">Every buy is sent to Saxo <b>together with its
-      stop</b> (and target, if set) in one request. (SGX on the Saxo SIM
+      stop-loss</b> (and take-profit, if set) in one request. (SGX on the Saxo SIM
       account and the built-in sims are simulated by Claire: there
       <b>Claire's sim</b> holds the stop-loss and take-profit and fills them
       when the live price reaches them — checked every 5 minutes while the
@@ -77,7 +77,7 @@
       here shows its stop-loss and take-profit <b>with the order</b>.</p>
     <p style="margin:.2rem 0"><b>Price</b> the purchase or sale price, stop-loss, take-profit or trigger price ·
       <b>Distance</b> how far the price has to move from the last price to reach
-      it · <b>Value / outcome</b> shares × price, or for a stop/target the profit
+      it · <b>Value / outcome</b> shares × price, or for a stop-loss or take-profit the profit
       or loss on those shares versus what you paid (or the limit, before the buy
       fills), before fees.</p>
     <p style="margin:.2rem 0" class="muted">To change them, sell the position
@@ -323,15 +323,15 @@ function editOrder(id) {
       : 'Claire is still holding this order (sent when the market opens), so it is changed in place — no new approval needed.'}
       Saxo refuses a stop-loss or take-profit more than 25% from the price.</p>
     <div class="row" style="gap:.5rem 1rem;flex-wrap:wrap">
-      <label>Shares <input id="e-qty" type="number" min="1" step="1" style="width:80px" value="${esc(o.qty)}"></label>
-      <label title="${buy ? 'the most you pay per share — the order buys at this price or lower'
+      <label for="e-qty">Shares <input id="e-qty" type="number" min="1" step="1" style="width:80px" value="${esc(o.qty)}"></label>
+      <label for="e-entry" title="${buy ? 'the most you pay per share — the order buys at this price or lower'
         : 'the least you accept per share — the order sells at this price or higher'}">${buy ? 'Purchase price' : 'Sale price'}
         <input id="e-entry" type="number" min="0" step="0.01" style="width:100px" value="${esc(o.limit_price ?? '')}"> ${ccy}</label>
-      <label title="${buy ? 'sells all the shares at the market if the price FALLS to this' : 'buys back at the market if the price RISES to this'}">Stop-loss
+      <label for="e-stop" title="${buy ? 'sells all the shares at the market if the price FALLS to this' : 'buys back at the market if the price RISES to this'}">Stop-loss
         <input id="e-stop" type="number" min="0" step="0.01" style="width:100px" value="${esc(o.stop_loss ?? '')}"></label>
-      <label title="${buy ? 'sells if the price RISES to this' : 'buys back if the price FALLS to this'} — leave blank for none">Take-profit
+      <label for="e-target" title="${buy ? 'sells if the price RISES to this' : 'buys back if the price FALLS to this'} — leave blank for none">Take-profit
         <input id="e-target" type="number" min="0" step="0.01" style="width:100px" value="${esc(o.take_profit ?? '')}"></label>
-      ${buy ? `<label title="${o.legs_at_broker
+      ${buy ? `<label for="e-trail" title="${o.legs_at_broker
           ? 'an order at Saxo: it replaces the stop-loss, follows the best price since you bought at this distance, never moves back, and sells automatically when hit'
           : 'not an order: the watcher alerts you (and starts a sell review) if the price falls this far below its best since you bought — it rises with the price, never falls'}">${o.legs_at_broker ? 'Trailing stop' : 'Trailing alert'}
         <input id="e-trail" type="number" min="0.5" max="90" step="0.5" style="width:70px" value="${esc(o.trail_pct ?? '')}"> %</label>` : ''}
@@ -425,22 +425,22 @@ function editTrigger(id) {
     <p class="muted small">Saving replaces this trigger with a new one (the old one
       is cancelled at the same moment). Same checks as a new trigger.</p>
     <div class="row" style="gap:.5rem;flex-wrap:wrap">
-      <label>when price <select id="g-cond"><option value="lte" ${t.condition === 'lte' ? 'selected' : ''}>falls to ≤</option>
+      <label for="g-cond">when price <select id="g-cond"><option value="lte" ${t.condition === 'lte' ? 'selected' : ''}>falls to ≤</option>
         <option value="gte" ${t.condition === 'gte' ? 'selected' : ''}>rises to ≥</option></select></label>
       <input id="g-trig" type="number" min="0" step="0.01" style="width:95px" aria-label="trigger price" value="${esc(t.trigger_price)}">
-      <label title="the most you pay (buy) or the least you accept (sell) once it fires">${t.direction === 'sell' ? 'Sale price' : 'Purchase price'}
+      <label for="g-lim" title="the most you pay (buy) or the least you accept (sell) once it fires">${t.direction === 'sell' ? 'Sale price' : 'Purchase price'}
         <input id="g-lim" type="number" min="0" step="0.01" style="width:95px" value="${esc(t.limit_price)}"></label>
       <span id="g-limnote" class="muted small"></span>
-      ${amount ? `<label>amount <input id="g-amt" type="number" min="0" step="0.01" style="width:100px" value="${esc(t.amount_base)}"></label>`
-        : `<label>shares <input id="g-qty" type="number" min="0" step="any" style="width:80px" value="${esc(t.qty)}"></label>`}
-      ${exit ? '' : `<label>Stop-loss <input id="g-stop" type="number" min="0" step="0.01" style="width:95px" value="${esc(t.stop_loss ?? '')}"></label>
-        <label>Take-profit <input id="g-tgt" type="number" min="0" step="0.01" style="width:95px" value="${esc(t.take_profit ?? '')}"></label>
-        ${t.direction === 'buy' ? `<label title="${trigTrailName(t) === 'trailing stop' ? 'an order at Saxo: once it has bought, the stop-loss follows the best price at this distance and sells automatically when hit' : 'not an order: once it has bought, the watcher alerts you if the price falls this far below its best since you bought'}">${trigTrailName(t) === 'trailing stop' ? 'Trailing stop' : 'Trailing alert'}
+      ${amount ? `<label for="g-amt">amount <input id="g-amt" type="number" min="0" step="0.01" style="width:100px" value="${esc(t.amount_base)}"></label>`
+        : `<label for="g-qty">shares <input id="g-qty" type="number" min="0" step="any" style="width:80px" value="${esc(t.qty)}"></label>`}
+      ${exit ? '' : `<label for="g-stop">Stop-loss <input id="g-stop" type="number" min="0" step="0.01" style="width:95px" value="${esc(t.stop_loss ?? '')}"></label>
+        <label for="g-tgt">Take-profit <input id="g-tgt" type="number" min="0" step="0.01" style="width:95px" value="${esc(t.take_profit ?? '')}"></label>
+        ${t.direction === 'buy' ? `<label for="g-trail" title="${trigTrailName(t) === 'trailing stop' ? 'an order at Saxo: once it has bought, the stop-loss follows the best price at this distance and sells automatically when hit' : 'not an order: once it has bought, the watcher alerts you if the price falls this far below its best since you bought'}">${trigTrailName(t) === 'trailing stop' ? 'Trailing stop' : 'Trailing alert'}
           <input id="g-trail" type="number" min="0.5" max="90" step="0.5" style="width:65px" value="${esc(t.trail_pct ?? '')}"> %</label>` : ''}`}
     </div>
     <div class="row" style="gap:.5rem;flex-wrap:wrap;margin-top:.4rem">
-      <label>expires in <input id="g-days" type="number" min="1" max="365" step="1" style="width:60px" value="${days}"> days</label>
-      <label>when it hits <select id="g-mode"><option value="ask" ${t.mode === 'ask' ? 'selected' : ''}>ask me</option>
+      <label for="g-days">expires in <input id="g-days" type="number" min="1" max="365" step="1" style="width:60px" value="${days}"> days</label>
+      <label for="g-mode">when it hits <select id="g-mode"><option value="ask" ${t.mode === 'ask' ? 'selected' : ''}>ask me</option>
         <option value="auto" ${t.mode === 'auto' ? 'selected' : ''}>place automatically (paper only)</option></select></label>
       <input id="g-note" placeholder="note" maxlength="120" style="flex:1;min-width:140px" aria-label="note" value="${esc(t.note || '')}">
       <button onclick="saveTrigger(${jsArg(t.id)})">Save</button>

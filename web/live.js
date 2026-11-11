@@ -7,11 +7,8 @@
 
 let LIVE = null;
 
-function liveWhen(t) {
-  if (!t) return "—";
-  return new Date(t * 1000).toLocaleString([], {day: "numeric", month: "short",
-    hour: "2-digit", minute: "2-digit"});
-}
+/* "11 Nov 14:02 SGT" — your own time, with its zone (nav.js) */
+function liveWhen(t) { return esc(fmtWhen(t, {weekday: false})); }
 function livePx(n) { return n == null ? "—" : fmt(n, Math.abs(n) < 10 ? 3 : 2); }
 
 async function liveLoad() {
@@ -125,7 +122,7 @@ function liveMetricsHtml(st) {
     ${Object.entries(caps).map(([k, c]) => `<tr>
       <td>${c.label}<div class="muted small">${esc(c.hint)}</div></td>
       <td>${liveCapValue(k, lim[k])}</td>
-      <td><input id="lim-${k}" type="number" min="${c.money ? 0.01 : 1}"
+      <td><input id="lim-${k}" aria-label="${esc(c.label)}, new value in ${esc(c.unit)}" type="number" min="${c.money ? 0.01 : 1}"
         step="${c.money ? 'any' : 1}" value="${esc(lim[k])}" style="width:7rem">
         <span class="muted small">${esc(c.unit)}</span></td></tr>`).join('')}
     </table>

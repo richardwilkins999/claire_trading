@@ -62,8 +62,8 @@ async function loadAgents() {
         (${lr.tokens_in || 0}/${lr.tokens_out || 0} tok, ${ago(lr.started_at)})`
         : '· never run'}</p>
       <div class="row">
-        <label>Provider <select id="prov-${esc(a.id)}">${opts}</select></label>
-        <label>Model <input id="model-${esc(a.id)}" value="${esc(a.model)}" style="width:220px"></label>
+        <label for="prov-${esc(a.id)}">Provider <select id="prov-${esc(a.id)}">${opts}</select></label>
+        <label for="model-${esc(a.id)}">Model <input id="model-${esc(a.id)}" value="${esc(a.model)}" style="width:220px"></label>
         <button onclick="saveAgent(${jsArg(a.id)})">Save</button>
         <button class="ghost" onclick="testProv(${jsArg(a.id)})">Test provider</button>
         <a class="pill" href="/" onclick="localStorage.setItem('openDrawer',
@@ -106,18 +106,18 @@ const refreshJobs = tracked(loadJobs, {key: 'jobs', paused: () => typing()});
 function jobCard(j) {
   const s = j.spec;
   const editor = s.type === 'interval'
-    ? `<label>every <input id="min-${esc(j.job)}" type="number" min="1" max="1440"
+    ? `<label for="min-${esc(j.job)}">every <input id="min-${esc(j.job)}" type="number" min="1" max="1440"
         value="${esc(s.minutes)}" style="width:70px"> minutes</label>`
-    : `<label>at <input id="time-${esc(j.job)}" value="${esc(s.time)}" style="width:70px"></label>
+    : `<label for="time-${esc(j.job)}">at <input id="time-${esc(j.job)}" value="${esc(s.time)}" style="width:70px"></label>
        <select id="tz-${esc(j.job)}" aria-label="time zone">${TZS.map(z => `<option ${z === s.tz ?
          'selected' : ''}>${z}</option>`).join('')}</select>
        <span style="display:inline-flex;gap:.3rem">${DAYS.map((d, i) =>
-         `<label class="pill" style="cursor:pointer"><input type="checkbox"
+         `<label for="day-${esc(j.job)}-${i + 1}" class="pill" style="cursor:pointer"><input type="checkbox"
            id="day-${esc(j.job)}-${i + 1}" ${s.days.includes(i + 1) ?
            'checked' : ''} style="margin-right:.2rem">${d}</label>`)
          .join('')}</span>`;
   const openToggle = 'require_open' in s
-    ? `<label class="pill" style="cursor:pointer"><input type="checkbox"
+    ? `<label for="open-${esc(j.job)}" class="pill" style="cursor:pointer"><input type="checkbox"
         id="open-${esc(j.job)}" ${s.require_open ? 'checked' : ''}
         style="margin-right:.2rem">only when market open</label>` : '';
   const last = j.last_run_at
@@ -136,7 +136,7 @@ function jobCard(j) {
         → ${esc(j.then)}</span>` : ''}</span></h3>
     <p class="muted">${esc(j.description)}</p>
     <div class="row">
-      <label class="pill" style="cursor:pointer"><input type="checkbox"
+      <label for="en-${esc(j.job)}" class="pill" style="cursor:pointer"><input type="checkbox"
         id="en-${esc(j.job)}" ${j.enabled ? 'checked' : ''}
         style="margin-right:.2rem">enabled</label>
       ${editor} ${openToggle}

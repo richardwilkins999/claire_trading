@@ -193,7 +193,7 @@ function origin(r) {
     case 'daily_screen': return `Picked by the daily screen${d}.`;
     case 'volume_scan': return `Started by the hourly volume scan${d}.`;
     case 'price_alert':
-      return `Exit review: a price alert fired on a position you hold${d}.`;
+      return `Exit review: a trailing alert fired on a position you hold${d}.`;
     case 'override': return `Your override of ${
       s.override_of ? runLink(s.override_of, 'the earlier run') : 'a run'}.`;
     case 'other': return `Started by: ${esc(s.origin_detail)}.`;
@@ -323,10 +323,10 @@ function orderEditOpen(id) {
       : 'Claire is still holding this order (it is sent when the market opens), so it is changed in place — no new approval needed.'}
       Saxo refuses a stop-loss or take-profit more than 25% from the limit price.</p>
     <div class="row" style="gap:.5rem;flex-wrap:wrap">
-      <label>shares <input id="oe-qty" type="number" min="1" step="1" style="width:80px" value="${esc(o.qty)}"></label>
-      <label>limit price <span class="muted small">(per share)</span> <input id="oe-entry" type="number" min="0" step="0.01" style="width:100px" value="${esc(o.limit_price ?? '')}"></label>
-      <label>stop-loss <input id="oe-stop" type="number" min="0" step="0.01" style="width:100px" value="${esc(o.stop_loss ?? '')}"></label>
-      <label>take-profit <input id="oe-target" type="number" min="0" step="0.01" style="width:100px" value="${esc(o.take_profit ?? '')}"></label>
+      <label for="oe-qty">shares <input id="oe-qty" type="number" min="1" step="1" style="width:80px" value="${esc(o.qty)}"></label>
+      <label for="oe-entry">limit price <span class="muted small">(per share)</span> <input id="oe-entry" type="number" min="0" step="0.01" style="width:100px" value="${esc(o.limit_price ?? '')}"></label>
+      <label for="oe-stop">stop-loss <input id="oe-stop" type="number" min="0" step="0.01" style="width:100px" value="${esc(o.stop_loss ?? '')}"></label>
+      <label for="oe-target">take-profit <input id="oe-target" type="number" min="0" step="0.01" style="width:100px" value="${esc(o.take_profit ?? '')}"></label>
       <button onclick="orderEditSend(${jsArg(id)})">Save</button>
       <button class="ghost" onclick="document.getElementById('ordedit').innerHTML=''">Close</button>
     </div>
@@ -379,11 +379,12 @@ const FILTERS = {
 let FILTER = 'all';
 function setFilter(f) { FILTER = f; renderRuns(); }
 function renderRuns() {
-  document.getElementById('filters').innerHTML = Object.entries(FILTERS)
-    .map(([k, [label, test, tip]]) => `<button type="button"
+  /* swapHtml (nav.js) gives the button you pressed its focus back */
+  swapHtml(document.getElementById('filters'), Object.entries(FILTERS)
+    .map(([k, [label, test, tip]]) => `<button type="button" id="flt-${k}"
       aria-pressed="${k === FILTER}" title="${esc(tip)}"
       onclick="setFilter(${jsArg(k)})">${esc(label)}<span class="n">${
-      RUNS.filter(test).length}</span></button>`).join('');
+      RUNS.filter(test).length}</span></button>`).join(''));
   const runs = RUNS.filter(FILTERS[FILTER][1]);
   /* swapHtml (nav.js): the run you opened with the keyboard keeps the focus */
   swapHtml(document.getElementById('runs'), runs.length ? runs.map(r =>

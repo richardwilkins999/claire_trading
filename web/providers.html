@@ -19,26 +19,26 @@
     A local Ollama needs no key: kind openai_compatible, base URL
     http://127.0.0.1:11434/v1.</p>
     <div class="row">
-      <input id="p-id" placeholder="id e.g. ollama" style="width:110px">
-      <input id="p-name" placeholder="display name" style="width:140px">
-      <select id="p-kind"><option value="openai_compatible">
+      <input id="p-id" placeholder="id e.g. ollama" style="width:110px" aria-label="provider id">
+      <input id="p-name" placeholder="display name" style="width:140px" aria-label="display name">
+      <select id="p-kind" aria-label="kind of provider"><option value="openai_compatible">
         openai_compatible</option><option value="anthropic">anthropic</option><option value="claude_sdk">claude_sdk (Max subscription)</option>
       </select>
       <input id="p-url" placeholder="base URL (openai_compatible only)"
-        style="flex:1">
+        aria-label="base URL (openai_compatible only)" style="flex:1">
       <input id="p-key" placeholder="key env var e.g. OPENAI_API_KEY"
-        style="width:190px">
+        aria-label="name of the environment variable that holds the key" style="width:190px">
     </div>
     <div class="row" style="margin-top:.5rem">
-      <label class="pill"><input type="checkbox" id="p-tools" checked
+      <label for="p-tools" class="pill"><input type="checkbox" id="p-tools" checked
         style="margin-right:.2rem">tool_calling</label>
-      <label class="pill"><input type="checkbox" id="p-struct" checked
+      <label for="p-struct" class="pill"><input type="checkbox" id="p-struct" checked
         style="margin-right:.2rem">structured_output</label>
       <input id="p-cin" type="number" step="0.0001"
-        placeholder="$/1k in" style="width:100px">
+        placeholder="$/1k in" aria-label="cost in dollars per 1,000 input tokens" style="width:100px">
       <input id="p-cout" type="number" step="0.0001"
-        placeholder="$/1k out" style="width:100px">
-      <label class="pill"><input type="checkbox" id="p-en" checked
+        placeholder="$/1k out" aria-label="cost in dollars per 1,000 output tokens" style="width:100px">
+      <label for="p-en" class="pill"><input type="checkbox" id="p-en" checked
         style="margin-right:.2rem">enabled</label>
       <button onclick="saveProvider()">Save provider</button>
     </div>
@@ -55,18 +55,18 @@
     these servers, and every order goes to the in-process paper sim whether or
     not the credentials named below are present.</p>
     <div class="row">
-      <input id="m-id" placeholder="id e.g. ibkr" style="width:110px">
-      <select id="m-broker"><option value="">no broker</option>
+      <input id="m-id" placeholder="id e.g. ibkr" style="width:110px" aria-label="MCP server id">
+      <select id="m-broker" aria-label="broker it serves"><option value="">no broker</option>
         <option>alpaca</option><option>saxo</option><option>moomoo</option>
       </select>
       <input id="m-cmd" placeholder="command e.g. uvx some-mcp-server"
-        style="flex:1">
+        aria-label="command that starts the server" style="flex:1">
       <input id="m-refs" placeholder="env vars, comma-sep e.g. IBKR_TOKEN"
-        style="width:220px">
+        aria-label="environment variables it needs, comma-separated" style="width:220px">
     </div>
     <div class="row" style="margin-top:.5rem">
-      <input id="m-note" placeholder="note" style="flex:1">
-      <label class="pill"><input type="checkbox" id="m-en" checked
+      <input id="m-note" placeholder="note" aria-label="note" style="flex:1">
+      <label for="m-en" class="pill"><input type="checkbox" id="m-en" checked
         style="margin-right:.2rem">enabled</label>
       <button onclick="saveMcp()">Save MCP</button>
     </div>
@@ -76,8 +76,7 @@
 const typing = () => ['INPUT', 'SELECT']
   .includes((document.activeElement || {}).tagName);
 
-async function refresh() {
-  if (typing()) return;
+async function refreshData() {
   const [provs, mcps, sources] = await Promise.all(
     [api('/api/providers'), api('/api/mcps'), api('/api/data-sources')]);
   document.getElementById('sources').innerHTML =
@@ -85,7 +84,7 @@ async function refresh() {
     '<th>how to enable</th></tr>' + sources.map(s => `<tr>
     <td><b>${esc(s.name)}</b></td><td class="muted">${esc(s.role)}</td>
     <td>${s.active ? '<span class="ok">● active</span>'
-      : s.configured ? '<span class="warn">configured, standby</span>'
+      : s.configured ? '<span class="warn">○ configured, standby</span>'
       : '<span class="muted">not configured</span>'}</td>
     <td class="muted" style="font-size:.75rem">${esc(s.how)}</td>
     </tr>`).join('') + '</table>';
@@ -95,7 +94,7 @@ async function refresh() {
     provs.map(p => {
       const h = p.health;
       const hs = h ? (h.ok ? `<span class="ok">ok ${h.latency_ms}ms</span>`
-        : `<span class="bad" title="${esc(h.error || '')}">failing</span>`)
+        : `<span class="bad" title="${esc(h.error || '')}">✖ failing</span>`)
         : '<span class="muted">unprobed</span>';
       return `<tr><td><b>${esc(p.display_name)}</b>
         ${p.enabled ? '' : '<span class="pill bad">off</span>'}<br>
@@ -137,6 +136,9 @@ async function refresh() {
         <button class="ghost" onclick="delMcp(${jsArg(m.id)})">delete</button>
       </td></tr>`).join('') + '</table>';
 }
+/* not redrawn while you are in one of the forms — the menu bar then says
+   "paused while you are editing"; it used to stop in silence */
+const refresh = tracked(refreshData, {paused: () => typing()});
 
 /* providers */
 function editProvider(pj) {
