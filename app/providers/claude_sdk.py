@@ -20,12 +20,19 @@ the desk's own in-process one. Agents see exactly the tools the `agents` table
 grants them and nothing from Richard's personal Claude Code setup.
 """
 import asyncio
+import contextlib
 import json
+import logging
+import os
 import queue
 import threading
 import time
 import uuid
 from pathlib import Path
+
+from ..logsetup import swallowed
+
+log = logging.getLogger(__name__)
 
 KIND = "claude_sdk"
 SERVER = "desk"                         # tools surface as mcp__desk__<name>
@@ -42,6 +49,10 @@ WORK_DIR = Path(__file__).resolve().parents[2] / "var" / "sdk"
 
 class SdkError(Exception):
     pass
+
+
+class SdkTimeout(SdkError):
+    """A conversation ran past its wall-clock limit and was stopped."""
 
 
 def _sdk():
@@ -97,6 +108,155 @@ def run_sync(coro_fn):
     if "e" in box:
         raise box["e"]
     return box["v"]
+
+
+# ── limits: how long one conversation may run, and how many at once ──────
+# Every conversation is a `claude` subprocess. Nothing used to bound a hung
+# one, and N concurrent pipeline runs meant about 3N of them
+# (REVIEW-2026-11-11 §4.1).
+TIMEOUT_ENV = "CLAIRE_SDK_TIMEOUT_S"
+MAX_CONCURRENT_ENV = "CLAIRE_SDK_MAX_CONCURRENT"
+# seconds of wall clock per conversation, by kind
+DEFAULT_TIMEOUT_S = {"tool_loop": 600, "chat": 300, "structured": 300}
+_KIND_NAMES = {"tool_loop": "tool loop", "chat": "chat turn",
+               "structured": "call"}
+DEFAULT_MAX_CONCURRENT = 4
+
+_sleep = asyncio.sleep          # the deadline's clock; tests replace it
+
+
+def timeout_for(kind, env=None):
+    """Seconds a conversation of this kind may run. CLAIRE_SDK_TIMEOUT_S is
+    the limit for a research tool loop (default 600) and a ceiling for the
+    shorter kinds: a chat turn or a structured call gets its own default
+    (300) or the configured value, whichever is lower."""
+    env = os.environ if env is None else env
+    default = DEFAULT_TIMEOUT_S[kind]
+    raw = str(env.get(TIMEOUT_ENV) or "").strip()
+    if not raw:
+        return default
+    try:
+        ceiling = float(raw)
+    except ValueError:
+        ceiling = 0
+    if not 0 < ceiling < float("inf"):
+        swallowed(log, f"{TIMEOUT_ENV} is not a positive number of seconds"
+                       " — using the defaults")
+        return default
+    return ceiling if kind == "tool_loop" else min(default, ceiling)
+
+
+class Gate:
+    """At most `limit` SDK conversations at a time in this process. A caller
+    past the limit WAITS for a slot — it is never refused. It blocks the
+    calling thread, so it holds across the separate event loops each
+    conversation runs on. `urgent` callers (chat: a person is waiting) take
+    the next free slot ahead of queued background work."""
+
+    def __init__(self, limit=DEFAULT_MAX_CONCURRENT):
+        self.limit = max(1, int(limit))
+        self.active = 0                 # conversations holding a slot
+        self.waiting = 0                # callers queued for one
+        self._urgent = 0
+        self._cond = threading.Condition()
+
+    def acquire(self, *, urgent=False):
+        with self._cond:
+            self.waiting += 1
+            self._urgent += bool(urgent)
+            try:
+                if self.active >= self.limit:
+                    log.info("SDK conversation queued: %d running (limit %d),"
+                             " %d waiting", self.active, self.limit,
+                             self.waiting)
+                while self.active >= self.limit or (self._urgent
+                                                    and not urgent):
+                    self._cond.wait()
+                self.active += 1
+            finally:
+                self.waiting -= 1
+                if urgent:
+                    self._urgent -= 1
+                    self._cond.notify_all()     # background may look again
+
+    def release(self):
+        with self._cond:
+            self.active -= 1
+            self._cond.notify_all()
+
+    @contextlib.contextmanager
+    def slot(self, *, urgent=False):
+        self.acquire(urgent=urgent)
+        try:
+            yield self
+        finally:
+            self.release()
+
+
+_gate = None                    # process-wide; built on first use
+_gate_lock = threading.Lock()
+
+
+def gate():
+    global _gate
+    with _gate_lock:
+        if _gate is None:
+            raw = str(os.environ.get(MAX_CONCURRENT_ENV) or "").strip()
+            try:
+                limit = int(raw) if raw else DEFAULT_MAX_CONCURRENT
+            except ValueError:
+                limit = 0
+            if limit < 1:
+                swallowed(log, f"{MAX_CONCURRENT_ENV} is not a positive whole"
+                               " number — using the default")
+                limit = DEFAULT_MAX_CONCURRENT
+            _gate = Gate(limit)
+        return _gate
+
+
+async def _conversation(q, prompt, opts, on_message, *, timeout_s, kind):
+    """One SDK conversation, start to finish, under a wall-clock deadline.
+    Past the deadline it is cancelled and SdkTimeout raised.
+
+    The deadline is an anyio cancel scope, not asyncio.wait_for: the SDK
+    shields its own shutdown (stdin EOF, then SIGTERM, then SIGKILL) against
+    anyio cancellation only, so this is what makes sure the `claude`
+    subprocess is gone before the error is raised."""
+    import anyio
+    agen = q(prompt=prompt, options=opts)
+    with anyio.CancelScope() as scope:
+        async def deadline():
+            await _sleep(timeout_s)
+            scope.cancel()
+        dog = asyncio.ensure_future(deadline())
+        try:
+            async for m in agen:
+                on_message(m)
+        finally:
+            dog.cancel()
+            close = getattr(agen, "aclose", None)
+            if close is not None:       # stops the subprocess on every exit
+                with anyio.CancelScope(shield=True):
+                    await close()
+    if scope.cancelled_caught:
+        log.warning("SDK %s conversation stopped after %gs (model %s)",
+                    kind, timeout_s, getattr(opts, "model", "?"))
+        raise SdkTimeout(
+            f"Claude SDK {_KIND_NAMES.get(kind, kind)} timed out after "
+            f"{timeout_s:g}s and was stopped ({TIMEOUT_ENV} sets the limit)")
+
+
+def _drive(q, prompt, opts, on_message, *, kind, urgent=False,
+           timeout_s=None, meter=None):
+    """Blocking: wait for a free slot, then run one conversation under its
+    deadline. Time spent queued counts against neither the deadline nor the
+    metered run, which starts only once the slot is held."""
+    limit = timeout_for(kind) if timeout_s is None else timeout_s
+    with gate().slot(urgent=urgent):
+        if meter:
+            meter.start()
+        run_sync(lambda: _conversation(q, prompt, opts, on_message,
+                                       timeout_s=limit, kind=kind))
 
 
 # ── metering ─────────────────────────────────────────────────────────────
@@ -240,7 +400,7 @@ class SdkChat:
         meter = _meter_from(cbs, self.provider_id, self.model)
         return self._copy(meter=meter or self.meter)
 
-    def invoke(self, messages, config=None, **_):
+    def invoke(self, messages, config=None, *, timeout_s=None, **_):
         system, prompt = split_messages(messages)
         fmt = None
         if self.schema is not None:
@@ -248,7 +408,7 @@ class SdkChat:
                    "schema": self.schema.model_json_schema()}
         opts = base_options(model=self.model, fallback_model=self.fallback_model,
                             system_prompt=system, output_format=fmt)
-        result, texts = self._converse(prompt, opts)
+        result, texts = self._converse(prompt, opts, timeout_s=timeout_s)
         if self.schema is not None:
             if result.structured_output is None:
                 raise SdkError("model returned no structured output: "
@@ -259,28 +419,26 @@ class SdkChat:
     def stream(self, messages, config=None, **kw):
         yield self.invoke(messages, config, **kw)
 
-    def _converse(self, prompt, opts):
+    def _converse(self, prompt, opts, *, timeout_s=None):
         sdk = _sdk()
         q = self._query or sdk.query
         meter = self.meter.fork() if self.meter else None
-        if meter:
-            meter.start()
+        texts, box = [], {"result": None}
 
-        async def go():
-            texts, result = [], None
-            async for m in q(prompt=prompt, options=opts):
-                if isinstance(m, sdk.AssistantMessage):
-                    texts += [b.text for b in m.content
-                              if isinstance(b, sdk.TextBlock)]
-                elif isinstance(m, sdk.ResultMessage):
-                    result = m
-            return result, texts
+        def on_message(m):
+            if isinstance(m, sdk.AssistantMessage):
+                texts.extend(b.text for b in m.content
+                             if isinstance(b, sdk.TextBlock))
+            elif isinstance(m, sdk.ResultMessage):
+                box["result"] = m
         try:
-            result, texts = run_sync(go)
+            _drive(q, prompt, opts, on_message, kind="structured",
+                   timeout_s=timeout_s, meter=meter)
         except Exception as e:
-            if meter:
+            if meter and meter.run_id:
                 meter.fail(e)
             raise
+        result = box["result"]
         if meter:
             meter.finish(result)
         if result is None or (result.is_error and self.schema is None
@@ -340,10 +498,11 @@ def _tool_events(sdk, m):
 
 
 def run_tool_loop(chat: SdkChat, system, task, lc_tools, *,
-                  max_turns=TOOL_LOOP_MAX_TURNS):
+                  max_turns=TOOL_LOOP_MAX_TURNS, timeout_s=None):
     """An analyst's research loop. Returns (transcript lines, truncation note).
-    A loop that runs out of turns still hands back what it gathered, which
-    then goes to the structured extraction like any other transcript."""
+    A loop that runs out of turns — or out of time — still hands back what it
+    gathered, which then goes to the structured extraction like any other
+    transcript."""
     sdk = _sdk()
     q = chat._query or sdk.query
     tools = lc_to_sdk_tools(lc_tools)
@@ -351,29 +510,29 @@ def run_tool_loop(chat: SdkChat, system, task, lc_tools, *,
                         system_prompt=system, max_turns=max_turns,
                         mcp_tools=tools)
     meter = chat.meter.fork() if chat.meter else None
-    if meter:
-        meter.start()
     lines, box = [], {"result": None}
 
-    async def go():
-        async for m in q(prompt=task, options=opts):
-            for kind, payload in _tool_events(sdk, m):
-                if kind == "text":
-                    lines.append(f"[ai] {payload[:2000]}")
-                elif kind == "tool":
-                    lines.append(f"[ai] tool call {payload['name']} "
-                                 f"{json.dumps(payload['args'], default=str)[:1500]}")
-                else:
-                    lines.append(f"[tool] {payload[:2000]}")
-            if isinstance(m, sdk.ResultMessage):
-                box["result"] = m
+    def on_message(m):
+        for kind, payload in _tool_events(sdk, m):
+            if kind == "text":
+                lines.append(f"[ai] {payload[:2000]}")
+            elif kind == "tool":
+                lines.append(f"[ai] tool call {payload['name']} "
+                             f"{json.dumps(payload['args'], default=str)[:1500]}")
+            else:
+                lines.append(f"[tool] {payload[:2000]}")
+        if isinstance(m, sdk.ResultMessage):
+            box["result"] = m
     truncated = None
     try:
-        run_sync(go)
+        _drive(q, task, opts, on_message, kind="tool_loop",
+               timeout_s=timeout_s, meter=meter)
     except Exception as e:                      # noqa: BLE001
         truncated = str(e)[:200]
+        swallowed(log, "analyst tool loop cut short — reporting on what was "
+                       "gathered", e)
     result = box["result"]
-    if meter:
+    if meter and meter.run_id:
         if result is None:
             meter.fail(truncated or "no result")
         else:
@@ -383,7 +542,8 @@ def run_tool_loop(chat: SdkChat, system, task, lc_tools, *,
     return lines, truncated
 
 
-def stream_chat(chat: SdkChat, system, prompt, lc_tools, *, max_turns=25):
+def stream_chat(chat: SdkChat, system, prompt, lc_tools, *, max_turns=25,
+                timeout_s=None):
     """Synchronous generator over a tool-using conversation: yields
     ("text", str) / ("tool", {name, args}) as they arrive, then
     ("done", final_text). Bridges the SDK's async stream onto a thread."""
@@ -394,27 +554,26 @@ def stream_chat(chat: SdkChat, system, prompt, lc_tools, *, max_turns=25):
                         mcp_tools=lc_to_sdk_tools(lc_tools))
     out = queue.Queue()
     END = object()
+    box = {"result": None}
+    meter = chat.meter.fork() if chat.meter else None
 
-    async def go():
-        result = None
-        async for m in q(prompt=prompt, options=opts):
-            for kind, payload in _tool_events(sdk, m):
-                if kind != "tool_result":
-                    out.put((kind, payload))
-            if isinstance(m, sdk.ResultMessage):
-                result = m
-        return result
+    def on_message(m):
+        for kind, payload in _tool_events(sdk, m):
+            if kind != "tool_result":
+                out.put((kind, payload))
+        if isinstance(m, sdk.ResultMessage):
+            box["result"] = m
 
     def worker():
         try:
-            out.put(("result", asyncio.run(go())))
+            # urgent: a person is waiting on this one
+            _drive(q, prompt, opts, on_message, kind="chat", urgent=True,
+                   timeout_s=timeout_s, meter=meter)
+            out.put(("result", box["result"]))
         except BaseException as e:      # noqa: BLE001 — surfaced to caller
             out.put(("error", e))
         out.put(END)
 
-    meter = chat.meter.fork() if chat.meter else None
-    if meter:
-        meter.start()
     threading.Thread(target=worker, daemon=True, name="claire-sdk").start()
     final, result, err = "", None, None
     while True:
@@ -430,7 +589,7 @@ def stream_chat(chat: SdkChat, system, prompt, lc_tools, *, max_turns=25):
             if kind == "text":
                 final = payload
             yield kind, payload
-    if meter:
+    if meter and meter.run_id:
         if err is not None or result is None:
             meter.fail(err or "no result")
         else:
