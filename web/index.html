@@ -37,8 +37,8 @@
       box-shadow:0 0 7px var(--good)"></b>glowing = running now</span>
     <span><b class="sw" style="background:var(--good)"></b>configured
       &amp; ready</span>
-    <span><b class="sw" style="background:var(--warn)"></b>degraded</span>
-    <span><b class="sw" style="background:var(--bad)"></b>error — needs
+    <span><b style="color:var(--warn);margin-right:.3rem">▲</b>degraded</span>
+    <span><b style="color:var(--bad);margin-right:.3rem">✖</b>error — needs
       you</span>
     <span><b class="sw" style="background:#3a4d63"></b>never run</span>
   </div>
@@ -89,10 +89,19 @@ const cut = (s, n) => { s = String(s ?? '');
 /* `href` makes the box a real link instead of a drawer trigger — used for the
    entry points, where the useful thing is to GO to the page that starts a
    run, not to read about it in a side panel. */
+/* a box's state in words (for a screen reader, and in its tooltip) and as a
+   shape — a triangle for degraded, a cross for an error — so it never
+   depends on telling red from green */
+const NODE_STATE = {idle: 'never run', ok: 'ready', warn: 'degraded',
+  error: 'ERROR — needs you', active: 'running now', disabled: 'switched off'};
 function node(id, x, y, w, h, title, sub, cls, extra, tip, href) {
   const sel = selected === id ? ' sel' : '';
+  const st = (/\b(error|warn|active|disabled|idle|ok)\b/.exec(cls) || [])[1];
   const dot = /entry/.test(cls) ? ''
+    : st === 'error' ? `<text class="dotx" x="${w - 16}" y="16">✖</text>`
+    : st === 'warn' ? `<text class="dotw" x="${w - 16}" y="16">▲</text>`
     : `<circle class="dot" cx="${w - 11}" cy="12" r="3.5"/>`;
+  const said = `${title}${st && !/entry/.test(cls) ? ' — ' + NODE_STATE[st] : ''}. ${tip || sub || ''}`;
   const inner = `<rect class="body" width="${w}" height="${h}" rx="7"/>
     ${dot}
     <text class="nt" x="10" y="17">${esc(cut(title, Math.floor((w - 22) / 6.6)))}</text>
@@ -104,6 +113,7 @@ function node(id, x, y, w, h, title, sub, cls, extra, tip, href) {
     return `<a href="${esc(href)}" class="mnode ${esc(cls)}${sel}"
       transform="translate(${x},${y})">${inner}</a>`;
   return `<g class="mnode ${esc(cls)}${sel}" transform="translate(${x},${y})"
+    role="button" tabindex="0" data-kbd="${esc(id)}" aria-label="${esc(said)}"
     onclick="openDrawer(${jsArg(id)})">${inner}</g>`;
 }
 /* The map, in four horizontal bands so every kind of path has its own lane:
@@ -299,7 +309,9 @@ function renderMap() {
   jobs.forEach(([id, t, sub, st, tip], i) => parts.push(node(id, C.entry + i * (JW + 16), JY, JW, 44,
     t, sub, st, null, (tip || sub) + ' · click for what it does')));
 
-  document.getElementById('map').innerHTML = edges.join('') + parts.join('') + labels.join('');
+  /* swapHtml (nav.js): an unchanged map is not rebuilt, and a box you
+     reached with the keyboard keeps the focus across the 20-second refresh */
+  swapHtml(document.getElementById('map'), edges.join('') + parts.join('') + labels.join(''));
 }
 
 /* ── side-panel write-ups: what each agent / job is FOR ─────────────
@@ -318,7 +330,7 @@ const ABOUT = {
   technical: {what: 'Reads the chart: trend, moving averages (20 / 50 / 200 day), momentum (RSI, MACD), volatility (ATR — the typical daily move), support and resistance, and volume.',
     when: 'In every full analysis run, in parallel with Fundamental and News.',
     reads: 'Daily price bars, and a sandboxed Python tool to calculate the indicators exactly instead of estimating them.',
-    makes: 'An analyst report (signal, conviction, summary, key levels) — the levels it finds feed the stop and target the Arbiter sets.',
+    makes: 'An analyst report (signal, conviction, summary, key levels) — the levels it finds feed the stop-loss and take-profit the Arbiter sets.',
     limits: 'Research only; the Python sandbox has no network and no file access.'},
   news: {what: 'Finds what is happening to the company now: results and guidance, analyst changes, deals, lawsuits, sector news — anything that could move the price.',
     when: 'In every full analysis run, and ALONE in an exit review (when the watcher sees a held stock fall), where speed matters.',
@@ -335,19 +347,19 @@ const ABOUT = {
     reads: 'The analyst reports and the Bull\'s case (no tools).',
     makes: 'A debate case: key points against and rebuttals of the Bull.',
     limits: 'It argues one side on purpose; the Arbiter decides.'},
-  arbiter: {what: 'The decision. It weighs the evidence and both sides of the debate and says buy, sell or pass — and for a trade, the full plan: entry range, stop, target, conviction and the conditions or caveats you should know.',
+  arbiter: {what: 'The decision. It weighs the evidence and both sides of the debate and says buy, sell or pass — and for a trade, the full plan: entry range, stop-loss, take-profit, conviction and the conditions or caveats you should know.',
     when: 'At the end of every analysis run, and in exit reviews (where its answer is sell or hold).',
     reads: 'All analyst reports and the debate.',
-    makes: 'A thesis. A buy or sell goes to Approvals (and Telegram) for you; a pass is recorded and goes nowhere. The stop and target it sets are what the approval card pre-fills — you can change them there.',
+    makes: 'A verdict. A buy or sell goes to Approvals (and Telegram) for you; a pass is recorded and goes nowhere. The stop-loss and take-profit it sets are what the approval card pre-fills — you can change them there.',
     limits: 'It can never place an order: nothing trades until you approve. Runs on Opus, with Sonnet as its backup.'},
-  recorder: {what: 'Writes the plain-English story of a finished run — what was found, what was decided, what you did and what happened to the order — for the Trading page.',
+  recorder: {what: 'Writes the plain-English story of a finished run — what was found, what was decided, what you did and what happened to the order — for the Runs page.',
     when: 'At the end of every run, whatever the outcome.',
     reads: 'The run\'s reports, the decision and the order and fill records.',
     makes: 'A narrative about the record. The record itself (orders, fills, cash) is written by the desk\'s own code, never by an LLM.',
     limits: 'Read-only on the book.'},
   claire_chat: {what: 'The desk\'s conversational assistant — the Claire you talk to on the Claire page, by voice ("Claire, …") and through Bob. She answers questions about your positions, orders, P/L and pending approvals, looks up prices and charts, explains a thesis, and can start an analysis run on a stock you name.',
     when: 'Whenever you (or Bob, or the voice daemon) ask her something.',
-    reads: 'Her tools: run pipeline, pipeline status, pending approvals, portfolio summary, share P/L, broker metrics, quotes, charts, search, explain thesis. Each conversation is kept (up to 50 turns).',
+    reads: 'Her tools: start a run, check a run, pending approvals, portfolio summary, share P/L, broker metrics, quotes, charts, search, explain a verdict. Each conversation is kept (up to 50 turns).',
     makes: 'Answers, and analysis runs when asked.',
     limits: 'She cannot approve, place or cancel a trade. If her model refuses a message she retries on her backup model, then on a fresh conversation.'},
   gate: {what: 'The approval gate. Every run that wants to trade stops here and waits for you. The approval card shows the evidence, the plan, the share count at the current price, and lets you set size, account, order type, stop and target.',
@@ -355,17 +367,17 @@ const ABOUT = {
     reads: 'Your decision, carrying a single-use token from the card or the Telegram button.',
     makes: 'Approved → execute; rejected or expired (at the market close) → recorded.',
     limits: 'No LLM can pass it. Real-money approvals also need LIVE typed on the card.'},
-  execute: {what: 'Turns an approval into an order: sizes it in shares at the live price, checks it (price band, cash, risk caps, whole shares at Saxo, the live-money switch), then sends it with its stop and target attached — or holds it until the market opens.',
+  execute: {what: 'Turns an approval into an order: sizes it in shares at the live price, checks it (price band, cash, risk caps, whole shares at Saxo, the live-money switch), then sends it with its stop-loss and take-profit attached — or holds it until the market opens.',
     when: 'Straight after you approve.',
     reads: 'The approval, the live quote and FX rate, the account\'s cash.',
     makes: 'An order at the broker (or queued for the open), with cash set aside for it.',
     limits: 'Deterministic code, no LLM. It refuses rather than guesses.'},
-  watcher: {what: 'The safety net on positions you hold. It tracks each stock\'s best price since you bought and, if it falls by the trailing floor (8% unless you set another), starts an exit review — News, then the Arbiter — which comes to you as a "sell?" approval. It keeps nudging (+3% each time, up to 6 a day) if the fall continues.',
+  watcher: {what: 'The safety net on positions you hold. It tracks each stock\'s best price since you bought and, if it falls by its trailing alert (8% unless you set another), starts an exit review — News, then the Arbiter — which comes to you as a "sell?" approval. It keeps nudging (+3% each time, up to 6 a day) if the fall continues.',
     when: 'Every 10 minutes while the stock\'s market is open (and for 30 minutes after the close).',
     reads: 'Open positions and live prices.',
     makes: 'Exit reviews. An alert is removed when the position is sold.',
     limits: 'It never sells by itself — the stop at the broker is the automatic exit.'},
-  custodian: {what: 'The back office. It books fills from the broker into the book, sends orders queued for the open, cancels orders that expired, expires approvals at the close, retries an approval that could not reach claire-api, re-protects shares whose stop/target had to be cancelled, and flags anything that does not match the broker.',
+  custodian: {what: 'The back office. It books fills from the broker into the book, sends orders queued for the open, cancels orders that expired, expires approvals at the close, retries an approval that could not reach claire-api, re-protects shares whose stop-loss / take-profit had to be cancelled, and flags anything that does not match the broker.',
     when: 'Every 5 minutes.',
     reads: 'The broker\'s order and fill state, and the book.',
     makes: 'Fills, positions and P/L in the book; warnings on Mission Control.',
@@ -480,7 +492,7 @@ async function openDrawer(id) {
       FIFO lots, every cash movement. Written only by the repository layer —
       no LLM has ever written a row here.</p>
       <p><a href="/portfolio">Portfolio</a> ·
-         <a href="/trading">Trading runs</a></p>`;
+         <a href="/trading">Runs</a></p>`;
     return;
   }
   if (g.agents[id]) {
@@ -515,7 +527,7 @@ async function openDrawer(id) {
         ${esc(act.current.ticker || act.current.work_item_id || '—')}</p>`
         : '<p class="muted">idle right now</p>'}
       <h2>Ask ${esc(id)} directly</h2>
-      <div class="row"><input id="d-q" style="flex:1" placeholder=
+      <div class="row"><input id="d-q" style="flex:1" aria-label="Your question for this agent" placeholder=
         "e.g. what did you conclude last, and why?"
         onkeydown="if(event.key==='Enter')askAgent(${jsArg(id)})">
         <button class="ghost" onclick="askAgent(${jsArg(id)})">Ask</button></div>
@@ -525,10 +537,11 @@ async function openDrawer(id) {
       <div id="d-answer"></div>
       <h2>Recent runs <span class="muted" style="font-weight:400;
         text-transform:none;letter-spacing:0">— click one to read it</span></h2>
-      ${act.runs.length === 0 ? `<p class="muted">Never run — launch a
-        pipeline from Markets and this agent will light up.</p>`
+      ${act.runs.length === 0 ? `<p class="muted">Never run — start a
+        run from Markets or Runs and this agent will light up.</p>`
         : `<div class="runlist">` + act.runs.map((r, i) =>
-          `<div class="runrow" id="rr-${i}" onclick="pickRun(${jsArg(id)},${i},
+          `<div class="runrow" id="rr-${i}" role="button" tabindex="0" data-kbd="run-${i}"
+            title="${esc(r.work_item_id ? 'run ' + r.work_item_id : '')}" onclick="pickRun(${jsArg(id)},${i},
             ${jsArg(r.work_item_id || '')})">
             <span class="rt">${esc(r.ticker || r.work_item_id || '—')}${
               r.status === 'running' ? ' <span class="ok">● analysing</span>' : ''}</span>
@@ -542,8 +555,8 @@ async function openDrawer(id) {
       <div id="d-narr"></div>
       <h2>Model &amp; provider</h2>
       <div class="row">
-        <select id="p-prov">${provOpts}</select>
-        <input id="p-model" value="${esc(a.model)}" style="flex:1">
+        <select id="p-prov" aria-label="Provider">${provOpts}</select>
+        <input id="p-model" aria-label="Model" value="${esc(a.model)}" style="flex:1">
         <button onclick="saveAgent(${jsArg(id)})">Save</button>
         <button class="ghost" onclick="testProv()">Test</button></div>
       <details style="margin-top:.6rem"><summary class="muted">system prompt
@@ -584,7 +597,7 @@ async function openDrawer(id) {
     watcher: 'LLM-free trailing-stop monitor: tracks the best price since ' +
       'entry per position (shorts too — lowest wins there), fires when the ' +
       'price falls a set % off that peak, escalates while it worsens, and ' +
-      'launches an exit review (news → arbiter, not the full pipeline). ' +
+      'launches an exit review (news → arbiter, not a full research run). ' +
       'Publishes its own health so a dead safety net is visible.',
     custodian: 'The asynchronous back half of execute: polls venues for ' +
       'fills and writes them to the book, places queued orders at the open, ' +
@@ -602,7 +615,7 @@ async function pickRun(agentId, idx, workItem) {
   const out = document.getElementById('d-narr');
   if (!out) return;
   if (!workItem) { out.innerHTML =
-    '<p class="muted">This run has no work item attached.</p>'; return; }
+    '<p class="muted">This call was not part of a run.</p>'; return; }
   out.innerHTML = '<p class="muted">loading write-up…</p>';
   try {
     const n = await api(`/api/agent-narrative?agent=${
@@ -649,7 +662,7 @@ async function pickRun(agentId, idx, workItem) {
   out.innerHTML = `
       ${run.trigger ? `<p class="muted" style="font-size:.72rem">⟲ run
         triggered by: ${esc(run.trigger)}</p>` : ''}
-      <h2>Report · ${esc(workItem)}</h2>
+      <h2 title="run ${esc(workItem)}">Report · ${esc(run.ticker || 'this run')}</h2>
       <p class="muted" style="font-size:.7rem;margin-top:-.3rem">the
         conclusion — and the only part passed to the next agent</p>
       ${typed}
@@ -767,11 +780,11 @@ function protectionOf(p) {
     }
     if (planned != null)
       return `<span class="pill warn" title="only a level in the plan: no order exists, nothing sells here">${word} ${fmt(planned, planned < 10 ? 3 : 2)} · plan only</span>`;
-    return kind === 'stop' ? '<span class="pill bad" title="nothing sells on the way down">no stop</span>' : '';
+    return kind === 'stop' ? '<span class="pill bad" title="nothing sells on the way down">⚠ no stop-loss</span>' : '';
   };
   const alert = lv.alert != null
-    ? `<span class="pill" title="Claire asks you before selling if the price falls to this">alert ${fmt(lv.alert, lv.alert < 10 ? 3 : 2)}</span>` : '';
-  return [one('stop', lv.stop_loss, 'stop'), one('target', lv.take_profit, 'target'), alert]
+    ? `<span class="pill" title="not an order: Claire asks you before selling if the price falls to this">trailing alert ${fmt(lv.alert, lv.alert < 10 ? 3 : 2)}</span>` : '';
+  return [one('stop', lv.stop_loss, 'stop-loss'), one('target', lv.take_profit, 'take-profit'), alert]
     .filter(Boolean).join(' ') + ` <span class="muted small">${esc(ccy)}</span>`;
 }
 function renderDesk() {
@@ -784,8 +797,7 @@ function renderDesk() {
     pill('unrealized', perCcy(t, 'unrealized', {signed: true})) +
     pill('cash', perCcy(t, 'cash', {dp: 0})) +
     pill('equity', perCcy(t, 'equity', {dp: 0}));
-  document.getElementById('desk-asof').textContent =
-    '· ' + new Date().toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+  document.getElementById('desk-asof').textContent = '· as of ' + fmtClock(new Date());
   const pos = Object.values(pf.exchanges || {}).flat()
     .sort((a, b) => Math.abs(b.value_base || 0) - Math.abs(a.value_base || 0));
   document.getElementById('desk-positions').innerHTML = pos.length
@@ -809,14 +821,14 @@ function renderDesk() {
     ['pending_session', 'placed', 'partially_filled'].includes(x.status));
   document.getElementById('desk-orders').innerHTML = open.length
     ? `<table><tr><th>Order</th><th style="text-align:right">Shares</th>
-        <th style="text-align:right">Limit</th><th>Where it is</th><th>Until</th></tr>${open.map(x => `
+        <th style="text-align:right">Limit</th><th>Where it is</th><th>Expires</th></tr>${open.map(x => `
         <tr><td><a href="/orders"><b>${esc(x.side).toUpperCase()} ${esc(x.ticker)}</b></a>
             <span class="muted small">${esc(x.exchange || '')}</span></td>
           <td style="text-align:right">${fmt(x.qty, 0)}${x.filled ? ` <span class="small muted">(${fmt(x.filled, 0)} filled)</span>` : ''}</td>
           <td style="text-align:right">${x.limit_price == null ? 'market' : fmt(x.limit_price, 2) + ' ' + esc(x.currency || '')}</td>
           <td>${x.status === 'pending_session' ? '<span class="pill warn">waiting for the market to open</span>'
             : `<span class="pill">${esc(x.where || x.account || 'at the venue')}</span>`}</td>
-          <td class="small">${x.expires_at ? new Date(x.expires_at * 1000).toLocaleString([], {weekday: 'short', hour: '2-digit', minute: '2-digit'}) : '—'}</td></tr>`).join('')}</table>`
+          <td class="small">${esc(fmtUntil(x.expires_at))}</td></tr>`).join('')}</table>`
     : '<p class="muted">Nothing is waiting to fill. <a href="/orders">Orders</a></p>';
   const trig = (o.triggers || []).filter(x => x.status === 'active');
   document.getElementById('desk-triggers').innerHTML = trig.length
@@ -825,24 +837,29 @@ function renderDesk() {
           <td>${esc(x.rule || x.direction || '')}</td><td class="muted small">${esc(x.account || '')}</td></tr>`).join('')}</table>`
     : '<p class="muted">No price triggers are waiting. <a href="/watchlist">Watchlist</a></p>';
 }
-async function refreshDesk() {
+async function loadDesk() {
+  let portfolio, orders;
   try {
-    const [portfolio, orders] = await Promise.all([
+    [portfolio, orders] = await Promise.all([
       api('/api/portfolio'), api('/api/orders').catch(() => ({}))]);
-    TODAY = {portfolio, orders};
-    renderDesk();
   } catch (e) {
-    document.getElementById('desk-positions').innerHTML =
+    /* the first load: say why there is nothing. Later: keep what was
+       loaded on screen — the menu bar says it is no longer current */
+    if (!TODAY) document.getElementById('desk-positions').innerHTML =
       `<p class="bad">Could not load your holdings: ${esc(e.message)}</p>`;
+    throw e;
   }
+  TODAY = {portfolio, orders};
+  renderDesk();
 }
+const refreshDesk = tracked(loadDesk, {key: 'desk'});
 async function refreshGraph() {
   try {
     GRAPH = await api('/api/agent-graph');
     renderMap(); renderStrip();
   } catch {}
 }
-async function refresh() {
+async function loadOverview() {
   [OVERVIEW, GRAPH, PROVIDERS, SCHEDULES] = await Promise.all([
     api('/api/overview'), api('/api/agent-graph'), api('/api/providers'),
     api('/api/schedules')]);
@@ -852,6 +869,9 @@ async function refresh() {
   renderMap();
   connPill('loaded');
 }
+/* reports "updated 12:03" / "cannot reach Claire" in the menu bar; a failed
+   load used to leave this page blank with nothing to say why */
+const refresh = tracked(loadOverview, {key: 'overview'});
 /* warnings: each can be cleared; "failed runs" returns only for new
    failures, any other after a day if still true (or at once if it changes) */
 function renderFlags() {
@@ -885,8 +905,8 @@ function connectSSE() {
          'failed', 'executing'].includes(e.to_state)) refresh();
   }, connPill);
 }
-refresh().then(() => {
-  const want = localStorage.getItem('openDrawer');
+refresh().then(loaded => {
+  const want = loaded && localStorage.getItem('openDrawer');
   if (want) { localStorage.removeItem('openDrawer'); openDrawer(want); }
 });
 connectSSE(); poll(refresh, 20000);
