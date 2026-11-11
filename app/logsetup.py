@@ -10,7 +10,8 @@ Two pieces:
   configure(service)   once, at process start: every line gets a timestamp,
                        level and logger name; uncaught exceptions in any
                        thread are logged; chatty HTTP libraries are quietened
-                       (they log full request URLs, which carry API keys).
+                       (they log full request URLs, which carry API keys); and
+                       every line is scrubbed of credentials (redact()).
   swallowed(log, ...)  for a handler that deliberately carries on: one line
                        per kind of failure per few minutes, with a count of
                        the ones held back — so a source that fails on every
@@ -21,6 +22,7 @@ maintainer already rotates those files.
 """
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -30,6 +32,33 @@ DATEFMT = "%Y-%m-%d %H:%M:%S"
 # INFO from these is one line per HTTP request, full URL included — and the
 # desk's URLs carry secrets (Twelve Data's apikey=, the Telegram bot token)
 QUIET = ("httpx", "httpcore", "urllib3", "asyncio")
+
+# An exception's own text often quotes the URL that failed — httpx writes
+# "Client error '429 …' for url 'https://…?apikey=…'" — so keeping the HTTP
+# libraries quiet is not enough: every line, traceback included, is scrubbed
+# on its way out. (Found the hard way on 2026-11-11: the first hour of real
+# logging put the Twelve Data key into dashboards.log fifteen times.)
+_SECRET_PARAM = re.compile(
+    r"(?i)\b(api_?key|access_token|refresh_token|client_secret|token|secret"
+    r"|password|signature|key)=([^&\s'\"<>]+)")
+_SECRET_PATHS = (
+    (re.compile(r"(api\.telegram\.org/bot)\d+:[\w-]+"), r"\1<redacted>"),
+    (re.compile(r"(?i)\b(Bearer|Basic)\s+[\w.~+/=-]{8,}"), r"\1 <redacted>"),
+)
+
+
+def redact(text: str) -> str:
+    """`text` with anything that looks like a credential blanked out."""
+    text = _SECRET_PARAM.sub(lambda m: f"{m.group(1)}=<redacted>", text)
+    for pat, to in _SECRET_PATHS:
+        text = pat.sub(to, text)
+    return text
+
+
+class RedactingFormatter(logging.Formatter):
+    def format(self, record):
+        return redact(super().format(record))
+
 
 _configured = None
 
@@ -44,7 +73,7 @@ def configure(service, *, level=None, stream=None):
     root = logging.getLogger()
     if _configured is None:
         handler = logging.StreamHandler(stream or sys.stderr)
-        handler.setFormatter(logging.Formatter(FORMAT, DATEFMT))
+        handler.setFormatter(RedactingFormatter(FORMAT, DATEFMT))
         root.addHandler(handler)
         _configured = handler
         sys.excepthook = _uncaught

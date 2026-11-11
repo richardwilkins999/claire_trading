@@ -258,3 +258,30 @@ def test_a_dashboard_500_is_logged_with_path_and_traceback(caplog):
             and r.getMessage().startswith("HTTP 500 on GET /api/")]
     assert recs and recs[0].exc_info
     assert "?" not in recs[0].getMessage()      # no query string in the log
+
+
+# ── credentials never reach the log ─────────────────────────────────────────
+def test_every_line_is_scrubbed_of_credentials(fresh_setup):
+    """An exception's text quotes the URL that failed, key and all. On its
+    first hour the new logging wrote the Twelve Data key into dashboards.log
+    fifteen times before this existed."""
+    out = io.StringIO()
+    logsetup.configure("a", stream=out)
+    log = logging.getLogger("app.tools.market")
+    err = RuntimeError("Client error '429 Too Many Requests' for url "
+                       "'https://api.twelvedata.com/quote?symbol=AAPL"
+                       "&apikey=SECRETKEY123'")
+    logsetup.swallowed(log, "quotes: keyed provider failed", err)
+    try:
+        raise err
+    except RuntimeError:
+        log.exception("POST https://api.telegram.org/bot12345:AAE-tok_en/"
+                      "sendMessage with Bearer abcdefgh12345678")
+    text = out.getvalue()
+    for secret in ("SECRETKEY123", "AAE-tok_en", "abcdefgh12345678"):
+        assert secret not in text, secret
+    assert text.count("apikey=<redacted>") >= 2         # line AND traceback
+    assert "symbol=AAPL" in text and "bot<redacted>/sendMessage" in text
+    # ordinary text with an = in it is left alone
+    assert logsetup.redact("since=350 monkey=banana") == \
+        "since=350 monkey=banana"
