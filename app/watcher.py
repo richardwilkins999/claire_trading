@@ -60,13 +60,21 @@ def set_position_floor(conn, instrument_id, account_id, pct, side=1):
 
 class Watcher:
     def __init__(self, conn, repo, market, start_sell_review, *,
-                 clock=time.time, cal=None):
+                 clock=time.time, cal=None, alert=None):
         self.conn, self.repo, self.market = conn, repo, market
-        self.start_sell_review = start_sell_review  # fn(instrument_row) -> wi id
+        # fn(instrument_row, trigger=) -> work item id. No id (or an
+        # exception) means the review did NOT start: the alert is then not
+        # counted as fired and is tried again on the next tick.
+        self.start_sell_review = start_sell_review
         self.clock, self.cal = clock, cal
+        # out-of-band channel (app.alerts.send) for a breach whose review
+        # could not be started; None = the health row only
+        self.alert = alert
+        self._launch_alerted = {}       # rule id -> day already alerted
 
     def tick(self) -> dict:
-        report = {"checked": 0, "fired": [], "closed": [], "unpriced": []}
+        report = {"checked": 0, "fired": [], "closed": [], "unpriced": [],
+                  "launch_failed": []}
         now = datetime.fromtimestamp(int(self.clock()), tz=timezone.utc)
         today = now.date().isoformat()
         positions = self._positions()
@@ -96,7 +104,8 @@ class Watcher:
                         if rule["rule"] == "trail_pct" else None)
                 if self._breached(rule, price_base, pos, today, peak):
                     self._fire(rule, inst, price_base, today, report, peak)
-        status = ("degraded" if report["unpriced"] else "ok")
+        status = ("degraded" if report["unpriced"] or report["launch_failed"]
+                  else "ok")
         self.conn.execute(
             "INSERT INTO service_health (service, checked_at, ok, detail)"
             " VALUES ('watcher', ?, ?, ?)",
@@ -266,7 +275,18 @@ class Watcher:
             wi = open_review["id"]
             escalated = self._escalate(open_review, trig, price_base, count)
         else:
-            wi = self.start_sell_review(inst, trigger=trig)
+            try:
+                wi = self.start_sell_review(inst, trigger=trig)
+                error = None if wi else "no work item came back"
+            except Exception as e:              # noqa: BLE001 — api down etc
+                wi, error = None, str(e)[:200] or type(e).__name__
+            if not wi:
+                # The review did not start, so this is NOT a fire. It used
+                # to be counted anyway: nothing reached the human, one of
+                # the day's fires was spent, and the next alert needed a
+                # further 3% fall. Left uncounted, the next tick tries again.
+                self._launch_failed(rule, inst, trig, error, today, report)
+                return
         self.conn.execute(
             "UPDATE price_alerts SET last_fired_at=?, fire_count_today=?,"
             " fire_count_date=? WHERE id=?",
@@ -276,6 +296,24 @@ class Watcher:
                                 "peak_base": str(peak) if peak else None,
                                 "escalated": escalated,
                                 "sell_review": wi})
+
+    def _launch_failed(self, rule, inst, trig, error, today, report):
+        """A breached alert whose sell review could not be started. Recorded
+        on the health row every tick it persists; sent out of band once per
+        rule per day, so an outage of claire-api does not message every
+        ten minutes."""
+        report["launch_failed"].append({"instrument": inst["id"],
+                                        "rule": rule["rule"], "error": error})
+        if self.alert is None or self._launch_alerted.get(rule["id"]) == today:
+            return
+        self._launch_alerted[rule["id"]] = today
+        try:
+            self.alert(f"{inst['ticker']}: {trig} — but the sell review could "
+                       f"not be started ({error}). Trying again each check; "
+                       "look at the position yourself.",
+                       title="Claire — sell review NOT started")
+        except Exception:                       # noqa: BLE001 — best effort
+            pass
 
     def _trigger_text(self, rule, price_base, peak, count) -> str:
         if rule["rule"] != "trail_pct" or peak is None:

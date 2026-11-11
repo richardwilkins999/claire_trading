@@ -570,7 +570,7 @@ class Repo:
 
     def assert_invariants(self, account_id):
         """Raise if the books are inconsistent. Cheap; tests call it after
-        every operation, the custodian calls it on a timer."""
+        every operation, the custodian on every run (Custodian._ledger)."""
         bal = 0
         for r in self.conn.execute(
                 "SELECT amount_base FROM cash_transactions WHERE account_id=?"

@@ -33,7 +33,7 @@ class Custodian:
     DUTIES = ("_place_pending_session", "_sim_triggers", "_poll_fills",
               "_expire_orders",
               "_reprotect", "_expire_approvals", "_retry_resumes", "_orphans",
-              "_drift", "_leg_drift", "_archive", "_broker_sync")
+              "_ledger", "_drift", "_leg_drift", "_archive", "_broker_sync")
 
     def run_once(self) -> dict:
         report = {"placed": [], "fills": 0, "completed": [], "order_expired": [],
@@ -343,6 +343,12 @@ class Custodian:
                         if self._settle_ended(o, adapter, report):
                             continue
                         raise
+                    # The cancel went through — but a fill can land between
+                    # this run's poll and the cancel, and an expired order
+                    # is never polled again. Take the venue's final word
+                    # before the book lets go of it.
+                    if not self._final_fills(o, adapter, report):
+                        continue
                 elif o["submitted_at"] is not None:
                     report["flags"].append(
                         f"RECONCILE order {o['id']}: past its TTL, sent but "
@@ -358,6 +364,34 @@ class Custodian:
                                  reason="order TTL", partial_fill=bool(fills))
             except Exception as e:              # noqa: BLE001 — per order
                 report["flags"].append(f"order {o['id']} expiry error: {e}")
+
+    def _final_fills(self, o, adapter, report) -> bool:
+        """After a successful TTL cancel: book whatever the venue filled
+        before the cancel reached it. True = the order is over at the venue
+        and every fill is on the book, so it may be marked expired. False =
+        it stays open (already completed here, or flagged) and the next run
+        looks again — late is recoverable, a lost fill is not."""
+        try:
+            status = adapter.order_status(o["broker_order_id"])
+        except Exception as e:                  # noqa: BLE001
+            report["flags"].append(
+                f"order {o['id']}: cancelled at the venue at its TTL, but "
+                f"its final status could not be read ({e}) — left open, "
+                "checked again next run")
+            return False
+        if self._book_fills(o, status, report):
+            return False                        # flagged; book it next run
+        if status["status"] == "filled":
+            # it filled in full before the cancel arrived
+            self._maybe_complete(o["id"], report)
+            return False
+        if status["status"] not in ("cancelled", "rejected"):
+            report["flags"].append(
+                f"order {o['id']}: cancelled at the venue at its TTL, but "
+                f"the venue still reports it {status['status']} — left "
+                "open, checked again next run")
+            return False
+        return True
 
     def _settle_ended(self, o, adapter, report) -> bool:
         """True if the venue says this order is over (and the book now
@@ -609,10 +643,34 @@ class Custodian:
                         "the desk's shares (bin/claire legs-backfill adopts "
                         "a bracket's legs)")
 
+    def _ledger(self, report):
+        """The book's own consistency, every run: cash never negative at any
+        point in its history, and every lot's shares reconcile with its
+        closures (repo.assert_invariants). Its docstring always said the
+        custodian ran it; until 2026-11-11 only the tests did. A failure is
+        FLAGGED, never repaired here."""
+        for acct in self.conn.execute(
+                "SELECT id FROM broker_accounts").fetchall():
+            try:
+                self.repo.assert_invariants(acct["id"])
+            except Exception as e:              # noqa: BLE001 — per account
+                report["flags"].append(
+                    f"LEDGER INCONSISTENT {acct['id']}: {e} — reconcile "
+                    "before trading this account")
+
     def _drift(self, report):
-        """Reconcile the latest broker snapshot against the book (§12): the
+        """Compare the latest broker snapshot with the book (§12): the
         broker is presumed right; drift is FLAGGED, never silently fixed.
-        Sim snapshots carry no cash/positions and are skipped."""
+
+        Only a snapshot row that CARRIES cash or positions is compared, and
+        today none does: snapshot_brokers stores the venue's raw answer with
+        cash NULL, and no adapter reports positions. That is deliberate for
+        cash — a paper account's book is an allocation the desk invented,
+        not the venue's balance (Saxo SIM holds ~EUR 1m, the saxo-paper book
+        is in SGD) — so comparing them would flag on every run. A real
+        book-vs-venue POSITION comparison still has to be built; until then
+        the checks that run are _ledger (the book against itself) and
+        _leg_drift (working orders against the venue)."""
         for acct in self.conn.execute("SELECT id FROM broker_accounts"):
             snap = self.conn.execute(
                 "SELECT * FROM broker_snapshots WHERE account_id=?"

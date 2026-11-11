@@ -120,9 +120,10 @@ def normalize_price(price, currency: str):
 
 def _mark_stale(val):
     """Copy of a cached value flagged stale. Per-symbol maps get the flag on
-    every record; a single record gets it at top level. Scalars (FX rates as
-    str/Decimal) and lists cannot carry a flag and are returned as-is — the
-    key is still listed in Market._stale_keys for the health view."""
+    every record; a single record gets it at top level. Scalars and lists
+    cannot carry a flag and are returned as-is — the key is still listed in
+    Market._stale_keys for the health view. (FX rates no longer come this
+    way: Market.fx applies its own age limit, FX_MAX_AGE.)"""
     if isinstance(val, dict) and val:
         if all(isinstance(v, dict) for v in val.values()):
             return {k: {**v, "stale": True} for k, v in val.items()}
@@ -464,33 +465,69 @@ class Market:
         return out
 
     # ── FX ───────────────────────────────────────────────────────────────
+    # How long a last-good FX rate may stand in once EVERY source is failing.
+    # A rate is a bare number: it cannot carry a `stale` flag the way a quote
+    # does, and it is written into immutable execution rows, order sizing
+    # and the watcher's floor. Past this age fx() raises instead, and each
+    # caller's own "no rate" policy applies (a fill waits for the next run).
+    FX_MAX_AGE = 4 * 3600
+
     def fx(self, from_ccy: str, to_ccy: str) -> Decimal:
-        """Live rate via Yahoo's <FROM><TO>=X symbol, cached ~5 min; ECB
-        (Frankfurter, keyless) as fallback — daily rates, fine for paper."""
+        """Keyed provider, then Yahoo's <FROM><TO>=X chart (both cached
+        ~5 min), then the ECB (Frankfurter, keyless; daily rates, cached 1 h).
+
+        Every source is asked for a FRESH rate before any old one is
+        reused. It used to return the first source's last-good value on a
+        failure — with no age limit, and without trying the next source."""
         if from_ccy == to_ccy:
             return Decimal(1)
         pair = f"{from_ccy}{to_ccy}=X"
-        if self._primary is not None and self._primary_gate(("pfx", pair),
-                                                            self.cache_ttl):
-            try:
-                return Decimal(self._cached(
-                    ("pfx", pair), self.cache_ttl,
-                    lambda: self._primary.fx(from_ccy, to_ccy)))
-            except Exception:               # noqa: BLE001 — fall through
-                pass
 
-        def fetch():
+        def yahoo():
             c = self.chart(pair, range_="1d", interval="5m")
+            if c.get("stale"):      # chart()'s own last-good fallback: not
+                raise MarketError(f"only a stale chart for {pair}")  # fresh
             closes = [x for x in c["close"] if x is not None]
             if not closes:
                 raise MarketError(f"no FX data for {pair}")
             return str(closes[-1])
-        try:
-            return Decimal(self._cached(("fx", pair), self.cache_ttl, fetch))
-        except Exception:                   # noqa: BLE001 — fall back to ECB
-            fb = self._fx_fallback or self._frankfurter
-            return Decimal(self._cached(("fxecb", pair), 3600,
-                                        lambda: fb(from_ccy, to_ccy)))
+
+        def ecb():
+            return (self._fx_fallback or self._frankfurter)(from_ccy, to_ccy)
+
+        sources = [(("fx", pair), self.cache_ttl, yahoo),
+                   (("fxecb", pair), 3600, ecb)]
+        if self._primary is not None:
+            sources.insert(0, (("pfx", pair), self.cache_ttl,
+                               lambda: self._primary.fx(from_ccy, to_ccy)))
+        errors = []
+        for key, ttl, fn in sources:
+            if key[0] == "pfx" and not self._primary_gate(key, ttl):
+                continue                    # over the keyed provider's budget
+            now = self.clock()
+            hit = self._cache.get(key)
+            if hit and now - hit[0] < ttl:
+                return Decimal(hit[1])
+            try:
+                val = fn()
+            except Exception as e:          # noqa: BLE001 — try the next one
+                errors.append(f"{key[0]}: {str(e)[:60]}")
+                continue
+            self._cache[key] = (now, val)
+            self._stale_keys.discard(("fx", pair))
+            return Decimal(val)
+        # every source failed: the newest last-good rate, if recent enough
+        now = self.clock()
+        hits = [self._cache[k] for k, _, _ in sources if k in self._cache]
+        if hits:
+            ts, val = max(hits, key=lambda h: h[0])
+            if now - ts <= self.FX_MAX_AGE:
+                self._stale_keys.add(("fx", pair))      # for the health view
+                return Decimal(val)
+            errors.append(f"last good rate is {int((now - ts) // 60)} min "
+                          f"old (limit {self.FX_MAX_AGE // 60})")
+        raise MarketError(f"no {from_ccy}→{to_ccy} rate — "
+                          + "; ".join(errors))
 
     def primary_name(self):
         return type(self._primary).__module__.rsplit(".", 1)[-1] \

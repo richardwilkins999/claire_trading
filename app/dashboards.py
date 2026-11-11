@@ -3416,27 +3416,35 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
     return Server((bind, port), Handler)
 
 
+def post_sell_review(api_base, inst, trigger=None, *, post=httpx.post):
+    """Ask claire-api to start a sell review; returns its work item id.
+    RAISES when it did not start (api down, timeout, an error status, no id
+    in the answer). It used to return None for all of those, and the watcher
+    counted the alert as fired with nothing behind it."""
+    r = post(f"{api_base}/api/run",
+             json={"ticker": inst["ticker"], "exchange": inst["exchange"],
+                   "currency": inst["currency"], "instrument_id": inst["id"],
+                   "trigger": trigger, "kind": "sell_review"}, timeout=10)
+    if r.status_code != 200:
+        raise RuntimeError(f"claire-api answered HTTP {r.status_code}: "
+                           f"{r.text[:120]}")
+    wi = r.json().get("work_item_id")
+    if not wi:
+        raise RuntimeError("claire-api returned no work item id")
+    return wi
+
+
 def start_watcher_thread(conn, repo, market, *, api_base, interval=600,
-                         clock=time.time, cal=None):
+                         clock=time.time, cal=None, alert=None):
     """The §15 loop lives in the dashboards process; sell-review launches go
     through claire-api's HTTP seam with a SHORT timeout (§15 lesson 8)."""
     from .watcher import Watcher
 
     def start_sell_review(inst, trigger=None):
-        try:
-            r = httpx.post(f"{api_base}/api/run",
-                           json={"ticker": inst["ticker"],
-                                 "exchange": inst["exchange"],
-                                 "currency": inst["currency"],
-                                 "instrument_id": inst["id"],
-                                 "trigger": trigger,
-                                 "kind": "sell_review"}, timeout=10)
-            return r.json().get("work_item_id")
-        except Exception:                        # noqa: BLE001
-            return None
+        return post_sell_review(api_base, inst, trigger)
 
     watcher = Watcher(conn, repo, market, start_sell_review, clock=clock,
-                      cal=cal)
+                      cal=cal, alert=alert)
 
     def loop():
         while True:
@@ -3461,6 +3469,8 @@ def start_watcher_thread(conn, repo, market, *, api_base, interval=600,
                         (int(clock()), json.dumps({
                             "checked": rep_.get("checked"),
                             "fired": len(rep_.get("fired") or []),
+                            "launch_failed": len(
+                                rep_.get("launch_failed") or []),
                             "market_closed": len(rep_.get("closed") or []),
                             "unpriced": len(rep_.get("unpriced") or [])})))
             except Exception:                    # noqa: BLE001
@@ -3507,8 +3517,10 @@ def main():
     secret = os.environ.get("CLAIRE_INTERNAL_SECRET", "")
     dash_key = ensure_dash_key(API_ROOT / "etc" / "claire.env")
     cal = sessions.load(conn) or None
+    from . import alerts
     start_watcher_thread(conn, repo, market,
-                         api_base="http://127.0.0.1:7788", cal=cal)
+                         api_base="http://127.0.0.1:7788", cal=cal,
+                         alert=alerts.send)
     # approvals + refused trades → the owner's Telegram DM (buttons relayed
     # back by Bob's bot to /api/telegram-decision)
     from . import telegram_approvals
