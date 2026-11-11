@@ -54,11 +54,12 @@ function liveSwitchHtml(st) {
 
 async function liveArm() {
   const st = LIVE || {};
-  const typed = prompt(
-    `⚠ TURN ON REAL-MONEY TRADING on Saxo.\n\n` +
+  const typed = await ask(
+    `This turns ON real-money trading on your Saxo account.\n\n` +
     `Spending caps (buys only): ${liveCapsLine(st.limits || {})}.\n` +
-    `Each trade still needs your approval, typing LIVE.\n\n` +
-    `Type exactly:  ${st.arm_phrase}`);
+    `Each trade still needs your own approval, typing LIVE.`,
+    {title: 'Turn on live trading?', live: true, type: st.arm_phrase,
+     ok: 'Turn live trading ON', cancel: 'Leave it off'});
   if (typed === null) return;
   try {
     LIVE = await api('/api/live-arm', {phrase: typed});
@@ -68,7 +69,8 @@ async function liveArm() {
 }
 
 async function liveDisarm() {
-  if (!confirm('Turn OFF live trading? New live orders stop at once; orders already at Saxo keep their stop-loss / take-profit.')) return;
+  if (!await ask('New live orders stop at once. Orders already at Saxo keep their stop-loss / take-profit.',
+      {title: 'Turn OFF live trading?', ok: 'Turn it off', cancel: 'Leave it on'})) return;
   try {
     LIVE = await api('/api/live-disarm', {reason: 'turned off from the dashboard'});
     toast('live trading is OFF');

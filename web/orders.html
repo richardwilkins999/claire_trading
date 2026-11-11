@@ -1,4 +1,7 @@
-<meta charset="utf-8"><title>Claire — Orders</title>
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Claire — Orders</title>
 <link rel="stylesheet" href="/style.css"><script src="/nav.js"></script><script src="/orderinfo.js"></script><script src="/live.js"></script><script src="/orderform.js"></script>
 <script>nav('/orders')</script>
 <style>
@@ -301,7 +304,7 @@ async function cancelOrder(id) {
   const where = o.status === 'pending_session'
     ? 'Claire is still holding it — nothing has been sent.'
     : 'It is cancelled at ' + o.account + ', together with its stop and target.';
-  if (!confirm(`Cancel ${o.side.toUpperCase()} ${fmt(o.qty, 0)} ${o.ticker} at ${o.side === 'buy' ? 'a purchase' : 'a sale'} price of ${o.limit_price} per share?\n\n${where}`)) return;
+  if (!await ask(`Cancel ${o.side.toUpperCase()} ${fmt(o.qty, 0)} ${o.ticker} at ${o.side === 'buy' ? 'a purchase' : 'a sale'} price of ${o.limit_price} per share?\n\n${where}`)) return;
   try {
     await api('/api/order-control', {work_item_id: o.work_item_id, action: 'cancel'});
     toast(o.ticker + ' order cancelled ✓');
@@ -390,7 +393,7 @@ async function saveOrder(id) {
   const v = editVals(), probs = editProblems(o, v);
   if (probs.length) { msg.innerHTML = `<b class="bad">${probs[0]}</b>`; return; }
   const word = o.side === 'buy' ? 'purchase' : 'sale';
-  if (o.status !== 'pending_session' && !confirm(
+  if (o.status !== 'pending_session' && !await ask(
       `Cancel the ${o.ticker} order at the broker and send a new one (${word} price ${v.entry} per share) to Approvals?`)) return;
   try {
     const out = await api('/api/order-control', {work_item_id: o.work_item_id, action: 'edit', ...v});
@@ -407,7 +410,7 @@ function closeEditor() { document.getElementById('editor').innerHTML = ''; }
 function trigBy(id) { return (DATA.triggers || []).find(t => String(t.id) === String(id)); }
 async function cancelTrigger(id) {
   const t = trigBy(id);
-  if (!t || !confirm(`Cancel trigger #${t.id}: ${t.rule}?`)) return;
+  if (!t || !await ask(`Cancel trigger #${t.id}: ${t.rule}?`)) return;
   try { await apiDelete('/api/price-triggers?id=' + encodeURIComponent(t.id)); toast('trigger cancelled'); load(); }
   catch (e) { toast(e.message, false); }
 }
@@ -471,7 +474,7 @@ async function saveTrigger(id) {
   if (body.trail_pct != null && (body.trail_pct < 0.5 || body.trail_pct > 90)) {
     msg.innerHTML = `<b class="bad">the ${trigTrailName(t)} must be between 0.5% and 90%</b>`; return; }
   for (const k of Object.keys(body)) if (body[k] == null) delete body[k];
-  if (body.mode === 'auto' && !confirm('AUTOMATIC: you approve this order now. When the price hits, ' +
+  if (body.mode === 'auto' && !await ask('AUTOMATIC: you approve this order now. When the price hits, ' +
       'the desk places it without asking again (paper account). Continue?')) return;
   try {
     const out = await api('/api/price-triggers', body);
@@ -564,5 +567,5 @@ async function load() {
   }
 }
 load();
-setInterval(load, 30000);
+poll(load, 30000);
 </script>

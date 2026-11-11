@@ -1,23 +1,132 @@
+/* The menu on every page. Five everyday pages inline; the rest in two
+   groups, so it fits one line at laptop width (thirteen links used to wrap
+   onto two). On the right: whether real money is switched on, always. */
+const NAV = [
+  ['/', 'Home'],
+  ['/approvals', 'Approvals'], ['/orders', 'Orders'],
+  ['/portfolio', 'Portfolio'], ['/watchlist', 'Watchlist'],
+  ['/markets', 'Markets'],
+  {label: 'Review', items: [['/trades', 'Trades'], ['/trading', 'Runs'],
+                            ['/usage', 'Usage']]},
+  {label: 'System', items: [['/agents', 'Agents & Schedule'],
+                            ['/providers', 'Providers & MCP'],
+                            ['/maintenance', 'Maintenance'],
+                            ['/saxo', 'Saxo accounts']]},
+  ['/claire', 'Ask Claire'],
+];
 function nav(active) {
-  const items = [["/", "Mission Control"], ["/approvals", "Approvals"],
-    ["/orders", "Orders"], ["/trades", "Trades"],
-    ["/markets", "Markets"], ["/watchlist", "Watchlist"],
-    ["/claire", "Claire"], ["/trading", "Trading"],
-    ["/portfolio", "Portfolio"], ["/saxo", "Saxo accounts"], ["/agents", "Agents & Schedule"],
-    ["/providers", "Providers & MCP"], ["/usage", "Usage"],
-    ["/maintenance", "Maintenance"]];
-  document.write('<nav>' + items.map(([href, label]) =>
-    `<a href="${href}" class="${href === active ? 'active' : ''}">${label}</a>`
-  ).join('') +
-  '<span style="flex:1"></span><a href="#" onclick="pair();return false" ' +
-  'title="paste the dashboard key from etc/claire.env">🔑</a>' +
-  '</nav><div id="msg"></div>');
+  const link = ([href, label]) =>
+    `<a href="${href}"${href === active ? ' class="active" aria-current="page"' : ''}>${label}` +
+    (href === '/approvals' ? '<span class="badge" id="nav-pending" hidden></span>' : '') + '</a>';
+  const html = NAV.map(it => Array.isArray(it) ? link(it)
+    : `<details class="navgrp${it.items.some(([h]) => h === active) ? ' active' : ''}">
+        <summary>${it.label}</summary>
+        <div class="navmenu">${it.items.map(link).join('')}</div></details>`).join('');
+  document.write('<nav aria-label="Claire">' + html +
+    '<span style="flex:1"></span>' +
+    '<span id="nav-mode" class="mode" title="checking…">…</span>' +
+    '<a href="#" onclick="pair();return false" aria-label="dashboard key" ' +
+    'title="paste the dashboard key from etc/claire.env">🔑</a>' +
+    '</nav><div id="live-strip" class="livestrip" hidden></div><div id="msg"></div>');
+  // one open group at a time; a click elsewhere closes it
+  document.addEventListener('click', e => {
+    document.querySelectorAll('details.navgrp[open]').forEach(d => {
+      if (!d.contains(e.target)) d.open = false;
+    });
+  });
+  navState();
+  poll(navState, 30000);
 }
+/* PAPER or LIVE, and how many decisions are waiting — on every page. Paper
+   versus live used to show only on Orders, and on Approvals once armed. */
+async function navState() {
+  const mode = document.getElementById('nav-mode');
+  if (!mode) return;
+  let s;
+  try { s = await api('/api/nav-state'); }
+  catch {
+    mode.className = 'mode unknown'; mode.textContent = '? cannot reach Claire';
+    mode.title = 'the dashboard server did not answer';
+    return;
+  }
+  const n = document.getElementById('nav-pending');
+  if (n) { n.hidden = !s.pending; n.textContent = s.pending || ''; }
+  const strip = document.getElementById('live-strip');
+  if (s.live_armed) {
+    mode.className = 'mode live'; mode.textContent = '● LIVE ARMED';
+    mode.title = 'Real-money trading is ON: approving a trade on the live account places a real order';
+    strip.hidden = false;
+    strip.innerHTML = 'LIVE TRADING IS ARMED — approving a trade on the live account places a real-money order. <a href="/orders">Turn it off on Orders</a>';
+  } else {
+    mode.className = 'mode paper'; mode.textContent = 'PAPER';
+    mode.title = s.live_accounts ? 'Real-money trading is OFF. Paper and simulated accounts only.'
+      : 'Paper and simulated accounts only — no live account is set up.';
+    strip.hidden = true;
+  }
+}
+/* A data poll: every `ms` while the tab is visible, not at all while it is
+   hidden, and once straight away when it is looked at again. */
+function poll(fn, ms) {
+  setInterval(() => { if (!document.hidden) fn(); }, ms);
+  document.addEventListener('visibilitychange',
+    () => { if (!document.hidden) fn(); });
+}
+/* An in-page confirmation, in place of the browser's own confirm() and
+   prompt() — those were used for every money action, including "type LIVE"
+   to place a real-money order (REVIEW-2026-11-11 §6.1.5).
+
+     if (!await ask('Cancel BUY 10 NVDA?', {ok: 'Cancel the order'})) return;
+     const typed = await ask('…', {type: 'LIVE', live: true});   // string | null
+
+   message: plain text, line breaks kept. opts.ok / opts.cancel: button
+   words — say what the button DOES. opts.danger: the action cannot be
+   undone (red button, Cancel focused). opts.live: real money (red frame and
+   banner). opts.type: a word that must be typed exactly before OK works.
+   opts.input: a free-text field, opts.value its starting text.
+   Resolves true/false, or the typed text / null when type or input is set. */
+function ask(message, opts = {}) {
+  return new Promise(resolve => {
+    const d = document.createElement('dialog');
+    d.className = 'ask' + (opts.live ? ' live' : '') + (opts.danger ? ' danger' : '');
+    const wantsText = opts.type != null || opts.input;
+    d.innerHTML =
+      (opts.live ? '<div class="ask-live">⚠ REAL MONEY</div>' : '') +
+      (opts.title ? `<h3>${esc(opts.title)}</h3>` : '') +
+      '<p class="ask-msg"></p>' +
+      (wantsText ? `<label class="ask-type">${opts.type != null
+          ? 'Type <b>' + esc(opts.type) + '</b> to confirm' : esc(opts.label || '')}
+          <input autocomplete="off" spellcheck="false"></label>` : '') +
+      `<div class="ask-btns"><button type="button" class="ghost" value="no">${esc(opts.cancel || 'Go back')}</button>
+        <button type="button" class="${opts.danger || opts.live ? 'reject' : ''}" value="yes">${esc(opts.ok || 'Confirm')}</button></div>`;
+    d.querySelector('.ask-msg').textContent = message;
+    const [no, yes] = d.querySelectorAll('.ask-btns button');
+    const box = d.querySelector('input');
+    if (box) {
+      box.value = opts.value || '';
+      if (opts.type != null) {
+        yes.disabled = true;
+        box.addEventListener('input', () => { yes.disabled = box.value !== opts.type; });
+      }
+      box.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && !yes.disabled) yes.click();
+      });
+    }
+    const done = v => { d.close(); d.remove(); resolve(v); };
+    no.onclick = () => done(wantsText ? null : false);
+    yes.onclick = () => done(wantsText ? box.value : true);
+    d.addEventListener('cancel', e => { e.preventDefault(); no.click(); });  // Esc
+    document.body.appendChild(d);
+    d.showModal();
+    (box || (opts.danger || opts.live ? no : yes)).focus();
+  });
+}
+/* a problem with what was typed: said in the page, not in a browser alert() */
+function tellBad(text) { toast(text, false); }
 function dashKey() { return localStorage.getItem('dashKey') || ''; }
-function pair() {
-  const k = prompt('Dashboard key (CLAIRE_DASHBOARD_KEY in etc/claire.env):',
-    dashKey());
-  if (k !== null) { localStorage.setItem('dashKey', k.trim()); toast('key saved'); }
+async function pair() {
+  const k = await ask('Paste the dashboard key. It is CLAIRE_DASHBOARD_KEY in etc/claire.env on the desk\'s own PC, and is kept only in this browser.',
+    {title: 'Dashboard key', input: true, label: 'Key', value: dashKey(), ok: 'Save'});
+  if (k !== null) { localStorage.setItem('dashKey', k.trim()); toast('key saved'); navState(); }
 }
 async function api(path, opts) {
   const headers = {'X-Dash-Key': dashKey()};

@@ -1,4 +1,7 @@
-<meta charset="utf-8"><title>Claire — Providers &amp; MCP</title>
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Claire — Providers &amp; MCP</title>
 <link rel="stylesheet" href="/style.css"><script src="/nav.js"></script>
 <script>nav('/providers')</script>
 <main>
@@ -211,10 +214,10 @@ async function saveMcp() {
   refresh();
 }
 async function delMcp(id) {
-  if (!confirm('Delete MCP server "' + id + '"?')) return;
+  if (!await ask('Delete MCP server "' + id + '"?')) return;
   try { await api('/api/mcp', {id, action: 'delete'}); toast('deleted'); }
   catch (e) { toast(e.message, false); }
   refresh();
 }
-refresh(); setInterval(refresh, 20000);
+refresh(); poll(refresh, 20000);
 </script>

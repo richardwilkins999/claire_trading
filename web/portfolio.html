@@ -1,4 +1,7 @@
-<meta charset="utf-8"><title>Claire — Portfolio</title>
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Claire — Portfolio</title>
 <link rel="stylesheet" href="/style.css"><script src="/nav.js"></script>
 <script src="/charts.js"></script>
 <link rel="stylesheet" href="/orderform.css"><script src="/orderform.js"></script>
@@ -558,7 +561,7 @@ function renderRest() {
 async function acct(id, action) {
   const amount = Number(document.getElementById('amt-' + id).value);
   if (!amount || amount <= 0) return toast('enter an amount', false);
-  if (!confirm(`${action} ${fmt(amount)} ${action === 'deposit' ? 'into'
+  if (!await ask(`${action} ${fmt(amount)} ${action === 'deposit' ? 'into'
     : 'from'} ${id} (paper cash)?`)) return;
   try {
     const r = await api('/api/account-action',
@@ -574,7 +577,7 @@ function connectSSE() {
     if (['executing', 'done'].includes(e.to_state)) { CHARTS = {}; refresh(); }
   });
 }
-refresh(); connectSSE(); setInterval(refresh, 60000);
+refresh(); connectSSE(); poll(refresh, 60000);
 window.addEventListener('resize', () => {
   if (DATA) Object.values(DATA.exchanges).flat()
     .forEach(p => drawPosChart(p.instrument_id,

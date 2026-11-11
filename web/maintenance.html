@@ -1,4 +1,7 @@
-<meta charset="utf-8"><title>Claire — Maintenance</title>
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Claire — Maintenance</title>
 <link rel="stylesheet" href="/style.css"><script src="/nav.js"></script>
 <script>nav('/maintenance')</script>
 <style>
@@ -130,5 +133,5 @@ async function runNow() {
 }
 
 load();
-setInterval(load, 60000);
+poll(load, 60000);
 </script>

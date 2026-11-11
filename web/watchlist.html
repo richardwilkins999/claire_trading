@@ -1,4 +1,7 @@
-<meta charset="utf-8"><title>Claire — Watchlist</title>
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Claire — Watchlist</title>
 <link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/orderform.css"><script src="/nav.js"></script>
 <script src="/charts.js"></script><script src="/sell.js"></script><script src="/orderform.js"></script>
 <script>nav('/watchlist')</script>
@@ -481,7 +484,7 @@ async function buySend() {
   const v = buyValues(), msg = document.getElementById('b-msg'), err = buyCheckErr(v);
   if (err) { msg.innerHTML = `<b class="bad">${esc(err)}</b>`; return; }
   const a = acctOf(v.broker), c = (v.r.quote || {}).currency || '';
-  if (!confirm(`Send to approval: BUY ${v.qty} shares of ${v.r.ticker} ` +
+  if (!await ask(`Send to approval: BUY ${v.qty} shares of ${v.r.ticker} ` +
       (v.mkt ? `at the current price (about ${v.entry} ${c})` : `at a purchase price of ${v.entry} ${c}`) +
       `, stop-loss ${v.stop}${v.target ? ', take-profit ' + v.target : ''}` +
       `${v.trail ? ', ' + trailName(a, v.r.exchange) + ' ' + v.trail + '%' : ''} on ${a.label || v.broker}?` +
@@ -774,7 +777,7 @@ async function trigCreate() {
     ? '\n\nAUTOMATIC: you are approving this order NOW. When the price hits, the desk ' +
       'places it without asking again (paper account).'
     : '\n\nWhen it hits you get an approval card (and a Telegram message); nothing trades until you approve.';
-  if (!confirm((EDITING ? `Replace trigger #${EDITING} with: ` : 'Create trigger: ') + what + how)) return;
+  if (!await ask((EDITING ? `Replace trigger #${EDITING} with: ` : 'Create trigger: ') + what + how)) return;
   const body = {ticker: v.r.ticker, exchange: v.r.exchange, direction: v.dir,
     condition: v.condition, trigger_price: v.trig, limit_price: v.limit,
     stop: v.stop, target: v.target, broker: v.broker, mode: v.mode,
@@ -880,7 +883,7 @@ function stopEditing() {
   defaultsTrigger();
 }
 async function cancelTrigger(id) {
-  if (!confirm(`Cancel trigger #${id}?`)) return;
+  if (!await ask(`Cancel trigger #${id}?`)) return;
   try {
     await apiDelete('/api/price-triggers?id=' + encodeURIComponent(id)); toast('trigger cancelled');
     if (String(EDITING) === String(id)) stopEditing();
@@ -926,7 +929,7 @@ async function removeRow(k) {
   const r = rowBy(k);
   if (!r) return;
   const active = (r.triggers || []).filter(t => t.status === 'active');
-  if (!confirm(`Remove ${r.ticker} (${r.exchange}) from the watchlist?` + (active.length
+  if (!await ask(`Remove ${r.ticker} (${r.exchange}) from the watchlist?` + (active.length
     ? `\n\nIts ${active.length} active trigger(s) will be cancelled too.` : ''))) return;
   try {
     for (const t of active) await apiDelete('/api/price-triggers?id=' + encodeURIComponent(t.id));
@@ -940,5 +943,5 @@ async function removeRow(k) {
 document.getElementById('mexchange').innerHTML =
   DESK_EX.map(x => `<option value="${esc(x)}">${esc(x)}</option>`).join('');
 refresh(true);
-setInterval(refresh, 30000);
+poll(refresh, 30000);
 </script>

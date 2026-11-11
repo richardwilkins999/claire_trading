@@ -421,6 +421,7 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                     "/api/providers": self._providers,
                     "/api/agent-graph": self._agent_graph,
                     "/api/live-status": self._live_status,
+                    "/api/nav-state": self._nav_state,
                     "/api/maintenance": self._maintenance,
                     "/api/exchanges": self._exchanges,
                 }.get(u.path)
@@ -2557,6 +2558,24 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
             """The browser is on this machine (loopback), not the LAN."""
             ip = (self.client_address or ("",))[0]
             return ip in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+
+        def _nav_state(self):
+            """What every page's menu shows: how many decisions are waiting
+            and whether real money is switched on. Two reads, no writes —
+            every open tab polls it."""
+            from . import live_trading
+            (pending,) = conn.execute(
+                "SELECT COUNT(*) FROM work_items WHERE"
+                " state='awaiting_approval'").fetchone()
+            row = conn.execute(
+                "SELECT armed FROM live_trading WHERE id=1").fetchone()
+            enabled = live_trading.env_enabled(env or {})
+            (live_accounts,) = conn.execute(
+                "SELECT COUNT(*) FROM broker_accounts WHERE"
+                " environment='live'").fetchone()
+            return {"pending": pending,
+                    "live_armed": bool(row and row["armed"]) and enabled,
+                    "live_enabled": enabled, "live_accounts": live_accounts}
 
         def _live_status(self):
             from . import live_trading

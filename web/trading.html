@@ -1,4 +1,7 @@
-<meta charset="utf-8"><title>Claire — Trading</title>
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Claire — Trading</title>
 <link rel="stylesheet" href="/style.css"><script src="/nav.js"></script><script src="/orderinfo.js"></script>
 <script>nav('/trading')</script>
 <style>
@@ -253,7 +256,7 @@ async function orderCancel(id) {
   const where = o.status === 'pending_session'
     ? 'Claire is still holding it — nothing has been sent.'
     : 'It will be cancelled at ' + (o.account || 'the broker') + ', with its stop and target.';
-  if (!confirm(`Cancel the ${esc(o.side)} of ${shares(o.qty)} ${esc(r.ticker)} at a limit price of ${esc(o.limit_price)} per share?\n\n${where}`)) return;
+  if (!await ask(`Cancel the ${esc(o.side)} of ${shares(o.qty)} ${esc(r.ticker)} at a limit price of ${esc(o.limit_price)} per share?\n\n${where}`)) return;
   try {
     await api('/api/order-control', {work_item_id: id, action: 'cancel'});
     toast(r.ticker + ' order cancelled ✓');
@@ -295,7 +298,7 @@ async function orderEditSend(id) {
     msg.innerHTML = `<b class="bad">the stop must be ${buy ? 'below' : 'above'} the limit price</b>`; return; }
   if (v.target != null && (buy ? v.target <= v.entry : v.target >= v.entry)) {
     msg.innerHTML = `<b class="bad">the target must be ${buy ? 'above' : 'below'} the limit price</b>`; return; }
-  if (o.status !== 'pending_session' && !confirm(
+  if (o.status !== 'pending_session' && !await ask(
       `Cancel the ${esc(r.ticker)} order at the broker and send a new one (limit price ${esc(v.entry)} per share) to Approvals?`)) return;
   try {
     const out = await api('/api/order-control', {work_item_id: id, action: 'edit', ...v});
@@ -575,5 +578,5 @@ function renderFeed(events) {
       — ${esc(x.said)}${x.n > 1 ? ` (${fmt(x.n, 0)} times)` : ''}</li>`)
     .join('') || '<li class="muted">nothing yet</li>';
 }
-refresh(); setInterval(refresh, 8000);
+refresh(); poll(refresh, 8000);
 </script>

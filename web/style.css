@@ -6,15 +6,70 @@
   --purple:#b48cff;
   --mono: ui-monospace,"Cascadia Mono",Menlo,monospace; }
 * { box-sizing:border-box; margin:0; }
+:root { color-scheme:dark; }       /* native selects, scrollbars, inputs */
 body { color:var(--text); font:14px/1.5 system-ui, sans-serif;
   padding:0 0 4rem; background:
   radial-gradient(1200px 600px at 50% -200px, #0d1a2e 0%, var(--bg) 60%); }
-nav { display:flex; gap:1.2rem; padding:.8rem 1.4rem;
-  background:rgba(11,18,32,.9); backdrop-filter:blur(4px);
-  border-bottom:1px solid var(--line); position:sticky; top:0; z-index:5; }
-nav a { color:var(--dim); text-decoration:none; font-weight:600;
-  letter-spacing:.04em; }
-nav a.active, nav a:hover { color:var(--accent); }
+/* links were browser-default blue on the dark background */
+a { color:var(--accent); text-decoration-color:var(--accent-dim);
+  text-underline-offset:2px; }
+a:hover { text-decoration-color:var(--accent); }
+:focus-visible { outline:2px solid var(--accent); outline-offset:2px;
+  border-radius:3px; }
+nav { display:flex; gap:.3rem 1.1rem; padding:.7rem 1.4rem; flex-wrap:wrap;
+  align-items:center; background:rgba(11,18,32,.94);
+  backdrop-filter:blur(4px); border-bottom:1px solid var(--line);
+  position:sticky; top:0; z-index:5; }
+nav a, nav summary { color:#8fa6bd; text-decoration:none; font-weight:600;
+  letter-spacing:.04em; white-space:nowrap; }
+nav a.active, nav a:hover, nav summary:hover, nav .navgrp.active > summary,
+nav .navgrp[open] > summary { color:var(--accent); }
+nav .navgrp { position:relative; }
+nav summary { cursor:pointer; list-style:none; }
+nav summary::-webkit-details-marker { display:none; }
+nav summary::after { content:" ▾"; font-size:.7em; }
+nav .navmenu { position:absolute; top:calc(100% + .55rem); left:-.7rem;
+  display:flex; flex-direction:column; gap:.1rem; min-width:11rem;
+  background:var(--panel); border:1px solid var(--line); border-radius:10px;
+  padding:.4rem; box-shadow:0 10px 30px rgba(0,0,0,.5); z-index:6; }
+nav .navmenu a { padding:.35rem .6rem; border-radius:6px; }
+nav .navmenu a:hover, nav .navmenu a.active { background:var(--panel2); }
+nav .badge { display:inline-block; margin-left:.35rem; min-width:1.2rem;
+  padding:0 .35rem; border-radius:999px; background:var(--warn);
+  color:#1a1200; font-size:.72rem; font-weight:700; text-align:center; }
+.tabs { display:flex; gap:.4rem; margin:1rem 0 .2rem;
+  border-bottom:1px solid var(--line); }
+.tabs .tab { background:transparent; color:#8fa6bd; border:none;
+  border-bottom:2px solid transparent; border-radius:0; padding:.4rem .8rem;
+  font-weight:600; cursor:pointer; }
+.tabs .tab.on { color:var(--accent); border-bottom-color:var(--accent); }
+/* nav.js ask(): the in-page confirmation */
+dialog.ask { margin:auto;          /* the reset above zeroes it: centre again */
+  background:var(--panel); color:var(--text); max-width:34rem;
+  width:calc(100% - 2rem); border:1px solid var(--line); border-radius:14px;
+  padding:1.1rem 1.3rem; box-shadow:0 20px 60px rgba(0,0,0,.6); }
+dialog.ask::backdrop { background:rgba(2,6,12,.72); }
+dialog.ask.live, dialog.ask.danger { border-color:var(--bad); }
+dialog.ask h3 { margin-bottom:.5rem; }
+dialog.ask .ask-live { background:var(--bad); color:#fff; font-weight:700;
+  letter-spacing:.08em; border-radius:8px; padding:.3rem .7rem;
+  margin-bottom:.7rem; text-align:center; }
+dialog.ask .ask-msg { white-space:pre-wrap; line-height:1.5; }
+dialog.ask .ask-type { display:block; margin-top:.8rem; }
+dialog.ask .ask-type input { display:block; width:100%; margin-top:.3rem; }
+dialog.ask .ask-btns { display:flex; gap:.6rem; justify-content:flex-end;
+  margin-top:1.1rem; flex-wrap:wrap; }
+dialog.ask button:disabled { opacity:.4; cursor:not-allowed; }
+/* paper or live, on every page */
+nav .mode { font-size:.72rem; font-weight:700; letter-spacing:.1em;
+  padding:.15rem .6rem; border-radius:999px; border:1px solid var(--line);
+  color:#8fa6bd; white-space:nowrap; }
+nav .mode.paper { border-color:var(--accent-dim); color:var(--accent); }
+nav .mode.live { background:var(--bad); border-color:var(--bad); color:#fff; }
+nav .mode.unknown { border-color:var(--warn); color:var(--warn); }
+.livestrip { background:var(--bad); color:#fff; font-weight:600;
+  text-align:center; padding:.35rem 1rem; position:sticky; top:0; z-index:4; }
+.livestrip a { color:#fff; }
 main { max-width:1280px; margin:1.2rem auto; padding:0 1.2rem; }
 h1 { font-size:18px; letter-spacing:.2em; color:var(--accent);
   text-transform:uppercase; margin:.4rem 0 1rem; }
@@ -273,3 +328,17 @@ tr.sel td { background:#0f2233; }
 .bubble.toolcall { background:transparent; border:1px dashed var(--line);
   color:var(--dim); font-size:.8rem; font-family:var(--mono); }
 .spark { vertical-align:middle; }
+
+/* ── narrow screens ─────────────────────────────────────────────────────
+   No page had a viewport tag, so a phone drew the desktop page at 980 px
+   and zoomed out. With one, wide tables need to scroll inside themselves
+   rather than push the whole page sideways. */
+@media (max-width: 760px) {
+  nav { padding:.55rem .8rem; gap:.25rem .8rem; }
+  nav .navmenu { left:auto; right:0; }
+  main { padding:0 .7rem; margin:.8rem auto; }
+  h1 { letter-spacing:.12em; }
+  table { display:block; overflow-x:auto; -webkit-overflow-scrolling:touch; }
+  .statstrip .stat { flex:1 1 44%; }
+  button, select, input { min-height:2.2rem; }
+}

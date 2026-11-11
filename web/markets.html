@@ -1,4 +1,7 @@
-<meta charset="utf-8"><title>Claire — Markets</title>
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Claire — Markets</title>
 <link rel="stylesheet" href="/style.css"><script src="/nav.js"></script>
 <script src="/charts.js"></script>
 <script>nav('/markets')</script>
@@ -358,7 +361,7 @@ async function buyNow(ex) {
   const r = Math.min(atr ? 2 * atr : price * 0.08, price * 0.24);
   const rp = v => Math.round(v * (price < 1 ? 1e4 : 100)) / (price < 1 ? 1e4 : 100);
   const stop = rp(price - r), target = rp(price + Math.min(2 * r, price * 0.24));
-  if (!confirm(`Put a BUY of ${ticker} at the current price (${fmt(price)}) on Approvals?\n\n` +
+  if (!await ask(`Put a BUY of ${ticker} at the current price (${fmt(price)}) on Approvals?\n\n` +
       `Suggested stop ${stop} and target ${target} (${atr ? '2 × the daily move' : '8% — no chart data'}, 2:1).\n` +
       'You choose the size and account, and can change the stop and target, on the approval card. Nothing trades until you approve.')) return;
   try {

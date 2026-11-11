@@ -687,7 +687,7 @@ def test_usage_page_serves_and_is_in_the_nav(web):
     base, _ = web
     r = httpx.get(base + "/usage")
     assert r.status_code == 200 and "/api/usage" in r.text
-    assert '["/usage", "Usage"]' in httpx.get(base + "/nav.js").text
+    assert "['/usage', 'Usage']" in httpx.get(base + "/nav.js").text
 
 
 def test_trading_page_runs_read_as_stories(web, tmp_path):
@@ -830,7 +830,7 @@ def test_trading_page_escapes_and_keeps_its_links():
     assert "api('/api/run'," in src
     assert 'href="/approvals"' in src
     assert "/api/agent-narrative?agent=" in src
-    assert "setInterval(refresh" in src
+    assert "poll(refresh" in src
     for raw in ("${r.id}", "${r.ticker}", "${s.name}", "${st.summary}",
                 "${x.reason}", "${o.account}"):
         assert raw not in src, raw

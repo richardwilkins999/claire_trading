@@ -1,4 +1,7 @@
-<meta charset="utf-8"><title>Claire — Agents &amp; Schedule</title>
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Claire — Agents &amp; Schedule</title>
 <link rel="stylesheet" href="/style.css"><script src="/nav.js"></script>
 <script>nav('/agents')</script>
 <main>
@@ -185,5 +188,5 @@ async function saveJob(job) {
   refreshJobs();
 }
 refreshAgents(); refreshJobs();
-setInterval(() => { refreshAgents(); refreshJobs(); }, 15000);
+poll(() => { refreshAgents(); refreshJobs(); }, 15000);
 </script>

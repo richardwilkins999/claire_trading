@@ -191,7 +191,7 @@ async function sellSend(key) {
   if (probs.length) return sellMsg(key, `<b class="bad">${probs[0]}</b>`);
   const how = v.mkt ? 'at the current price (about ' + v.entry + ')'
     : 'at a sale price of no less than ' + v.entry;
-  if (!confirm(`Send to approval: SELL ${v.qty} ${v.p.ticker} ${how} on ` +
+  if (!await ask(`Send to approval: SELL ${v.qty} ${v.p.ticker} ${how} on ` +
                `${v.p.label || v.p.account_id}?\n\nNothing is sold until you ` +
                'approve it on the Approvals page.')) return;
   try {

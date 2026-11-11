@@ -1,4 +1,7 @@
-<meta charset="utf-8"><title>Claire — Mission Control</title>
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Claire — Mission Control</title>
 <link rel="stylesheet" href="/style.css"><script src="/nav.js"></script>
 <script>nav('/')</script>
 <main>
@@ -8,6 +11,24 @@
 
   <div id="pending"></div>
 
+  <div class="tabs" role="tablist">
+    <button class="tab" id="tab-desk" role="tab" onclick="showTab('desk')">Today</button>
+    <button class="tab" id="tab-system" role="tab" onclick="showTab('system')">System map</button>
+  </div>
+
+  <!-- the daily question: what do I hold, what protects it, what is
+       waiting. This page used to be a health strip and a wiring diagram. -->
+  <section id="view-desk">
+    <div class="statstrip" id="desk-totals"></div>
+    <h2>What you hold <span class="muted" id="desk-asof"></span></h2>
+    <div id="desk-positions"><p class="muted">loading…</p></div>
+    <h2>Orders waiting to fill</h2>
+    <div id="desk-orders"></div>
+    <h2>Price triggers waiting</h2>
+    <div id="desk-triggers"></div>
+  </section>
+
+  <section id="view-system" hidden>
   <h2>System map</h2>
   <div class="mapwrap"><svg id="map" viewBox="0 0 1240 530"
     preserveAspectRatio="xMidYMin meet"></svg></div>
@@ -32,6 +53,7 @@
       moomoo use Claire's paper sim</span>
     <span>hover for detail · click to inspect, question or configure</span>
   </div>
+  </section>
 
 </main>
 
@@ -737,6 +759,101 @@ function renderStrip() {
     pill('data', (GRAPH && GRAPH.market_data.source) || '—') +
     pill('paper cash', perCcy(sumByCcy(o.cash, 'cash'), 'cash', {dp: 0}));
 }
+/* ── Today: holdings, protection, what is waiting ─────────────────── */
+let TODAY = null;
+function showTab(t) {
+  for (const k of ['desk', 'system']) {
+    document.getElementById('view-' + k).hidden = k !== t;
+    document.getElementById('tab-' + k).classList.toggle('on', k === t);
+    document.getElementById('tab-' + k).setAttribute('aria-selected', k === t);
+  }
+  try { localStorage.setItem('homeTab', t); } catch {}
+  if (location.hash !== (t === 'system' ? '#system' : ''))
+    history.replaceState(null, '', t === 'system' ? '#system' : location.pathname);
+}
+/* who would sell these shares if the price fell: an order at the broker,
+   Claire's own simulation, only a level in the plan, or nothing */
+function protectionOf(p) {
+  const legs = p.legs || [], lv = p.levels || {}, ccy = p.currency || '';
+  const one = (kind, planned, word) => {
+    const l = legs.filter(x => x.leg === kind);
+    if (l.length) {
+      const sim = l.every(x => String(x.venue_order || '').startsWith('sim-'));
+      const px = l.map(x => fmt(x.price, x.price < 10 ? 3 : 2)).join(', ');
+      return `<span class="pill ok" title="${sim ? "held by Claire's simulation — sells at the live price"
+        : 'an order resting at the broker — sells by itself'}">${word} ${px}${sim ? ' · sim' : ' · at broker'}</span>`;
+    }
+    if (planned != null)
+      return `<span class="pill warn" title="only a level in the plan: no order exists, nothing sells here">${word} ${fmt(planned, planned < 10 ? 3 : 2)} · plan only</span>`;
+    return kind === 'stop' ? '<span class="pill bad" title="nothing sells on the way down">no stop</span>' : '';
+  };
+  const alert = lv.alert != null
+    ? `<span class="pill" title="Claire asks you before selling if the price falls to this">alert ${fmt(lv.alert, lv.alert < 10 ? 3 : 2)}</span>` : '';
+  return [one('stop', lv.stop_loss, 'stop'), one('target', lv.take_profit, 'target'), alert]
+    .filter(Boolean).join(' ') + ` <span class="muted small">${esc(ccy)}</span>`;
+}
+function renderDesk() {
+  const d = TODAY;
+  if (!d) return;
+  const pf = d.portfolio, t = pf.totals || [];
+  const pill = (l, v) => `<div class="stat"><span>${l}</span><b>${v}</b></div>`;
+  document.getElementById('desk-totals').innerHTML =
+    pill('market value', perCcy(t, 'value')) +
+    pill('unrealized', perCcy(t, 'unrealized', {signed: true})) +
+    pill('cash', perCcy(t, 'cash', {dp: 0})) +
+    pill('equity', perCcy(t, 'equity', {dp: 0}));
+  document.getElementById('desk-asof').textContent =
+    '· ' + new Date().toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+  const pos = Object.values(pf.exchanges || {}).flat()
+    .sort((a, b) => Math.abs(b.value_base || 0) - Math.abs(a.value_base || 0));
+  document.getElementById('desk-positions').innerHTML = pos.length
+    ? `<table><tr><th>Stock</th><th style="text-align:right">Shares</th>
+        <th style="text-align:right">Value</th><th style="text-align:right">Profit / loss</th>
+        <th>What protects it</th><th>Account</th></tr>${pos.map(p => {
+        const u = p.unrealized_base, c = esc(p.base_currency || '');
+        return `<tr><td><a href="/portfolio"><b>${esc(p.ticker)}</b></a>
+            <span class="muted small">${esc(p.exchange)}${p.is_open === false ? ' · closed' : ''}</span></td>
+          <td style="text-align:right">${fmt(p.qty, p.qty % 1 ? 4 : 0)}</td>
+          <td style="text-align:right">${p.value_base == null ? '<span class="warn">no price</span>' : fmt(p.value_base, 0) + ' ' + c}</td>
+          <td style="text-align:right" class="${u == null ? '' : u >= 0 ? 'ok' : 'bad'}">${u == null ? '—'
+            : (u >= 0 ? '+' : '') + fmt(u, 0) + ' ' + c}${p.unrealized_pct == null ? ''
+            : ` <span class="small">(${p.unrealized_pct >= 0 ? '+' : ''}${fmt(p.unrealized_pct, 1)}%)</span>`}</td>
+          <td>${protectionOf(p)}</td>
+          <td class="muted small">${esc(p.account_id)}</td></tr>`;
+      }).join('')}</table>`
+    : '<p class="muted">No open positions.</p>';
+  const o = d.orders || {};
+  const open = (o.entries || []).filter(x =>
+    ['pending_session', 'placed', 'partially_filled'].includes(x.status));
+  document.getElementById('desk-orders').innerHTML = open.length
+    ? `<table><tr><th>Order</th><th style="text-align:right">Shares</th>
+        <th style="text-align:right">Limit</th><th>Where it is</th><th>Until</th></tr>${open.map(x => `
+        <tr><td><a href="/orders"><b>${esc(x.side).toUpperCase()} ${esc(x.ticker)}</b></a>
+            <span class="muted small">${esc(x.exchange || '')}</span></td>
+          <td style="text-align:right">${fmt(x.qty, 0)}${x.filled ? ` <span class="small muted">(${fmt(x.filled, 0)} filled)</span>` : ''}</td>
+          <td style="text-align:right">${x.limit_price == null ? 'market' : fmt(x.limit_price, 2) + ' ' + esc(x.currency || '')}</td>
+          <td>${x.status === 'pending_session' ? '<span class="pill warn">waiting for the market to open</span>'
+            : `<span class="pill">${esc(x.where || x.account || 'at the venue')}</span>`}</td>
+          <td class="small">${x.expires_at ? new Date(x.expires_at * 1000).toLocaleString([], {weekday: 'short', hour: '2-digit', minute: '2-digit'}) : '—'}</td></tr>`).join('')}</table>`
+    : '<p class="muted">Nothing is waiting to fill. <a href="/orders">Orders</a></p>';
+  const trig = (o.triggers || []).filter(x => x.status === 'active');
+  document.getElementById('desk-triggers').innerHTML = trig.length
+    ? `<table><tr><th>Trigger</th><th>Rule</th><th>Account</th></tr>${trig.map(x => `
+        <tr><td><a href="/watchlist"><b>${esc(x.ticker)}</b></a> <span class="muted small">${esc(x.exchange || '')}</span></td>
+          <td>${esc(x.rule || x.direction || '')}</td><td class="muted small">${esc(x.account || '')}</td></tr>`).join('')}</table>`
+    : '<p class="muted">No price triggers are waiting. <a href="/watchlist">Watchlist</a></p>';
+}
+async function refreshDesk() {
+  try {
+    const [portfolio, orders] = await Promise.all([
+      api('/api/portfolio'), api('/api/orders').catch(() => ({}))]);
+    TODAY = {portfolio, orders};
+    renderDesk();
+  } catch (e) {
+    document.getElementById('desk-positions').innerHTML =
+      `<p class="bad">Could not load your holdings: ${esc(e.message)}</p>`;
+  }
+}
 async function refreshGraph() {
   try {
     GRAPH = await api('/api/agent-graph');
@@ -790,5 +907,7 @@ refresh().then(() => {
   const want = localStorage.getItem('openDrawer');
   if (want) { localStorage.removeItem('openDrawer'); openDrawer(want); }
 });
-connectSSE(); setInterval(refresh, 20000);
+connectSSE(); poll(refresh, 20000);
+showTab(location.hash === '#system' ? 'system' : 'desk');
+refreshDesk(); poll(refreshDesk, 60000);
 </script>

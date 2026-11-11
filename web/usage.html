@@ -1,5 +1,7 @@
 <!doctype html>
-<meta charset="utf-8"><title>Claire — Usage</title>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Claire — Usage</title>
 <link rel="stylesheet" href="/style.css"><script src="/nav.js"></script>
 <script>nav('/usage')</script>
 <style>
@@ -260,5 +262,5 @@ async function load() {
   document.getElementById('note').textContent = d.pricing_note;
 }
 load();
-setInterval(load, 60000);
+poll(load, 60000);
 </script>

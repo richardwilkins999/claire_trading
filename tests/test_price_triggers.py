@@ -556,7 +556,7 @@ def test_watchlist_data_and_page(dash):
             "saxo_live": False, "saxo": True}
         page = c.get("/watchlist")
         assert page.status_code == 200 and "price-triggers" in page.text
-    assert '["/watchlist", "Watchlist"]' in (ROOT / "web" /
+    assert "['/watchlist', 'Watchlist']" in (ROOT / "web" /
                                              "nav.js").read_text()
 
 

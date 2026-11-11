@@ -1,4 +1,7 @@
-<meta charset="utf-8"><title>Claire — Approvals</title>
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Claire — Approvals</title>
 <link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/orderform.css">
 <script src="/nav.js"></script><script src="/orderform.js"></script>
 <script>nav('/approvals')</script>
@@ -180,10 +183,12 @@ async function retryTrade(id) {
     `${v.stop != null ? ', stop-loss ' + v.stop : ''}${v.target != null ? ', take-profit ' + v.target : ''}` +
     `${v.trail_pct ? ', ' + trailName(acct, a.exchange) + ' ' + v.trail_pct + '%' : ''}\non ${acct.label || v.broker}`;
   if (acct.environment === 'live') {
-    const typed = prompt(`⚠ REAL MONEY.\n${what}\n\nType LIVE to retry:`);
+    const typed = await ask(what, {title: 'Retry with real money?', live: true,
+      type: 'LIVE', ok: 'Place the order', cancel: 'Do not send'});
     if (typed !== 'LIVE') return;
     v.confirm_live = 'LIVE';
-  } else if (!confirm(`Retry: ${what}?`)) return;
+  } else if (!await ask(what, {title: 'Send this order again?', ok: 'Send it',
+                               cancel: 'Do not send'})) return;
   try {
     await api('/api/trade-retry', v);
     Object.keys(FORM).forEach(k => { if (k.endsWith('-' + id)) delete FORM[k]; });
@@ -196,7 +201,8 @@ async function retryTrade(id) {
 }
 
 async function cancelTrade(id) {
-  if (!confirm('Cancel this trade? You can override the PASS again later.')) return;
+  if (!await ask('The refused trade is dropped. You can override the PASS again later.',
+      {title: 'Cancel this trade?', ok: 'Cancel the trade', cancel: 'Keep it'})) return;
   try { await api('/api/trade-cancel', {work_item_id: id}); toast('cancelled'); }
   catch (e) { toast(e.message, false); }
   refresh();
@@ -546,7 +552,7 @@ async function override(id) {
       ` (${(Math.abs(entry - v.stop) / entry * 100).toFixed(1)}% away)` +
       (v.target ? `, take-profit ${v.target}` : '') +
       (v.trail ? `, ${trailName(acct, (CTX[id] || {}).exchange)} ${v.trail}%` : '');
-  if (!confirm(`Overrule the desk on ${r.ticker}?\n\nThe arbiter returned ` +
+  if (!await ask(`Overrule the desk on ${r.ticker}?\n\nThe arbiter returned ` +
     `PASS at conviction ${fmt(r.conviction)}. You are sending it to the ` +
     `approval gate as ${what}, on ${acct.label || v.broker}.\n\nNothing trades until you approve it there.`)) return;
   try {
@@ -1004,7 +1010,7 @@ async function act(id, action, token, sell) {
                                  take_profit: tg.value === '' ? null : Number(tg.value)};
     if (mode === 'manual') {
       const lim = fv('lvent-' + id);
-      if (!lim) { alert('Enter a price per share.'); return; }
+      if (!lim) { tellBad('Enter a price per share.'); return; }
       body.levels = {...(body.levels || {}), entry: lim};
     } else if (mode === 'market' && livePx(id)) {
       // the stop / target were set against the current price: check them
@@ -1017,23 +1023,23 @@ async function act(id, action, token, sell) {
     const buySide = (t.direction || 'buy') === 'buy';
     if (fill && !isExit(a)) {
       if (lv.stop_loss != null && (buySide ? lv.stop_loss >= fill : lv.stop_loss <= fill)) {
-        alert(`The stop-loss (${lv.stop_loss}) must be ${buySide ? 'below' : 'above'} ${fill}, the price this order fills at — otherwise it sells straight away.`);
+        tellBad(`The stop-loss (${lv.stop_loss}) must be ${buySide ? 'below' : 'above'} ${fill}, the price this order fills at — otherwise it sells straight away.`);
         return;
       }
       if (lv.take_profit != null && (buySide ? lv.take_profit <= fill : lv.take_profit >= fill)) {
-        alert(`The take-profit (${lv.take_profit}) must be ${buySide ? 'above' : 'below'} ${fill}, the price this order fills at.`);
+        tellBad(`The take-profit (${lv.take_profit}) must be ${buySide ? 'above' : 'below'} ${fill}, the price this order fills at.`);
         return;
       }
     }
     let what;
     if (sell) {
       body.qty = fv('qty-' + id);
-      if (!body.qty) { alert('Enter the number of shares.'); return; }
+      if (!body.qty) { tellBad('Enter the number of shares.'); return; }
       what = `${body.qty} shares`;
     } else {
       const shares = fv('shr-' + id), px = sharePx(id), fx = fxFor(id, a);
       if (!shares || !px || !fx) {
-        alert(`${a.ticker}: enter an amount or a number of shares (at least one ` +
+        tellBad(`${a.ticker}: enter an amount or a number of shares (at least one ` +
           `${((CTX[id] || {}).lot || 1) > 1 ? 'lot' : 'share'}).`);
         return;
       }
@@ -1051,11 +1057,20 @@ async function act(id, action, token, sell) {
       (body.trail_pct ? `, ${trailName(acct, a.exchange)} ${body.trail_pct}%` : '') + `\non ${acct.label}`;
     if (acct.environment === 'live') {
       // real money (DESIGN.md §22): the server refuses without this word
-      const typed = prompt(`⚠ REAL MONEY on your Saxo account.\n${msg}\n\n` +
-        'Type LIVE to place this order with real money:');
+      const typed = await ask(msg, {title: 'Place this order with real money?',
+        live: true, type: 'LIVE', ok: 'Place the order', cancel: 'Do not approve'});
       if (typed !== 'LIVE') { toast('live approval cancelled', false); return; }
       body.confirm_live = 'LIVE';
-    } else if (!confirm(msg + '\n\nApprove?')) return;
+    } else if (!await ask(msg, {title: 'Approve this order?', ok: 'Approve',
+                                cancel: 'Not yet'})) return;
+  } else if (action === 'reject') {
+    /* Reject was one click, beside Approve, with no way back: the
+       recommendation is discarded and the desk would have to analyse the
+       name again to bring it back */
+    if (!await ask(`${(a && a.ticker) || 'This'}: the recommendation is discarded. ` +
+        'It cannot be brought back — the desk would have to analyse it again.',
+        {title: 'Reject this trade?', danger: true, ok: 'Reject it',
+         cancel: 'Keep it'})) return;
   }
   try { await api('/api/thesis-action', body); toast(({approve: 'approved', reject: 'rejected'}[action] || action) + ' ✓'); }
   catch (e) { toast(e.message, false); }
@@ -1068,7 +1083,7 @@ function connectSSE() {
         .includes(e.to_state)) refresh();
   }, connPill);
 }
-refresh(); connectSSE(); setInterval(refresh, 30000);
+refresh(); connectSSE(); poll(refresh, 30000);
 
 /* ── archive: processed approvals leave the page and are kept here ── */
 const OUTCOME = {
