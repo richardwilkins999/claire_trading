@@ -1,0 +1,10 @@
+[Unit]
+Description=Claire trading desk — check every minute that it is still up
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=1min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

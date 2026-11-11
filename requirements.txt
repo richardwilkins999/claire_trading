@@ -37,3 +37,8 @@ pyparsing==3.3.3
 pyflakes==3.4.0
 # optional, install when activating IBKR market data (see app/tools/ibkr.py):
 # ib-insync
+
+# Optional — NOT installed by default. The openai, deepseek, xai and local
+# (Ollama / LM Studio) providers on the Providers page need it; without it
+# assigning one of them to an agent fails with a message saying so.
+# langchain-openai

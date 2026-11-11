@@ -28,6 +28,9 @@ PY="$ROOT/venv/bin/python3"
 ENV_FILE="$ROOT/etc/claire.env"
 LOG_DIR="$ROOT/var/log"
 DRAIN_STATE="$ROOT/var/.drain-schedules.json"
+# Written by a deliberate `claire stop`, removed by `claire start`. It is how
+# `claire watchdog` tells "stopped on purpose" from "crashed".
+STOPPED_MARK="$ROOT/var/.stopped-on-purpose"
 API_PAT='-m app\.api\.server( |$)'
 DASH_PAT='-m app\.dashboards( |$)'
 API_URL='http://127.0.0.1:7788'
@@ -181,6 +184,7 @@ PYEOF
 cmd_start() {
   [ -f "$ENV_FILE" ] || die "missing $ENV_FILE"
   mkdir -p "$LOG_DIR"
+  rm -f "$STOPPED_MARK"
   # a drain that was cut off (SIGKILL, power loss) leaves its list behind;
   # put those schedules back before the scheduler comes up
   if [ -f "$DRAIN_STATE" ] && [ -z "$(pids_for "$API_PAT")" ]; then
@@ -306,6 +310,7 @@ cmd_stop() {
   esac
 
   if [ -z "$(pids_for "$API_PAT")$(pids_for "$DASH_PAT")" ]; then
+    touch "$STOPPED_MARK" 2>/dev/null || true
     warn "nothing running"; return 0
   fi
 
@@ -336,7 +341,27 @@ cmd_stop() {
     done
     sleep 2
   fi
+  touch "$STOPPED_MARK" 2>/dev/null || true
   ok "stopped"
+}
+
+# ── watchdog ─────────────────────────────────────────────────────────────
+# The installed systemd unit is a one-shot wrapper: it starts the desk and
+# exits, so systemd never notices if claire-api or the dashboards die later.
+# `claire watchdog` (run it from a timer — systemd/claire-watchdog.timer)
+# starts whichever of the two is missing, unless the desk was stopped on
+# purpose. Silent when there is nothing to do.
+cmd_watchdog() {
+  [ -f "$STOPPED_MARK" ] && return 0
+  local api dash
+  api="$(pids_for "$API_PAT")"; dash="$(pids_for "$DASH_PAT")"
+  if [ -n "$api" ] && [ -n "$dash" ]; then return 0; fi
+  warn "watchdog: $([ -z "$api" ] && printf 'claire-api ')$([ -z "$dash" ] && printf 'claire-dashboards ')not running — starting"
+  mkdir -p "$LOG_DIR"
+  printf '%s WARNING claire.watchdog: restarted%s%s (it was not running and had not been stopped on purpose)\n' \
+    "$(date '+%Y-%m-%d %H:%M:%S')" "$([ -z "$api" ] && printf ' claire-api')" \
+    "$([ -z "$dash" ] && printf ' claire-dashboards')" >> "$LOG_DIR/watchdog.log"
+  cmd_start
 }
 
 
@@ -345,6 +370,7 @@ case "${1:-}" in
   stop)    shift; cmd_stop "$@" ;;
   restart) shift; cmd_stop "$@" && cmd_start ;;
   status)  shift; cmd_status ;;
+  watchdog) shift; cmd_watchdog ;;
   live)    shift
            # real-money switch (DESIGN.md §22): status/setup/arm/disarm/limits
            set -a; [ -f "$ENV_FILE" ] && . "$ENV_FILE"; set +a
@@ -363,6 +389,9 @@ Claire desk control
   claire stop --kill           stop now, abandoning anything in flight
   claire restart [--kill]      stop then start
   claire status                what is running, and what is in flight
+  claire watchdog              start whatever has died, unless you stopped
+                               the desk yourself (for a timer; silent when
+                               all is well)
   claire live status|setup|arm|disarm|limits
                                the REAL-MONEY Saxo switch — off by default
   claire legs-backfill [--dry-run] [--yes]

@@ -104,9 +104,18 @@ systemctl --user daemon-reload
 systemctl --user enable --now claire.service
 ```
 Gives reboot persistence, not crash recovery — if `claire-api` or
-`claire-dashboards` dies mid-session (not via a reboot), systemd won't
-notice or restart it, since the wrapper already exited after the one-shot
-start. Recurring jobs (custodian, price triggers, market scans, reconcile,
+`claire-dashboards` dies mid-session, systemd will not notice, since the
+wrapper already exited after the one-shot start. For crash recovery install
+the watchdog timer as well: once a minute it runs `bin/claire watchdog`,
+which starts whichever service is missing and does nothing at all after a
+deliberate `bin/claire stop` (a restart it performed is noted in
+`var/log/watchdog.log`).
+```sh
+cp systemd/claire-watchdog.service systemd/claire-watchdog.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now claire-watchdog.timer
+```
+Recurring jobs (custodian, price triggers, market scans, reconcile,
 maintenance) are not systemd timers: the schedules live in desk.db and are
 run by the scheduler inside claire-api, per the **Schedule page**. Market
 scans only run against exchanges that are open at fire time.

@@ -297,6 +297,16 @@ def build_llm(conn, provider_id, model, temperature=None, max_tokens=None,
         kw["model_kwargs"] = {"cache_control": {"type": "ephemeral"}}
         return init_chat_model(model, model_provider="anthropic", api_key=key, **kw)
     if p["kind"] == "openai_compatible":
+        try:
+            import langchain_openai  # noqa: F401 — init_chat_model needs it
+        except ImportError as e:
+            # OpenAI, DeepSeek, xAI and local (Ollama…) providers are seeded
+            # and selectable, but their client library is not in
+            # requirements.txt; say so instead of an import traceback
+            raise ProviderError(
+                f"provider {provider_id!r} needs the langchain-openai "
+                "package, which is not installed — "
+                "`./venv/bin/pip install langchain-openai`") from e
         return init_chat_model(model, model_provider="openai",
                                base_url=p["base_url"], api_key=key or "local", **kw)
     raise ProviderError(f"unknown provider kind {p['kind']!r}")

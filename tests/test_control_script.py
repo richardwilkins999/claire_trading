@@ -346,3 +346,60 @@ def test_reset_backup_includes_wal_and_removes_checkpoint_sidecars(tmp_path):
     c = sqlite3.connect(root / "var" / "desk.db")
     assert c.execute("SELECT COUNT(*) FROM work_items").fetchone()[0] == 0
     c.close()
+
+
+# ── watchdog: restart what crashed, never what was stopped on purpose ───────
+# (REVIEW-2026-11-11 §3.6: the installed unit is a one-shot, so systemd does
+# not see a later crash.) The scratch checkout has no etc/claire.env, so the
+# start the watchdog attempts stops at "missing …/claire.env": the decision
+# is tested, nothing is ever launched.
+MARK = ".stopped-on-purpose"
+
+
+def test_watchdog_is_silent_when_both_services_are_up(tmp_path, procs):
+    root = _fake_root(tmp_path)
+    procs += [_fake_service(root), _fake_service(root, "app.dashboards")]
+    time.sleep(0.3)
+    r = _run(root, "watchdog")
+    assert r.returncode == 0 and r.stdout == "" and r.stderr == ""
+    assert not (root / "var" / "log" / "watchdog.log").exists()
+
+
+def test_watchdog_starts_what_has_died(tmp_path, procs):
+    root = _fake_root(tmp_path)
+    procs += [_fake_service(root)]              # the dashboards have crashed
+    time.sleep(0.3)
+    r = _run(root, "watchdog")
+    out = r.stdout + r.stderr
+    assert "claire-dashboards not running — starting" in out
+    assert "claire-api not" not in out
+    assert "missing" in out and "claire.env" in out     # it went on to start
+    log = (root / "var" / "log" / "watchdog.log").read_text()
+    assert "restarted claire-dashboards" in log and "WARNING" in log
+
+
+def test_watchdog_leaves_a_desk_you_stopped_alone(tmp_path, procs):
+    root = _fake_root(tmp_path)
+    _desk_db(root)
+    svc = _fake_service(root)
+    procs += [svc]
+    time.sleep(0.3)
+    assert _run(root, "stop", "--kill").returncode == 0
+    svc.wait(timeout=10)
+    assert (root / "var" / MARK).exists()
+    r = _run(root, "watchdog")                  # nothing running, on purpose
+    assert r.returncode == 0 and r.stdout == "" and r.stderr == ""
+    # stopping a desk that is already down still counts as "on purpose"
+    (root / "var" / MARK).unlink()
+    assert _run(root, "stop").returncode == 0
+    assert (root / "var" / MARK).exists()
+
+
+def test_start_clears_the_stopped_marker_and_the_units_exist():
+    src = (BIN / "claire").read_text()
+    start = src[src.index("cmd_start() {"):src.index("cmd_status() {")]
+    assert 'rm -f "$STOPPED_MARK"' in start
+    unit = (REPO / "systemd" / "claire-watchdog.service").read_text()
+    timer = (REPO / "systemd" / "claire-watchdog.timer").read_text()
+    assert "bin/claire watchdog" in unit and "Type=oneshot" in unit
+    assert "OnUnitActiveSec=1min" in timer

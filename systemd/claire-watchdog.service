@@ -1,0 +1,11 @@
+[Unit]
+Description=Claire trading desk — restart a crashed service
+# claire.service is a one-shot wrapper, so systemd does not see a later
+# crash of claire-api or the dashboards. This runs `bin/claire watchdog`,
+# which starts whichever is missing — and does nothing at all after a
+# deliberate `bin/claire stop`.
+
+[Service]
+Type=oneshot
+WorkingDirectory=/mnt/projects/claire_trading
+ExecStart=/mnt/projects/claire_trading/bin/claire watchdog
