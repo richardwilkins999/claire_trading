@@ -6,7 +6,7 @@ import json
 import time
 from datetime import datetime, timezone
 
-from . import approvals, sessions
+from . import approvals, health, sessions
 from .accounting.money import to_micro
 import logging
 from .logsetup import swallowed
@@ -55,10 +55,7 @@ class Custodian:
         for flag in report["flags"]:            # each distinct flag: hourly
             swallowed(log, f"custodian flag: {flag[:300]}", every=3600)
         ok = "degraded" if report["flags"] else "ok"
-        self.conn.execute(
-            "INSERT INTO service_health (service, checked_at, ok, detail)"
-            " VALUES ('custodian', ?, ?, ?)",
-            (int(self.clock()), ok, json.dumps(report, default=str)))
+        health.record(self.conn, "custodian", ok, report, int(self.clock()))
         return report
 
     def _sim_triggers(self, report):

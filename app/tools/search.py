@@ -202,8 +202,47 @@ def fetch_page(url: str, *, max_chars=20000, _client=None,
     else:
         raise BlockedURL(f"more than {MAX_REDIRECTS} redirects")
     r.raise_for_status()
-    text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", r.text,
+    return main_text(r.text)[:max_chars]
+
+
+_NOT_CONTENT = r"script|style|noscript|svg|template|iframe|canvas"
+_CHROME = r"nav|header|footer|aside|form|menu|dialog"
+MIN_ARTICLE_CHARS = 400
+
+
+def _strip_blocks(markup: str, tags: str) -> str:
+    return re.sub(rf"<({tags})\b[^>]*>.*?</\1\s*>", " ", markup,
                   flags=re.S | re.I)
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"\s+", " ", text)
-    return text[:max_chars]
+
+
+def _plain(markup: str) -> str:
+    text = re.sub(r"<(br|/p|/div|/li|/h[1-6]|/tr)\b[^>]*>", "\n", markup,
+                  flags=re.I)
+    text = html.unescape(re.sub(r"<[^>]+>", " ", text))
+    text = re.sub(r"[ \t\r\f\v]+", " ", text)
+    return re.sub(r"\s*\n\s*", "\n", text).strip()
+
+
+def main_text(page: str) -> str:
+    """The article on a web page, as plain text.
+
+    fetch_page used to strip the tags and return the first N characters of
+    whatever was left — on a news site that is the menu, the cookie banner
+    and the "most read" list, and the agents were handed 6,000 characters
+    of navigation (REVIEW-2026-11-11 §4.1 item 5). Now: scripts and styles
+    go; if the page marks its content with <article> or <main>, the longest
+    such block is the answer; otherwise the body with its navigation,
+    header, footer, sidebars and forms removed."""
+    page = _strip_blocks(page, _NOT_CONTENT)
+    page = re.sub(r"<!--.*?-->", " ", page, flags=re.S)
+    blocks = re.findall(r"<(?:article|main)\b[^>]*>(.*?)</(?:article|main)\s*>",
+                        page, flags=re.S | re.I)
+    best = max((_plain(_strip_blocks(b, _CHROME)) for b in blocks),
+               key=len, default="")
+    if len(best) >= MIN_ARTICLE_CHARS:
+        title = re.search(r"<title[^>]*>(.*?)</title>", page, re.S | re.I)
+        head = _plain(title.group(1)) if title else ""
+        return (head + "\n\n" + best) if head and head not in best[:300] \
+            else best
+    body = re.search(r"<body\b[^>]*>(.*)</body\s*>", page, re.S | re.I)
+    return _plain(_strip_blocks(body.group(1) if body else page, _CHROME))

@@ -144,3 +144,73 @@ def test_money_path_jobs_stay_inline_and_in_order():
                    for j in ("custodian", "price_triggers", "reconcile"))
     assert all(s._is_background(j) for j in
                ("analysis_asia", "analysis_us", "event_scan", "maintenance"))
+
+
+# ── health rows only grow when something changes (§4.3) ─────────────────────
+def test_identical_reports_move_one_row_forward():
+    from app import health
+    conn, _, _ = _desk(Decimal("100"))
+    report = {"fills": 0, "flags": []}
+    assert health.record(conn, "custodian", "ok", report, T0) is True
+    for i in range(1, 50):                  # four hours of nothing happening
+        assert health.record(conn, "custodian", "ok", report, T0 + i * 300) is False
+    rows = conn.execute("SELECT checked_at, ok FROM service_health WHERE"
+                        " service='custodian'").fetchall()
+    assert len(rows) == 1 and rows[0]["checked_at"] == T0 + 49 * 300   # heartbeat
+    # a change is a new row; so is the recovery
+    assert health.record(conn, "custodian", "degraded",
+                         {"fills": 0, "flags": ["x"]}, T0 + 15000) is True
+    assert health.record(conn, "custodian", "ok", report, T0 + 15300) is True
+    assert [r["ok"] for r in conn.execute(
+        "SELECT ok FROM service_health WHERE service='custodian'"
+        " ORDER BY rowid")] == ["ok", "degraded", "ok"]
+    # services do not share a row
+    assert health.record(conn, "watcher", "ok", report, T0) is True
+
+
+def test_the_custodian_and_watcher_use_it():
+    from app.custodian import Custodian
+    from app.accounting.money import to_micro
+    conn, w, _ = _desk(Decimal("100"))
+    c = Custodian(conn, w.repo, {}, resume_post=lambda b: (200, {}),
+                  account_broker=lambda a: "alpaca",
+                  fx_rate_for=lambda i, a: to_micro("1"), clock=lambda: T0)
+    for _ in range(4):
+        c.run_once()
+        w.tick()
+    counts = dict(conn.execute("SELECT service, COUNT(*) FROM service_health"
+                               " GROUP BY service").fetchall())
+    assert counts == {"custodian": 1, "watcher": 1}
+
+
+# ── Twelve Data: the budget is credits (§4.1 item 6) ────────────────────────
+def test_a_batch_costs_one_credit_per_symbol():
+    from app.tools.market import Market, build_market
+
+    class P:
+        calls = []
+
+        def supports(self, s):
+            return True
+
+        def quote(self, syms):
+            P.calls.append(list(syms))
+            return {s: {"symbol": s, "price": Decimal("10"), "stale": False,
+                        "src": "primary"} for s in syms}
+    m = Market(_get=lambda *a, **k: 1 / 0, primary=P(), clock=lambda: 1000,
+               tv_quotes=lambda syms: {s: {"symbol": s, "price": Decimal("9"),
+                                           "stale": False, "src": "tv"}
+                                       for s in syms})
+    m.PRIMARY_PER_MIN = 4
+    assert m.spark(["A", "B", "C"])["A"]["src"] == "primary"    # 3 of 4 spent
+    assert len(m._primary_calls) == 3
+    # two more would overdraw the minute: not sent, the free chain answers
+    out = m.spark(["D", "E"])
+    assert out["D"]["src"] == "tv" and P.calls == [["A", "B", "C"]]
+    assert m.spark(["F"])["F"]["src"] == "primary"              # 1 left
+    assert m._primary_ok() is False                             # none left
+    # each of the two processes takes half the plan's quota
+    assert build_market({"TWELVEDATA_API_KEY": "k", "CLAIRE_NO_SAXO_CHARTS": "1"}
+                        ).PRIMARY_PER_MIN == 4
+    assert build_market({"TWELVEDATA_API_KEY": "k", "CLAIRE_NO_SAXO_CHARTS": "1",
+                         "TWELVEDATA_CREDITS_PER_MIN": "55"}).PRIMARY_PER_MIN == 27

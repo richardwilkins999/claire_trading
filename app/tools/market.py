@@ -63,8 +63,17 @@ def build_market(env=None) -> "Market":
     if not env.get("CLAIRE_NO_SAXO_CHARTS"):
         from . import saxo_chart
         fallback, saxo_search = saxo_chart.chart, saxo_chart.search
-    return Market(primary=primary, chart_fallback=fallback,
-                  search_fallback=combined_search(saxo_search))
+    m = Market(primary=primary, chart_fallback=fallback,
+               search_fallback=combined_search(saxo_search))
+    # Two processes (claire-api and the dashboards) each build a Market and
+    # share ONE Twelve Data quota, so each may spend half of it. Set
+    # TWELVEDATA_CREDITS_PER_MIN to your plan's limit (free tier: 8).
+    try:
+        quota = int(env.get("TWELVEDATA_CREDITS_PER_MIN") or 8)
+    except ValueError:
+        quota = 8
+    m.PRIMARY_PER_MIN = max(1, quota // 2)
+    return m
 
 
 def combined_search(saxo_search):
@@ -183,19 +192,26 @@ class Market:
 
     PRIMARY_PER_MIN = 7                     # Twelve Data free tier allows 8
 
-    def _primary_ok(self) -> bool:
+    def _primary_ok(self, cost: int = 1) -> bool:
         """Three analysts researching at once will blow an 8-per-minute quota
         and every one of those calls comes back 429. Check the budget BEFORE
-        spending it, and fall through to TradingView while it recovers."""
+        spending it, and fall through to TradingView while it recovers.
+
+        The quota is CREDITS, not calls: a quote for five symbols costs
+        five. Counting it as one let a single batch overdraw the minute and
+        get the whole batch refused (REVIEW-2026-11-11 §4.1 item 6) — the
+        first hour of real logs showed 429s on most FX and quote calls. A
+        batch larger than what is left is not sent at all."""
         if self._primary is None:
             return False
+        cost = max(1, int(cost))
         with self._pace_lock:
             now = time.monotonic()
             self._primary_calls = [t for t in self._primary_calls
                                    if now - t < 60]
-            if len(self._primary_calls) >= self.PRIMARY_PER_MIN:
+            if len(self._primary_calls) + cost > self.PRIMARY_PER_MIN:
                 return False
-            self._primary_calls.append(now)
+            self._primary_calls.extend([now] * cost)
             return True
 
     MIN_GAP = 0.7                           # be a polite Yahoo client
@@ -244,10 +260,11 @@ class Market:
         hit = self._cache.get(key)
         return hit is not None and self.clock() - hit[0] < ttl
 
-    def _primary_gate(self, key, ttl) -> bool:
+    def _primary_gate(self, key, ttl, cost: int = 1) -> bool:
         """Only a FRESH cache hit may skip the rate budget; an expired entry
-        means a real call to the keyed provider, so it must be budgeted."""
-        return self._fresh(key, ttl) or self._primary_ok()
+        means a real call to the keyed provider, so it must be budgeted —
+        at `cost` credits (one per symbol for a batch)."""
+        return self._fresh(key, ttl) or self._primary_ok(cost)
 
     def _cached_flag(self, key, ttl, fn):
         """TTL cache with a last-good fallback: when the unofficial endpoints
@@ -293,7 +310,8 @@ class Market:
             covered = tuple(s for s in symbols
                             if getattr(self._primary, "supports",
                                        lambda s: True)(s))
-            if covered and self._primary_gate(("pq", covered), 60):
+            if covered and self._primary_gate(("pq", covered), 60,
+                                              cost=len(covered)):
                 try:
                     out = dict(self._cached(("pq", covered), 60,
                                             lambda: self._primary.quote(
@@ -474,7 +492,8 @@ class Market:
             covered = tuple(s for s in symbols
                             if getattr(self._primary, "supports",
                                        lambda s: True)(s))
-            if covered and self._primary_gate(("m", covered), 300):
+            if covered and self._primary_gate(("m", covered), 300,
+                                              cost=len(covered)):
                 try:                            # batched: one request for all
                     out = dict(self._cached(
                         ("m", covered), 300,

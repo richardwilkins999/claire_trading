@@ -174,3 +174,59 @@ def test_screener_catalyst_check_uses_the_process_environment(monkeypatch):
 def test_real_search_is_blocked_in_the_suite():
     with pytest.raises(SearchError, match="offline test"):
         web_search("anything", env={})
+
+
+# ── fetch_page: the article, not the menu (REVIEW-2026-11-11 §4.1.5) ────────
+PAGE = """<html><head><title>Nvidia beats on revenue | Example News</title>
+<style>.x{color:red}</style><script>var tracking = "do not show me";</script>
+</head><body>
+<header><a href="/">Home</a><a href="/markets">Markets</a></header>
+<nav><ul><li>World</li><li>Business</li><li>Most read today</li></ul></nav>
+<aside>Subscribe to our newsletter &amp; never miss a story</aside>
+<main><article><h1>Nvidia beats on revenue</h1>
+<p>Nvidia reported third-quarter revenue of $35.1&nbsp;billion, up 94% from a
+year earlier, the company said on Wednesday.</p>
+<p>Data-centre sales were $30.8 billion. """ + "The outlook was raised. " * 30 + """</p>
+<form><input name="email"><button>Sign up</button></form>
+</article></main>
+<footer>&copy; Example News. Terms. Privacy. Cookie settings.</footer>
+</body></html>"""
+
+
+def test_main_text_keeps_the_article_and_drops_the_page_furniture():
+    from app.tools.search import main_text
+    text = main_text(PAGE)
+    assert text.startswith("Nvidia beats on revenue")
+    assert "revenue of $35.1 billion, up 94%" in text.replace("\xa0", " ")
+    assert "Data-centre sales were $30.8 billion." in text
+    for junk in ("Most read today", "Subscribe to our newsletter", "tracking",
+                 "color:red", "Cookie settings", "Sign up", "Markets"):
+        assert junk not in text, junk
+    assert "<" not in text and "&amp;" not in text
+
+
+def test_main_text_falls_back_to_the_body_without_its_navigation():
+    from app.tools.search import main_text
+    page = ("<html><body><nav>Menu one two</nav><div><p>Short note: DBS "
+            "reported a 5% fall in profit.</p></div><footer>Legal</footer>"
+            "</body></html>")
+    assert main_text(page) == "Short note: DBS reported a 5% fall in profit."
+    # an <article> too short to be the content does not hide the page
+    page = ("<body><article>Ad</article><div>" + "Real paragraph. " * 40
+            + "</div></body>")
+    assert main_text(page).count("Real paragraph.") == 40
+    assert main_text("plain text, no markup") == "plain text, no markup"
+
+
+def test_fetch_page_returns_the_article_text():
+    from app.tools.search import fetch_page
+
+    class C:
+        def get(self, url, follow_redirects=False):
+            return httpx.Response(200, request=httpx.Request("GET", url),
+                                  text=PAGE)
+    out = fetch_page("https://news.example.com/nvda", _client=C(),
+                     _resolve=lambda h, p, proto=0: [(2, 1, 6, "", ("93.184.216.34", p))],
+                     max_chars=300)
+    assert out.startswith("Nvidia beats on revenue") and len(out) <= 300
+    assert "Most read today" not in out

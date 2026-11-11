@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from . import sessions
+from . import health, sessions
 from .accounting.money import from_micro
 from .tools.market import yahoo_symbol
 import logging
@@ -110,10 +110,7 @@ class Watcher:
                     self._fire(rule, inst, price_base, today, report, peak)
         status = ("degraded" if report["unpriced"] or report["launch_failed"]
                   else "ok")
-        self.conn.execute(
-            "INSERT INTO service_health (service, checked_at, ok, detail)"
-            " VALUES ('watcher', ?, ?, ?)",
-            (int(self.clock()), status, json.dumps(report, default=str)))
+        health.record(self.conn, "watcher", status, report, int(self.clock()))
         return report
 
     # ── helpers ──────────────────────────────────────────────────────────
