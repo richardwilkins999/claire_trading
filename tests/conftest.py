@@ -5,6 +5,17 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _no_real_web_search(monkeypatch):
+    """web_search with no injected client would ask Tavily or the news
+    feeds for real. A test that wants search passes `_client` / `search_fn`."""
+    from app.tools import search
+
+    def blocked():
+        raise search.SearchError("offline test: real web search is blocked")
+    monkeypatch.setattr(search, "_search_client", blocked)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_claude_sdk(monkeypatch):
     import claude_agent_sdk
 

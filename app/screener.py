@@ -134,8 +134,9 @@ def catalyst_notes(candidates, *, search_fn=None, env=None,
     searches per scan, never one per candidate. Failures are silent: a
     missing headline is not a reason to fail a screening run."""
     from .tools.search import web_search
-    search = search_fn or (lambda q: web_search(q, max_results=3,
-                                                env=env or {}))
+    # env=None lets web_search read the process environment: `env or {}`
+    # here meant a TAVILY_API_KEY in claire.env was never seen by the scan
+    search = search_fn or (lambda q: web_search(q, max_results=3, env=env))
     ranked = sorted(candidates,
                     key=lambda c: (len(c.get("scans", [])),
                                    c.get("rel_volume") or 0), reverse=True)

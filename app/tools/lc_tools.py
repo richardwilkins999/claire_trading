@@ -86,7 +86,7 @@ def _safe(fn, failures=None):
                         f"it is disabled) — try a DIFFERENT source or tool; "
                         f"do not retry it unchanged"})
         # An empty result is not an exception, so the breaker never saw it —
-        # and DuckDuckGo returns empty far more often than it raises. Each
+        # and a search can return empty far more often than it raises. Each
         # barren call still costs a full re-send of the transcript on every
         # step that follows, so it has to count against the same budget.
         if _is_barren(out):
@@ -164,8 +164,11 @@ def build_tool_registry(market, narratives, env=None):
         @tool
         @_safe_run
         def web_search(query: str) -> str:
-            """Search the web (Tavily if configured, else DuckDuckGo)."""
-            return json.dumps(_web_search(query, env=env or {}),
+            """Search for recent news: headlines with a short summary, date
+            and link. Use plain keywords such as a company name or ticker
+            plus a topic ("Nvidia earnings"). It covers news only, not
+            company filings or reference pages."""
+            return json.dumps(_web_search(query, env=env),
                               default=str)[:MAX_RESULT_CHARS]
 
         @tool

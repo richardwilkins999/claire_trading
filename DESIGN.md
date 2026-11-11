@@ -160,7 +160,7 @@ claire_trading/                    →  /opt/Claire/
 │   │   └── health.py              probes, capability checks
 │   ├── tools/
 │   │   ├── market.py              Yahoo chart/quote/screener/fx (§14)
-│   │   ├── search.py              web search (Tavily / DuckDuckGo)
+│   │   ├── search.py              web search (Tavily / news RSS feeds)
 │   │   ├── files.py               narrative I/O, jailed to var/narratives
 │   │   └── brokers.py             MCP adapters (langchain-mcp-adapters)
 │   ├── accounting/
@@ -656,7 +656,7 @@ def model_for(agent_id: str):
 
 | Need | Implementation |
 |---|---|
-| web search | `search.py`: **Tavily** if `TAVILY_API_KEY` set, else DuckDuckGo (free, no key, noticeably weaker). Ship DDG default; recommend Tavily for news/fundamental quality. |
+| web search | `search.py`: **Tavily** if `TAVILY_API_KEY` set (a real web search), else recent news headlines from the Bing News and Google News RSS feeds (free, no key, news only). DuckDuckGo's HTML page was the keyless default until 2026-11-11; it answers automated clients with a bot check, so it returned nothing. Recommend Tavily for fundamental research. |
 | page fetch | `httpx` + readability extraction, size-capped |
 | file I/O | `files.py` — **jailed to `var/narratives/<work_item>/`**. Agents cannot roam the filesystem, by construction. |
 | technical math | `run_python`: numpy/pandas over OHLCV the tool itself fetches, in a subprocess with a **scrubbed environment (no claire.env secrets), no network access, and a CPU/time cap** — an injected prompt cannot reach the internal endpoints or any credential. No shell access for any agent. |
@@ -1247,8 +1247,9 @@ runnable offline in under a second.
 - `checkpoints.db` is disposable by design: losing it aborts in-flight runs
   (they restart); the business record in desk.db is unaffected.
 - Yahoo endpoints are unofficial; all access is isolated in one module.
-- DuckDuckGo search (the keyless default) is materially weaker than a paid
-  search API for news work; a Tavily key is the recommended upgrade.
+- The keyless search is a news-headline search (RSS feeds), not a general
+  web search: it finds no filings or reference pages. A Tavily key is the
+  recommended upgrade.
 - Corporate-action *detection* is manual at first (the schema and adjustment
   path exist; the automatic split-watcher ships later).
 - Saxo SIM tokens from the developer portal expire every 24 h. The LIVE

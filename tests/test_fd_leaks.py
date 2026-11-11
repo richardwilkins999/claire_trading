@@ -3,6 +3,7 @@ its 1024-file limit after ~4 hours because every request thread left its
 desk.db connection open, and every TradingView call left a TLS socket open."""
 import os
 import threading
+import time
 
 import httpx
 
@@ -24,6 +25,20 @@ def _db_fds(path):
             continue
         if target.startswith(str(path)):
             n += 1
+    return n
+
+
+def _settled(path, target, wait=2.0):
+    """The count once request threads have finished. A handler thread
+    releases its connection just AFTER the response is sent, so reading the
+    count the instant a response arrives races the last thread — the test
+    then failed or passed on scheduling alone (seen 2026-11-11). A real leak
+    never settles, so it still fails after the wait."""
+    deadline = time.monotonic() + wait
+    n = _db_fds(path)
+    while n > target and time.monotonic() < deadline:
+        time.sleep(0.01)
+        n = _db_fds(path)
     return n
 
 
@@ -68,10 +83,10 @@ def test_dashboard_requests_do_not_leak_db_connections(tmp_path):
         with httpx.Client(base_url=base_url, timeout=5,
                           headers={"X-Dash-Key": DKEY}) as c:
             c.get("/api/overview")        # warm up: lazy opens happen once
-            before = _db_fds(path)
+            before = _settled(path, 0, wait=0.2)
             for _ in range(40):
                 c.get("/api/overview")
-        after = _db_fds(path)
+        after = _settled(path, before)
     finally:
         srv.shutdown()
     assert after <= before, f"{after - before} desk.db descriptors leaked"
