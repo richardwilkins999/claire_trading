@@ -1,6 +1,9 @@
 :root { /* v1 "mission control" palette — carried over from claude_agents */
   --bg:#06090f; --panel:#0b1220; --panel2:#0a1526; --line:#16233b;
-  --text:#d7e6f2; --dim:#5d7590; --muted:#5d7590;
+  /* secondary text. Was #5d7590 — 3.9:1 on a panel, used at 9–11 px; this
+     is 5.7:1 there (4.5:1 is the floor for small text) and still well under
+     the menu's #8fa6bd and the body text, so it reads as secondary */
+  --text:#d7e6f2; --dim:#7890ab; --muted:#7890ab;
   --accent:#35d6ff; --accent-dim:#1a7c99;
   --good:#26a69a; --bad:#ef5350; --warn:#f5b944; --blue:#6ea8fe;
   --purple:#b48cff;
@@ -67,6 +70,23 @@ nav .mode { font-size:.72rem; font-weight:700; letter-spacing:.1em;
 nav .mode.paper { border-color:var(--accent-dim); color:var(--accent); }
 nav .mode.live { background:var(--bad); border-color:var(--bad); color:#fff; }
 nav .mode.unknown { border-color:var(--warn); color:var(--warn); }
+/* is what the page shows current? (nav.js pageStatus) — words, not colour
+   alone: "updated 12:03" · "paused while you are editing" · "✖ cannot …" */
+nav .fresh { font-size:.72rem; padding:.15rem .6rem; border-radius:999px;
+  border:1px solid var(--line); color:#8fa6bd; white-space:nowrap;
+  font-variant-numeric:tabular-nums; }
+nav .fresh.warn { border-color:var(--warn); color:var(--warn); }
+nav .fresh.bad { border-color:var(--bad); color:var(--bad); font-weight:700; }
+/* a field you changed and have not saved (nav.js swapHtml) */
+input.unsaved, select.unsaved, textarea.unsaved { border-color:var(--warn);
+  box-shadow:0 0 0 1px var(--warn); }
+input[type=checkbox].unsaved, input[type=radio].unsaved {
+  outline:2px solid var(--warn); outline-offset:1px; box-shadow:none; }
+/* rows and cards you can open with the keyboard (data-kbd + tabindex) */
+tr[data-kbd]:focus-visible { outline-offset:-2px; }
+/* text for screen readers only */
+.sr { position:absolute; width:1px; height:1px; overflow:hidden;
+  clip-path:inset(50%); white-space:nowrap; }
 .livestrip { background:var(--bad); color:#fff; font-weight:600;
   text-align:center; padding:.35rem 1rem; position:sticky; top:0; z-index:4; }
 .livestrip a { color:#fff; }
@@ -102,6 +122,9 @@ button:disabled { opacity:.4; cursor:default; }
 input, select, textarea { background:var(--bg); color:var(--text);
   border:1px solid var(--line); border-radius:8px; padding:.4rem .6rem; }
 .muted { color:var(--dim); }
+/* five pages define this for themselves; Home, Runs, Markets and Portfolio
+   used the class without it */
+.small { font-size:.75rem; }
 .pill { display:inline-block; padding:.1rem .6rem; border-radius:99px;
   font-size:10.5px; border:1px solid var(--line); letter-spacing:.03em; }
 .pill.ok { border-color:var(--good); } .pill.bad { border-color:var(--bad); }
