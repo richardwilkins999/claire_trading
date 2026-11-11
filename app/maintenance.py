@@ -574,7 +574,8 @@ def make_summarize(conn, env=os.environ):
         llm = registry.model_for(conn, "maintainer", env=env)
         brief = json.dumps(facts, default=str)[:12000]
         out = llm.invoke([
-            ("system", registry.agent_row(conn, "maintainer")["system_prompt"]),
+            ("system", registry.render_prompt(
+                registry.agent_row(conn, "maintainer")["system_prompt"])),
             ("user", f"Today's maintenance results (JSON):\n{brief}")])
         text = out.content if isinstance(out.content, str) else str(out.content)
         return text.strip()[:1500]

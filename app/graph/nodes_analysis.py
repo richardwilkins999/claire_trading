@@ -172,6 +172,7 @@ def make_debater(conn, agent_id, narratives, *, structured_factory):
 
     def node(state):
         llm, system = structured_factory(agent_id, schema, state.work_item_id)
+        system = registry.render_prompt(system, state.ticker)
         obj = llm.invoke([("system", system), ("user", prompt_fn(state))])
         if isinstance(obj, dict):                   # some providers hand dicts
             obj = schema.model_validate(obj)
@@ -191,7 +192,7 @@ def make_analyst(conn, agent_id, narratives, tool_builder, *,
 
     def node(state):
         a = registry.agent_row(conn, agent_id)
-        system = a["system_prompt"].replace("{ticker}", state.ticker)
+        system = registry.render_prompt(a["system_prompt"], state.ticker)
         task = (f"Research {state.ticker} ({state.instrument.exchange}) now. "
                 f"Run kind: {state.kind}."
                 + (f"\n{render_trigger(state)}" if state.trigger else ""))

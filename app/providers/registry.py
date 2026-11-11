@@ -41,6 +41,17 @@ def agent_row(conn, agent_id):
     return row
 
 
+NO_TICKER = "the instrument in question"
+
+
+def render_prompt(prompt, ticker=None) -> str:
+    """A stored system prompt, ready for a model: `{ticker}` filled in.
+    Every caller goes through here, so the braces never reach a model
+    literally — with no ticker in hand (an edited prompt on a role that has
+    none) a neutral phrase stands in."""
+    return (prompt or "").replace("{ticker}", ticker or NO_TICKER)
+
+
 def check_capabilities(conn, agent_id, provider_id):
     """Reject an incompatible assignment with the reason — at assignment time,
     not mid-run (DESIGN.md §8)."""

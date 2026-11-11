@@ -77,7 +77,7 @@ def make_agent_ask(conn, narratives, *, llm_factory=None, clock=time.time):
                 yield json.dumps({"kind": "done"}) + "\n"
                 return
             context = gather_context(conn, narratives, agent_id, clock=clock)
-            system = (row["system_prompt"] +
+            system = (registry.render_prompt(row["system_prompt"]) +
                       "\n\nRichard is asking you a DIRECT question from the "
                       "dashboard. You are not running your pipeline role right "
                       "now. Answer plainly and first-person from the activity "

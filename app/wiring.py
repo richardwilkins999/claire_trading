@@ -159,8 +159,8 @@ def _recorder_prose(conn, env):
     def prose(summary_md: str) -> str:
         from .providers import registry
         llm = registry.model_for(conn, "recorder", env=env)
-        out = llm.invoke([("system", registry.agent_row(
-            conn, "recorder")["system_prompt"]),
+        out = llm.invoke([("system", registry.render_prompt(
+            registry.agent_row(conn, "recorder")["system_prompt"])),
             ("user", f"Run record:\n{summary_md[:4000]}")])
         text = out.content if isinstance(out.content, str) else str(out.content)
         return text[:600]

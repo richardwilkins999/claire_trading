@@ -20,6 +20,7 @@ import time
 from pydantic import BaseModel, Field
 
 from .graph.nodes_analysis import default_structured_factory
+from .providers import registry
 from .tools import tradingview
 
 RECENT_SESSIONS_DAYS = 5        # don't re-analyse the same name inside a week
@@ -215,6 +216,7 @@ def screener_pick(conn, market, exchanges, held, *, limit=2, env=None,
     factory = structured_factory or default_structured_factory(conn, env=env)
     try:
         llm, system = factory("screener", Shortlist, None)
+        system = registry.render_prompt(system)     # it has no one ticker
         prompt = (
             f"Open markets right now: {', '.join(exchanges)}.\n"
             f"{portfolio_context(conn)}\n"
