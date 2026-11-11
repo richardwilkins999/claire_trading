@@ -27,11 +27,12 @@ import uuid
 from decimal import Decimal
 
 from .accounting.money import from_micro, to_micro
+from . import states
 
 # GTC legs never expire on the desk's clock; this is "no expiry" while
 # keeping orders.expires_at NOT NULL (2100-01-01 UTC)
 LEG_EXPIRES_AT = 4_102_444_800
-WORKING = ("placed", "partially_filled")
+WORKING = states.ORDER_AT_VENUE
 
 
 class LegCancelRefused(RuntimeError):

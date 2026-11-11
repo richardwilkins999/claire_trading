@@ -22,6 +22,7 @@ import json
 
 from .accounting.money import from_micro, to_micro as _to_micro
 from .graph.state import Thesis
+from .accounting.db import tx
 
 SAXO_MAX_PCT = 25          # TooFarFromEntryOrder, measured on SIM 2026-11-05
 
@@ -148,27 +149,30 @@ def edit(repo, desk, brokers, wi, *, entry, stop=None, target=None,
         # trailing stop when the custodian sends this order at the open
         new_trail = float(trail_pct) if trail_pct and o["side"] == "buy" \
             and stop else (o["trail_pct"] if stop else None)
-        cur = conn.execute(
-            "UPDATE orders SET limit_price=?, stop_loss=?, take_profit=?,"
-            " qty=?, reserved_base=?, trail_pct=?, updated_at=? WHERE id=?"
-            " AND status='pending_session' AND submitted_at IS NULL",
-            (to_micro(entry), to_micro(stop) if stop else None,
-             to_micro(target) if target else None, new_qty, new_res,
-             new_trail, ts, o["id"]))
-        if cur.rowcount != 1:
-            raise OrderControlError(409, "the order is being sent to the "
-                                    "broker right now — edit it there")
-        th = json.loads(conn.execute("SELECT thesis_json FROM work_items"
-                                     " WHERE id=?", (wi,)).fetchone()[0]
-                        or "{}")
-        th.update(entry_low=entry, entry_high=entry, stop_loss=stop,
-                  take_profit=target)
-        conn.execute("UPDATE work_items SET thesis_json=?, updated_at=?"
-                     " WHERE id=?", (json.dumps(th), ts, wi))
-        if trail_pct and o["side"] == "buy":
-            from .watcher import set_position_floor
-            set_position_floor(conn, o["instrument_id"], o["account_id"],
-                               trail_pct, side=1)
+        # the order row, the plan shown on the card and the trailing alert
+        # change together or not at all
+        with tx(conn):
+            cur = conn.execute(
+                "UPDATE orders SET limit_price=?, stop_loss=?, take_profit=?,"
+                " qty=?, reserved_base=?, trail_pct=?, updated_at=? WHERE id=?"
+                " AND status='pending_session' AND submitted_at IS NULL",
+                (to_micro(entry), to_micro(stop) if stop else None,
+                 to_micro(target) if target else None, new_qty, new_res,
+                 new_trail, ts, o["id"]))
+            if cur.rowcount != 1:
+                raise OrderControlError(409, "the order is being sent to the "
+                                        "broker right now — edit it there")
+            th = json.loads(conn.execute("SELECT thesis_json FROM work_items"
+                                         " WHERE id=?", (wi,)).fetchone()[0]
+                            or "{}")
+            th.update(entry_low=entry, entry_high=entry, stop_loss=stop,
+                      take_profit=target)
+            conn.execute("UPDATE work_items SET thesis_json=?, updated_at=?"
+                         " WHERE id=?", (json.dumps(th), ts, wi))
+            if trail_pct and o["side"] == "buy":
+                from .watcher import set_position_floor
+                set_position_floor(conn, o["instrument_id"], o["account_id"],
+                                   trail_pct, side=1)
         f = lambda m: float(from_micro(m)) if m else None   # noqa: E731
         repo._event(wi, ts, "human", "executing", "order_edited", payload={
             "order": o["id"],

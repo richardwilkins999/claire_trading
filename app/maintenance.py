@@ -29,6 +29,7 @@ import time
 from pathlib import Path
 import logging
 from .logsetup import swallowed
+from . import states
 
 log = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ SDK_TRANSCRIPT_DAYS = 30                # Claude SDK session transcripts
 RUNS_KEEP = 90                          # maintenance_runs rows
 SIM_ORDERS_DAYS = 30                    # the built-in sim's finished orders
 
-TERMINAL = ("done", "rejected", "expired", "failed", "cancelled")
+TERMINAL = states.RUN_TERMINAL
 STATUS_RANK = {"ok": 0, "info": 0, "warn": 1, "bad": 2}
 
 _lock = threading.Lock()

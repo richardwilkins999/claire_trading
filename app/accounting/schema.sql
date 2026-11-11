@@ -12,12 +12,14 @@ CREATE TABLE IF NOT EXISTS work_items (
   ticker TEXT NOT NULL,
   state TEXT NOT NULL,                     -- running | awaiting_approval | approved
                                            -- | executing | done | rejected
-                                           -- | expired | failed
+                                           -- | expired | failed | cancelled
+                                           -- (the definition: app/states.py)
   thread_id TEXT NOT NULL,                 -- ← LangGraph bridge
   thesis_json TEXT,                        -- Thesis snapshot at arbitration
   approval_token TEXT,                     -- single-use, server-minted, delivered
                                            -- ONLY in the dashboard approval card
-  token_state TEXT,                        -- minted | pending_resume | burned
+  token_state TEXT,                        -- minted | pending_resume | resuming
+                                           -- | burned
   expires_at INTEGER,                      -- session-aware TTL (§10)
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );

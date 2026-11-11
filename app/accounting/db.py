@@ -6,6 +6,7 @@ busy_timeout arbitrate between them, and a repo transaction can never be
 interleaved by another thread's statements. `:memory:` (tests) stays a single
 shared connection.
 """
+import contextlib
 import sqlite3
 import threading
 from pathlib import Path
@@ -176,6 +177,29 @@ MIGRATIONS = [
     "CREATE TABLE IF NOT EXISTS dashboard_acks ("
     " key TEXT PRIMARY KEY, acked_at INTEGER NOT NULL)",
 ]
+
+
+@contextlib.contextmanager
+def tx(conn):
+    """One atomic unit of writes: everything inside happens, or nothing does.
+
+    The connection is in autocommit mode (isolation_level=None), so a
+    sequence such as "mark the token used, write the audit event, save the
+    edited levels" was three separate commits — a crash between them left a
+    half-applied transition (REVIEW-2026-11-11 §3.3). Re-entrant: inside an
+    open transaction this adds nothing and the outer one decides. Do NOT
+    hold one across a network call: it holds SQLite's write lock."""
+    if conn.in_transaction:
+        yield conn
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield conn
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    else:
+        conn.execute("COMMIT")
 
 
 def table_ddl(name: str) -> str:

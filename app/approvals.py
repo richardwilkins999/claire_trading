@@ -11,6 +11,7 @@ import time
 import httpx
 import logging
 from .logsetup import swallowed
+from .accounting.db import tx
 
 log = logging.getLogger(__name__)
 
@@ -106,25 +107,26 @@ def thesis_action(conn, payload: dict, resume_post, *, clock=time.time):
     # expired in between is refused rather than re-authorized. A re-click on
     # a pending_resume token (claire-api was down) is allowed; the single-use
     # claim that actually matters is taken atomically by /internal/resume.
-    cur = conn.execute(
-        "UPDATE work_items SET token_state='pending_resume', updated_at=?"
-        " WHERE id=? AND approval_token=? AND state='awaiting_approval'"
-        " AND token_state IN ('minted','pending_resume')",
-        (now, wi, row["approval_token"]))
-    if cur.rowcount != 1:
-        raise AuthError(409, "token already used or being used")
-    conn.execute(
-        "INSERT INTO events (item_id, ts, actor, from_state, to_state, payload)"
-        " VALUES (?,?,?,?,?,?)",
-        (wi, now, "human", "awaiting_approval", f"authorize:{action}",
-         json.dumps({**{k: payload.get(k) for k in
-                       ("size_base", "qty", "trail_pct", "broker",
-                        "confirm_live")}, "levels": levels,
-                     "order_type": order_type})))
-    if levels:
-        th = {**json.loads(row["thesis_json"] or "{}"), **levels}
-        conn.execute("UPDATE work_items SET thesis_json=? WHERE id=?",
-                     (json.dumps(th), wi))
+    with tx(conn):          # the claim, its audit row and the levels: one unit
+        cur = conn.execute(
+            "UPDATE work_items SET token_state='pending_resume', updated_at=?"
+            " WHERE id=? AND approval_token=? AND state='awaiting_approval'"
+            " AND token_state IN ('minted','pending_resume')",
+            (now, wi, row["approval_token"]))
+        if cur.rowcount != 1:
+            raise AuthError(409, "token already used or being used")
+        conn.execute(
+            "INSERT INTO events (item_id, ts, actor, from_state, to_state, payload)"
+            " VALUES (?,?,?,?,?,?)",
+            (wi, now, "human", "awaiting_approval", f"authorize:{action}",
+             json.dumps({**{k: payload.get(k) for k in
+                           ("size_base", "qty", "trail_pct", "broker",
+                            "confirm_live")}, "levels": levels,
+                         "order_type": order_type})))
+        if levels:
+            th = {**json.loads(row["thesis_json"] or "{}"), **levels}
+            conn.execute("UPDATE work_items SET thesis_json=? WHERE id=?",
+                         (json.dumps(th), wi))
 
     body = {"work_item_id": wi,
             "status": "approved" if action == "approve" else "rejected",
@@ -390,15 +392,16 @@ def cancel_failed(conn, wi, *, clock=time.time):
     from (for an override) can then be overridden again with new levels."""
     _failed_row(conn, wi)
     now = int(clock())
-    cur = conn.execute(
-        "UPDATE work_items SET state='rejected', token_state='burned',"
-        " updated_at=? WHERE id=? AND state='approved'"
-        " AND token_state='pending_resume'", (now, wi))
-    if cur.rowcount != 1:
-        raise AuthError(409, "the trade changed state — refresh")
-    conn.execute(
-        "INSERT INTO events (item_id, ts, actor, from_state, to_state,"
-        " payload) VALUES (?,?,?,?,?,?)",
-        (wi, now, "human", "approved", "rejected",
-         json.dumps({"reason": "cancelled after a failed placement"})))
+    with tx(conn):
+        cur = conn.execute(
+            "UPDATE work_items SET state='rejected', token_state='burned',"
+            " updated_at=? WHERE id=? AND state='approved'"
+            " AND token_state='pending_resume'", (now, wi))
+        if cur.rowcount != 1:
+            raise AuthError(409, "the trade changed state — refresh")
+        conn.execute(
+            "INSERT INTO events (item_id, ts, actor, from_state, to_state,"
+            " payload) VALUES (?,?,?,?,?,?)",
+            (wi, now, "human", "approved", "rejected",
+             json.dumps({"reason": "cancelled after a failed placement"})))
     return {"ok": True, "state": "rejected"}

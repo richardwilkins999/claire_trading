@@ -12,8 +12,10 @@ from decimal import Decimal
 
 from .lots import OpenLot, match
 from .money import MICRO, mul_micro, to_micro
+from .. import states
+from . import db
 
-TERMINAL_ORDER = {"filled", "cancelled", "expired", "rejected"}
+TERMINAL_ORDER = set(states.ORDER_TERMINAL)
 
 
 class LedgerError(Exception):
@@ -101,15 +103,22 @@ class Repo:
             (id, kind, ticker, "running", thread_id or id, ts, ts))
         self._event(id, ts, "system", None, "running")
 
+    def tx(self):
+        """`with repo.tx():` — see accounting.db.tx."""
+        return db.tx(self.conn)
+
     def set_state(self, item_id, to_state, *, actor, ts, payload=None):
-        row = self.conn.execute(
-            "SELECT state FROM work_items WHERE id=?", (item_id,)).fetchone()
-        if row is None:
-            raise LedgerError(f"no work item {item_id!r}")
-        self.conn.execute(
-            "UPDATE work_items SET state=?, updated_at=? WHERE id=?",
-            (to_state, ts, item_id))
-        self._event(item_id, ts, actor, row["state"], to_state, payload)
+        # the new state and its audit event are one fact: both or neither
+        with self.tx():
+            row = self.conn.execute(
+                "SELECT state FROM work_items WHERE id=?",
+                (item_id,)).fetchone()
+            if row is None:
+                raise LedgerError(f"no work item {item_id!r}")
+            self.conn.execute(
+                "UPDATE work_items SET state=?, updated_at=? WHERE id=?",
+                (to_state, ts, item_id))
+            self._event(item_id, ts, actor, row["state"], to_state, payload)
 
     def _event(self, item_id, ts, actor, from_state, to_state, payload=None):
         self.conn.execute(
