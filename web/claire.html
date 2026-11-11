@@ -6,13 +6,14 @@
 <script>nav('/claire')</script>
 <main>
   <h1>Claire</h1>
-  <p class="muted">Ask about the portfolio, pending theses, markets — or say
-  "run the pipeline on NVDA". Claire can research and explain; she can never
-  approve — that stays on <a href="/">Mission Control</a>.</p>
+  <p class="muted">Ask about the portfolio, what is waiting for your approval,
+  the markets — or say "research NVDA" to start a run. Claire can research
+  and explain; she can never approve a trade — that stays with you, on
+  <a href="/approvals">Approvals</a>.</p>
   <div class="chat">
-    <div class="chatlog" id="log"></div>
+    <div class="chatlog" id="log" role="log" aria-live="polite" aria-label="Conversation with Claire"></div>
     <div class="row">
-      <input id="text" style="flex:1" placeholder="Talk to Claire…"
+      <input id="text" style="flex:1" placeholder="Talk to Claire…" aria-label="Your message to Claire"
         onkeydown="if(event.key==='Enter')send()">
       <button id="sendbtn" onclick="send()">Send</button>
     </div>
@@ -20,22 +21,90 @@
 </main>
 <script>
 const log = document.getElementById('log');
-function bubble(cls, text) {
+/* true while a reply is streaming (and while the earlier conversation is
+   still loading). Enter used to send a second message into the middle of the
+   first reply — the button was disabled, the key was not. */
+let BUSY = true;
+function bubble(cls, text, tip) {
   const d = document.createElement('div');
   d.className = 'bubble ' + cls;
   d.textContent = text;
+  if (tip) d.title = tip;
   log.appendChild(d);
   log.scrollTop = log.scrollHeight;
   return d;
 }
+
+/* ── the conversation so far survives a reload ────────────────────────
+   The server keeps the thread — Claire remembered it, the page did not show
+   it. GET /api/chat-history returns {thread, messages: [{role: 'user' |
+   'assistant', content}], updated_at}, oldest first, at most 60. If it
+   cannot be read (not paired, or an older server) the page starts empty,
+   without a word: the chat itself still works. */
+async function loadHistory() {
+  let shown = 0;
+  try {
+    /* a server that does not answer must not hold the input for ever */
+    const h = await Promise.race([api('/api/chat-history?thread=dashboard'),
+      new Promise((_, fail) => setTimeout(() => fail(new Error('slow')), 8000))]);
+    for (const m of (h && h.messages) || []) {
+      if (!m || typeof m.content !== 'string' || !m.content) continue;
+      if (m.role === 'user') bubble('user', m.content);
+      else if (m.role === 'assistant') bubble('claire', m.content);
+      else continue;
+      shown++;
+    }
+  } catch {}
+  if (!shown) greet();
+  ready();
+}
+function greet() {
+  bubble('claire', "Hi, I'm Claire. Ask me about the desk, or name a stock " +
+    "and I'll research it.");
+}
+/* the input can be used: nothing is loading, no reply is arriving */
+function ready() {
+  BUSY = false;
+  document.getElementById('sendbtn').disabled = false;
+  log.removeAttribute('aria-busy');
+  document.getElementById('text').placeholder = 'Talk to Claire…';
+}
+
+/* ── what Claire just did, in words ───────────────────────────────────
+   A tool call used to be printed as raw JSON:
+   ⚙ portfolio_summary({}). The raw call is kept in the line's tooltip. */
+const TOOL_SAID = {
+  run_pipeline: a => `started a research run on ${a.ticker || 'a stock'}` +
+    (a.exchange ? ` (${a.exchange})` : ''),
+  pipeline_status: () => 'checked how a run is going',
+  list_pending_approvals: () => 'looked at what is waiting for your approval',
+  portfolio_summary: () => 'looked up the portfolio',
+  share_pl: a => `worked out the profit or loss on ${a.ticker || 'a holding'}`,
+  broker_metrics: () => 'checked the broker accounts',
+  market_quote: a => `looked up the price of ${a.symbol || 'a stock'}`,
+  market_chart: a => `looked at the price history of ${a.symbol || 'a stock'}`,
+  market_search: a => `searched for “${a.query || ''}”`,
+  explain_thesis: () => 're-read the reasoning behind a run',
+  saxo_account: a => `looked at the Saxo ${String(a.account || 'live').toUpperCase()} account`,
+};
+function toolLine(ev) {
+  const args = ev.args && typeof ev.args === 'object' ? ev.args : {};
+  let said = null;
+  try { said = TOOL_SAID[ev.name] ? TOOL_SAID[ev.name](args) : null; } catch {}
+  return said || 'used ' + String(ev.name || 'a tool').replace(/_/g, ' ');
+}
+
 async function send() {
+  if (BUSY) return;                    // a reply is still arriving
   const input = document.getElementById('text');
   const text = input.value.trim();
   if (!text) return;
+  BUSY = true;
   input.value = '';
+  input.placeholder = 'Claire is answering — type your next message, send it when she has finished';
   bubble('user', text);
-  const btn = document.getElementById('sendbtn');
-  btn.disabled = true;
+  document.getElementById('sendbtn').disabled = true;
+  log.setAttribute('aria-busy', 'true');
   let current = null;
   try {
     // /api/ask starts paid LLM work, so it needs the paired key like every
@@ -60,9 +129,11 @@ async function send() {
         if (!line.trim()) continue;
         let ev;
         try { ev = JSON.parse(line); } catch { continue; }
-        if (ev.kind === 'tool')
-          bubble('toolcall', `⚙ ${ev.name}(${JSON.stringify(ev.args || {})})`);
-        else if (ev.kind === 'text') {
+        if (ev.kind === 'tool') {
+          const said = '⚙ ' + toolLine(ev);
+          const raw = `${ev.name}(${JSON.stringify(ev.args || {})})`;
+          bubble('toolcall', said, raw);
+        } else if (ev.kind === 'text') {
           if (!current) current = bubble('claire', '');
           current.textContent = ev.text;
           log.scrollTop = log.scrollHeight;
@@ -71,9 +142,12 @@ async function send() {
       }
     }
   } catch (e) { bubble('toolcall', '✖ ' + e.message); }
-  btn.disabled = false;
+  ready();
   input.focus();
 }
-bubble('claire', "Hi, I'm Claire. Ask me about the desk, or name a ticker " +
-  'and I\'ll put it through the pipeline.');
+/* the earlier conversation first; the input waits for it */
+document.getElementById('sendbtn').disabled = true;
+document.getElementById('text').placeholder = 'Loading the conversation so far…';
+log.setAttribute('aria-busy', 'true');
+loadHistory();
 </script>
