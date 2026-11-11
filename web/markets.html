@@ -19,11 +19,12 @@
       </div>
       <div class="row" style="margin-bottom:.5rem">
         <input id="filter" placeholder="filter…" style="flex:1"
-          oninput="renderList()">
+          aria-label="filter this list by symbol or name" oninput="renderList()">
         <span class="muted" id="listnote" style="font-size:.75rem"></span>
       </div>
       <div id="searchbar" class="row" style="display:none;margin-bottom:.5rem">
         <input id="q" placeholder="search any listed company worldwide…"
+          aria-label="search for a company by name or ticker"
           style="flex:1" onkeydown="if(event.key==='Enter')doSearch()">
         <button class="ghost" onclick="doSearch()">Search</button>
       </div>
@@ -34,8 +35,8 @@
     <div class="sticky" id="detail">
       <div class="card" style="margin:0">
         <p class="muted">Select a stock on the left — its chart and analysis
-        tools appear here. Toggle SMA / volume / RSI for your own read, or
-        send it to Claire's pipeline for the full desk treatment.</p>
+        tools appear here. Toggle the averages, volume and RSI for your own
+        read, or start a research run on it for the full desk treatment.</p>
       </div>
     </div>
   </div>
@@ -47,28 +48,35 @@ let sortKey = 'mcap', sortDir = -1, sel = null, chartData = null;
 let EXCHANGES = [], sparks = {}, clockTimer = null;
 
 /* ── world-markets strip ─────────────────────────────────────────── */
-async function loadStrip() {
+async function loadExchanges() {
   EXCHANGES = await api('/api/exchanges');
   renderStrip();
   clearInterval(clockTimer);
   clockTimer = setInterval(renderStrip, 1000);
 }
+/* open / closed was read once and never again; now every minute, and the
+   menu bar says when ("updated 12:03") or that it could not */
+const loadStrip = tracked(loadExchanges, {key: 'exchanges'});
 function renderStrip() {
-  document.getElementById('mstrip').innerHTML = EXCHANGES.map(e => {
-    const t = new Date().toLocaleTimeString('en-GB',
-      {timeZone: e.tz, hour: '2-digit', minute: '2-digit'});
-    const dot = e.is_open ? '<span class="dot open">●</span>'
-      : e.at_lunch ? '<span class="dot lunch">●</span>'
-      : '<span class="dot closed">●</span>';
-    const state = e.is_open ? 'open' : e.at_lunch ? 'lunch'
-      : 'opens ' + new Date(e.next_open).toLocaleString(undefined,
-        {weekday: 'short', hour: '2-digit', minute: '2-digit'});
+  /* swapHtml (nav.js): redrawn only when a minute changes, and the chip you
+     reached with the keyboard keeps the focus */
+  swapHtml(document.getElementById('mstrip'), EXCHANGES.map(e => {
+    /* the exchange's own clock, labelled as such: "09:31 EST" */
+    const t = esc(fmtClock(new Date(), e.tz));
+    /* a shape and a word as well as a colour */
+    const dot = e.is_open ? '<span class="dot open" role="img" aria-label="open">●</span>'
+      : e.at_lunch ? '<span class="dot lunch" role="img" aria-label="lunch break">◐</span>'
+      : '<span class="dot closed" role="img" aria-label="closed">○</span>';
+    const state = e.is_open ? 'open now' : e.at_lunch ? 'lunch break'
+      : 'closed — opens ' + fmtUntil(e.next_open);
     return `<div class="mchip ${e.exchange === exchange ? 'sel' : ''}"
+      role="button" tabindex="0" data-kbd="${esc(e.exchange)}"
+      aria-pressed="${e.exchange === exchange}"
       onclick="pickExchange(${jsArg(e.exchange)})"
       title="hours ${esc(e.open_time)}–${esc(e.close_time)}${e.lunch_break ?
-        ' (lunch ' + esc(e.lunch_break) + ')' : ''} · ${esc(state)}">
+        ' (lunch ' + esc(e.lunch_break) + ')' : ''} on its own clock · ${esc(state)}">
       ${dot} <b>${esc(e.exchange)}</b><br><span class="t">${t}</span></div>`;
-  }).join('');
+  }).join(''));
 }
 
 /* ── exchange summary (lazy; stale-tolerant) ─────────────────────── */
@@ -78,8 +86,7 @@ async function pickExchange(ex) {
   const e = EXCHANGES.find(x => x.exchange === ex) || {};
   const base = `<b style="letter-spacing:.08em">${esc(ex)}</b>
     ${e.is_open ? '<span class="pill ok">● TRADING NOW</span>'
-      : `<span class="pill bad">closed — opens ${new Date(e.next_open)
-          .toLocaleString()}</span>`}
+      : `<span class="pill bad">closed — opens ${esc(fmtUntil(e.next_open))}</span>`}
     <span class="muted">hours ${esc(e.open_time)}–${esc(e.close_time)}${e.lunch_break ?
       ' · lunch ' + esc(e.lunch_break) : ''} (${esc(e.tz)})</span>`;
   el.innerHTML = base + ' <span class="muted">· index loading…</span>';
@@ -134,7 +141,12 @@ async function loadList() {
 async function doSearch() {
   const q = document.getElementById('q').value.trim();
   if (!q) return;
-  const found = await api('/api/search?q=' + encodeURIComponent(q));
+  let found;
+  try { found = await api('/api/search?q=' + encodeURIComponent(q)); }
+  catch (e) {                      // it used to fail without a word
+    document.getElementById('list').innerHTML = `<p class="bad">${esc(e.message)}</p>`;
+    return;
+  }
   /* exchange is one of the desk's ten, or null: a hit listed anywhere
      else can be charted here but not traded. It used to keep the venue's
      own name ("NMS", "Euronext") and then fall back to whichever exchange
@@ -174,15 +186,18 @@ function renderList() {
       return (x < y ? -1 : x > y ? 1 : 0) * sortDir;
     });
   window._rows = data;
-  document.getElementById('list').innerHTML = data.length === 0
+  /* swapHtml (nav.js): the row you opened with the keyboard keeps the focus */
+  swapHtml(document.getElementById('list'), data.length === 0
     ? `<p class="muted">${tab === 'search'
         ? 'Type a company name above and press Enter — results are worldwide.'
         : 'Nothing here — Yahoo may be rate-limiting; try again shortly.'}</p>`
     : '<table><tr>' + cols.map(([k, l]) => k === 'spark' ? '<th></th>'
-      : `<th class="sortable" onclick="sortBy('${k}')">${l}
+      : `<th class="sortable" onclick="sortBy('${k}')" tabindex="0" data-kbd="sort-${k}"
+        title="sort by this column" aria-sort="${sortKey === k ? (sortDir < 0 ? 'descending' : 'ascending') : 'none'}">${l}
         ${sortKey === k ? (sortDir < 0 ? '▼' : '▲') : ''}</th>`).join('') +
     '</tr>' + data.map((r, i) => `<tr class="clickable
-      ${sel && sel.symbol === r.symbol ? 'sel' : ''}" onclick="pick(${i})">` +
+      ${sel && sel.symbol === r.symbol ? 'sel' : ''}" onclick="pick(${i})"
+      tabindex="0" data-kbd="${esc(r.symbol)}" title="show the chart of ${esc(r.symbol)}">` +
       cols.map(([k]) => {
         if (k === 'spark') return `<td>${sparkline(sparks[r.symbol])}</td>`;
         let v = r[k];
@@ -195,7 +210,7 @@ function renderList() {
         if (k === 'name') return `<td class="muted" title="${esc(v ?? '')}">
           ${esc((v ?? '—').toString().slice(0, 24))}</td>`;
         return `<td>${esc(v ?? '—')}</td>`;
-      }).join('') + '</tr>').join('') + '</table>';
+      }).join('') + '</tr>').join('') + '</table>');
 }
 function renderPager() {
   const el = document.getElementById('pager');
@@ -239,17 +254,17 @@ function pick(i) {
       ${sel.pe ? ' · P/E ' + fmt(sel.pe) : ''}
       ${sel.rsi ? ' · RSI ' + fmt(sel.rsi) : ''}</p>
     <div class="row" style="margin:.4rem 0">
-      <select id="range" onchange="loadChart()">
+      <select id="range" aria-label="chart period" onchange="loadChart()">
         <option value="1mo">1mo</option><option value="6mo" selected>6mo</option>
         <option value="1y">1y</option><option value="2y">2y</option>
       </select>
-      <label><input type="checkbox" id="t-sma20" checked
-        onchange="loadChart(true)"> SMA20</label>
-      <label><input type="checkbox" id="t-sma50" checked
-        onchange="loadChart(true)"> SMA50</label>
-      <label><input type="checkbox" id="t-vol" checked
+      <label for="t-sma20" title="the average closing price of the last 20 trading days (SMA 20)"><input type="checkbox" id="t-sma20" checked
+        onchange="loadChart(true)"> 20-day avg</label>
+      <label for="t-sma50" title="the average closing price of the last 50 trading days (SMA 50)"><input type="checkbox" id="t-sma50" checked
+        onchange="loadChart(true)"> 50-day avg</label>
+      <label for="t-vol"><input type="checkbox" id="t-vol" checked
         onchange="loadChart(true)"> Vol</label>
-      <label><input type="checkbox" id="t-rsi" onchange="loadChart(true)">
+      <label for="t-rsi" title="relative strength index: above 70 the stock has risen fast (overbought), below 30 it has fallen fast (oversold)"><input type="checkbox" id="t-rsi" onchange="loadChart(true)">
         RSI</label>
       <span style="flex:1"></span>
       ${ex ? `<button class="ghost" id="wl-btn" onclick="toggleWatch(${jsArg(ex)})"
@@ -257,7 +272,7 @@ function pick(i) {
         ${onWatchlist(sel.ticker || sel.symbol, ex) ? '★ watching'
           : '☆ watchlist'}</button>
       <button class="ghost" onclick="sendToPipeline(${jsArg(ex)})"
-        title="Claire's analysts research it and, if they recommend a trade, it comes to Approvals">Send to pipeline</button>
+        title="Claire's analysts research it and, if they recommend a trade, it comes to Approvals">Start a research run</button>
       <button class="ghost" onclick="setTrigger(${jsArg(ex)})"
         title="opens it on the Watchlist with the trigger form ready">Set a trigger</button>
       <button onclick="buyNow(${jsArg(ex)})"
@@ -319,7 +334,9 @@ async function sendToPipeline(ex) {
       exchange: ex, currency: CCY[ex],
       lot_size: deskLot(ex),
       trigger: 'launched from the Markets page'});
-    toast('launched ' + r.work_item_id + ' — watch it on Trading');
+    toast(`Started researching ${sel.ticker || sel.symbol} — follow it on Runs`);
+    document.getElementById('buy-note').innerHTML = `<b class="ok">✔ run started</b> —
+      <a href="/trading#${esc(r.work_item_id || '')}" title="run ${esc(r.work_item_id || '')}">follow it on Runs →</a>`;
   } catch (e) { toast(e.message, false); }
 }
 
@@ -362,16 +379,17 @@ async function buyNow(ex) {
   const rp = v => Math.round(v * (price < 1 ? 1e4 : 100)) / (price < 1 ? 1e4 : 100);
   const stop = rp(price - r), target = rp(price + Math.min(2 * r, price * 0.24));
   if (!await ask(`Put a BUY of ${ticker} at the current price (${fmt(price)}) on Approvals?\n\n` +
-      `Suggested stop ${stop} and target ${target} (${atr ? '2 × the daily move' : '8% — no chart data'}, 2:1).\n` +
-      'You choose the size and account, and can change the stop and target, on the approval card. Nothing trades until you approve.')) return;
+      `Suggested stop-loss ${stop} and take-profit ${target} (${atr ? '2 × the typical daily move' : '8% — no chart data'}, 2:1).\n` +
+      'You choose the size and account, and can change the stop-loss and take-profit, on the approval card. Nothing trades until you approve.')) return;
   try {
     const out = await api('/api/manual-trade', {ticker, exchange: ex, direction: 'buy',
       entry: price, stop, target, source: 'markets', suggested: {order_type: 'market'}});
     note.innerHTML = `<b class="ok">✔ on Approvals</b> — <a href="/approvals#c-${esc(out.work_item_id || '')}">review and approve it →</a>`;
-    toast('buy sent to Approvals ✓');
-  } catch (e) { note.innerHTML = `<b class="bad">${esc(e.message)}</b>`; }
+    if (out.work_item_id) toApprovalCard(out.work_item_id);   // straight to the card
+  } catch (e) { note.innerHTML = `<b class="bad">${esc(e.message)}</b>`; toast(e.message, false); }
 }
 
 loadWatchlist();
 loadStrip().then(() => pickExchange('NASDAQ'));
+poll(loadStrip, 60000);
 </script>

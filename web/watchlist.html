@@ -29,9 +29,9 @@
 <main>
   <h1>Watchlist</h1>
   <p class="muted">Names you are watching, with the numbers that matter to
-  decide, and what the desk holds in each. <b>Buy now</b> and <b>Sell now</b>
-  put a trade on the Approvals page — nothing trades until you approve it
-  there. A <b>price trigger</b> waits for a price ("buy 50 when it falls to
+  decide, and what the desk holds in each. <b>Buy…</b> and <b>Sell…</b> open
+  a form; sending it takes you to the trade's card on the Approvals page —
+  nothing trades until you approve it there. A <b>price trigger</b> waits for a price ("buy 50 when it falls to
   5.00") and then asks you, or — on a paper account only, if you choose —
   places the order you pre-approved. Watchlisted names are also always
   considered by the screener.</p>
@@ -181,8 +181,8 @@ function renderTable() {
       <td>${heldCell(r)}</td>
       <td>${active.length ? active.map(trigChip).join('') : '<span class="muted">—</span>'}</td>
       <td onclick="event.stopPropagation()" style="white-space:nowrap">
-        <button onclick="openAction(${a}, 'buy')">Buy now</button>
-        ${r.held_total > 0 ? `<button class="ghost" onclick="openAction(${a}, 'sell')">Sell now</button>` : ''}
+        <button onclick="openAction(${a}, 'buy')">Buy…</button>
+        ${r.held_total > 0 ? `<button class="ghost" onclick="openAction(${a}, 'sell')">Sell…</button>` : ''}
         <button class="ghost" onclick="openAction(${a}, 'trigger')">Add trigger</button>
         <button class="ghost" title="remove from the watchlist" aria-label="remove ${esc(r.ticker)} from the watchlist" onclick="removeRow(${a})">✖</button>
       </td></tr>`;
@@ -204,7 +204,7 @@ function openAction(k, which) {
   document.getElementById('detail').scrollIntoView({behavior: 'smooth', block: 'start'});
 }
 function accountOptions(id, onchange) {
-  return `<select id="${id}" onchange="${onchange}">${(DATA.accounts || []).map(a =>
+  return `<select id="${id}" aria-label="Account" onchange="${onchange}">${(DATA.accounts || []).map(a =>
     `<option value="${esc(a.broker)}" ${a.disabled ? 'disabled' : ''} ${a.environment === 'live' ? 'class="liveopt"' : ''}
       title="${esc(a.disabled || '')}">${a.environment === 'live' ? '⚠ REAL MONEY · ' : ''}${esc(a.label)}${a.disabled ? ' — ' + esc(a.disabled) : ''}</option>`
   ).join('')}</select>
@@ -218,11 +218,11 @@ function buildDetail() {
     <div id="d-info"></div>
     <div class="row small" style="margin:.4rem 0">chart:
       ${['1mo', '3mo', '6mo', '1y'].map(g => `<button class="ghost" onclick="loadChart(${jsArg(g)})">${g}</button>`).join('')}
-      <span class="muted">dashed lines: your triggers (green buy, red sell), average cost (amber), resting stop / target</span></div>
+      <span class="muted">dashed lines: your triggers (green buy, red sell), average cost (amber), resting stop-loss / take-profit</span></div>
     <div id="d-chart"><p class="muted">loading chart…</p></div>
     <div class="tabs" style="margin-top:.6rem">
-      <button id="tab-buy" onclick="showPanel('buy')">Buy now</button>
-      <button id="tab-sell" onclick="showPanel('sell')">Sell now</button>
+      <button id="tab-buy" onclick="showPanel('buy')">Buy…</button>
+      <button id="tab-sell" onclick="showPanel('sell')">Sell…</button>
       <button id="tab-trigger" onclick="showPanel('trigger')">Add trigger</button>
     </div>
     <div id="p-buy" class="panel">${buyForm(r)}</div>
@@ -342,31 +342,31 @@ const lotOf = r => deskLot(r && r.exchange);     // nav.js
 let B_LEAD = 'amount', B_TOUCHED = false;   // which size you typed; did you edit stop/target
 function buyForm(r) {
   const c = qccy(r);
-  return `<h3>Buy ${esc(r.ticker)} now</h3>
+  return `<h3>Buy ${esc(r.ticker)}</h3>
     <div class="ord">
     <div class="row">
-      <label>Order type <select id="b-mode" onchange="buyMode()">
+      <label for="b-mode">Order type <select id="b-mode" onchange="buyMode()">
         <option value="market">Buy at the current price — fills now</option>
         <option value="manual">Manual — set your own price</option></select></label>
-      <label>Account ${accountOptions('b-acct', 'updBuy()')}</label>
+      <label for="b-acct">Account ${accountOptions('b-acct', 'updBuy()')}</label>
     </div>
     <div class="osum" id="b-sum" style="margin-bottom:.5rem"></div>
     <div class="row">
-      <label title="the most you pay per share — the order buys at this price or lower; “current price” sets it for you — choose Manual to type your own">Purchase price
+      <label for="b-px" title="the most you pay per share — the order buys at this price or lower; “current price” sets it for you — choose Manual to type your own">Purchase price
         <input id="b-px" type="number" min="0" step="any" readonly class="locked" oninput="limitTyped()"> <span class="muted">${c}/share</span></label>
-      <label title="sells all the shares at the market if the price FALLS to this — sent with the buy, held at the broker">Stop-loss
+      <label for="b-stop" title="sells all the shares at the market if the price FALLS to this — sent with the buy, held at the broker">Stop-loss
         <input id="b-stop" type="number" min="0" step="any" oninput="B_TOUCHED = true; updBuy()"> <span class="muted">${c}</span></label>
-      <label title="sells all the shares at this price or better if the price RISES to it — leave blank for none">Take-profit
+      <label for="b-tgt" title="sells all the shares at this price or better if the price RISES to it — leave blank for none">Take-profit
         <input id="b-tgt" type="number" min="0" step="any" placeholder="none" oninput="B_TOUCHED = true; updBuy()"> <span class="muted">${c} · optional</span></label>
-      <label data-trail="b" title="not an order: the watcher alerts you if the price falls this far below its best since you bought — it rises with the price"><span class="trail-name">Trailing alert</span>
+      <label for="b-trail" data-trail="b" title="not an order: the watcher alerts you if the price falls this far below its best since you bought — it rises with the price"><span class="trail-name">Trailing alert</span>
         <input id="b-trail" type="number" min="0.5" max="90" step="0.5" value="8" oninput="updBuy()"> <span class="muted">%</span></label>
       <button type="button" class="ghost" onclick="buySuggest()">suggest stop / take-profit</button>
     </div>
     <div class="row">
-      <label>Amount to spend <input id="b-amt" type="number" min="0" step="0.01" value="1000" oninput="B_LEAD = 'amount'; updBuy()">
+      <label for="b-amt">Amount to spend <input id="b-amt" type="number" min="0" step="0.01" value="1000" oninput="B_LEAD = 'amount'; updBuy()">
         <b id="b-ccy"></b></label>
       <span class="muted">⇄</span>
-      <label>Shares <input id="b-qty" type="number" min="0" step="any" oninput="B_LEAD = 'shares'; updBuy()"></label>
+      <label for="b-qty">Shares <input id="b-qty" type="number" min="0" step="any" oninput="B_LEAD = 'shares'; updBuy()"></label>
       <span class="muted small" id="b-sznote">type either — the other follows</span>
     </div>
     <div class="row"><input id="b-note" placeholder="note (optional)" maxlength="200" style="flex:1;min-width:140px" aria-label="Note (optional)"></div>
@@ -377,7 +377,7 @@ function buyForm(r) {
     </div>
     <p id="b-msg" class="small" style="margin:.3rem 0"></p>
     <p class="muted small" style="margin:0">Nothing is bought yet: this puts the BUY on the Approvals
-      page with these prices and shares; you approve it there.</p>
+      page with these prices and shares and takes you to it; you approve it there.</p>
     </div>`;
 }
 function buyMode() {
@@ -484,10 +484,10 @@ async function buySend() {
       direction: 'buy', entry: v.entry, stop: v.stop, target: v.target, note: v.note,
       source: 'watchlist', suggested: {qty: v.qty, broker: v.broker,
         order_type: v.mkt ? 'market' : 'limit', ...(v.trail ? {trail_pct: v.trail} : {})}});
-    msg.innerHTML = `<b class="ok">✔ sent</b> — approve it on
+    msg.innerHTML = `<b class="ok">✔ sent</b> — taking you to its card on
       <a href="/approvals#c-${esc(r.work_item_id)}" title="run ${esc(r.work_item_id)}">Approvals →</a>`;
-    toast('buy sent to approval ✓');
-  } catch (e) { msg.innerHTML = `<b class="bad">${esc(e.message)}</b>`; }
+    if (r.work_item_id) toApprovalCard(r.work_item_id);   // straight to the card
+  } catch (e) { msg.innerHTML = `<b class="bad">${esc(e.message)}</b>`; toast(e.message, false); }
 }
 
 /* ── Sell now (web/sell.js, one form per account that holds shares) ── */
@@ -509,7 +509,7 @@ function renderSell() {
     return [key, h];
   });
   if (!el.querySelector('.sellrows')) {
-    el.innerHTML = `<h3>Sell ${esc(r.ticker)} now</h3><div class="sellrows">${keys.map(([k, h]) =>
+    el.innerHTML = `<h3>Sell ${esc(r.ticker)}</h3><div class="sellrows">${keys.map(([k, h]) =>
       `<div class="row small">${esc(h.account_id)}: ${fmt(h.qty, 4)} shares ${sellButton(k)}</div>
        <div id="sellbox-${esc(k)}"></div>`).join('')}</div>`;
   }
@@ -555,31 +555,31 @@ function triggerForm(r) {
         <option value="gte">rises to or above (≥)</option></select>
       <input id="t-px" type="number" min="0" step="any" placeholder="price" aria-label="Trigger price" oninput="trigPriceTyped()">
       <span class="muted">${c}</span>
-      <label>Account ${accountOptions('t-acct', 'acctChanged()')}</label>
+      <label for="t-acct">Account ${accountOptions('t-acct', 'acctChanged()')}</label>
     </div>
     <div class="osum" id="t-sum" style="margin-bottom:.5rem"></div>
     <div class="row">
-      <label title="the most you pay (buy) or the least you accept (sell) once it fires; blank = the trigger price"><span id="t-limword">Purchase price</span>
+      <label for="t-lim" title="the most you pay (buy) or the least you accept (sell) once it fires; blank = the trigger price"><span id="t-limword">Purchase price</span>
         <input id="t-lim" type="number" min="0" step="any" placeholder="= trigger" oninput="trigPriceTyped()"> <span class="muted">${c}/share</span></label>
       <span id="t-levels" style="display:contents">
-        <label><span id="t-stopword">Stop-loss</span>
+        <label for="t-stop"><span id="t-stopword">Stop-loss</span>
           <input id="t-stop" type="number" min="0" step="any" oninput="T_TOUCHED = true; updTrig()"> <span class="muted">${c}</span></label>
-        <label>Take-profit <input id="t-tgt" type="number" min="0" step="any" placeholder="none" oninput="T_TOUCHED = true; updTrig()">
+        <label for="t-tgt">Take-profit <input id="t-tgt" type="number" min="0" step="any" placeholder="none" oninput="T_TOUCHED = true; updTrig()">
           <span class="muted">${c} · optional</span></label>
-        <label id="t-traillbl" data-trail="t" title="not an order: after the buy fills, the watcher alerts you if the price falls this far below its best since you bought"><span class="trail-name">Trailing alert</span>
+        <label for="t-trail" id="t-traillbl" data-trail="t" title="not an order: after the buy fills, the watcher alerts you if the price falls this far below its best since you bought"><span class="trail-name">Trailing alert</span>
           <input id="t-trail" type="number" min="0.5" max="90" step="0.5" value="8" oninput="updTrig()"> <span class="muted">%</span></label>
         <button type="button" class="ghost" onclick="trigSuggest()">suggest stop / take-profit</button>
       </span>
     </div>
     <div class="row">
-      <label id="t-amtlbl">Amount to spend <input id="t-amt" type="number" min="0" step="0.01" value="1000"
+      <label for="t-amt" id="t-amtlbl">Amount to spend <input id="t-amt" type="number" min="0" step="0.01" value="1000"
         oninput="T_LEAD = 'amount'; updTrig()"> <b id="t-ccy"></b></label>
       <span id="t-arrow" class="muted">⇄</span>
-      <label>Shares <input id="t-qty" type="number" min="0" step="any" oninput="T_LEAD = 'shares'; updTrig()"></label>
+      <label for="t-qty">Shares <input id="t-qty" type="number" min="0" step="any" oninput="T_LEAD = 'shares'; updTrig()"></label>
       <span class="muted small" id="t-sznote"></span>
     </div>
     <div class="row">
-      <label>expires in <input id="t-days" type="number" min="1" max="365" step="1" value="30" style="width:60px"> days</label>
+      <label for="t-days">expires in <input id="t-days" type="number" min="1" max="365" step="1" value="30" style="width:60px"> days</label>
       <input id="t-note" placeholder="note (optional)" maxlength="120" style="flex:1;min-width:140px" aria-label="Note (optional)">
     </div>
     <div style="margin:.3rem 0" class="small">
