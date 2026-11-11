@@ -23,7 +23,6 @@ import json
 from .accounting.money import from_micro, to_micro as _to_micro
 from .graph.state import Thesis
 
-WORKING = ("pending_session", "placed", "partially_filled")
 SAXO_MAX_PCT = 25          # TooFarFromEntryOrder, measured on SIM 2026-11-05
 
 

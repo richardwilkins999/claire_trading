@@ -48,13 +48,15 @@ Chat seam (voice/assistants integrate here):
 ## Tests
 
 ```sh
-tests/run.sh          # 74 offline tests, <7s: accounting (exact micro-unit
-                      # money), graph structure + interrupt/resume,
-                      # authorization (403/409/410), providers, sessions,
-                      # executor/custodian/watcher, dashboards HTTP
+tests/run.sh          # about 800 offline tests, ~90 s: accounting (exact
+                      # micro-unit money), graph structure + interrupt/
+                      # resume, authorization (403/409/410), providers,
+                      # sessions, executor/custodian/watcher, dashboards HTTP
 ```
 
-Live smoke tests activate automatically when the services are running.
+`tests/test_smoke.py` runs against the LIVE services whenever they are up
+(it sends Claire one real chat turn). Leave it out with
+`pytest tests --deselect tests/test_smoke.py` to stay offline.
 
 ## Day-to-day control
 
@@ -76,16 +78,13 @@ to reach command — not part of the daily-use script.
 
 ## Deploy
 
-This machine runs Claire via a systemd **wrapper** unit, not the
-`systemd/claire-api.service` / `claire-dashboards.service` files in this
-repo — those hardcode a `/opt/Claire` path that was never actually used
-here (an earlier design assumed a dedicated deploy path; the repo just
-lives at `/mnt/projects/claire_trading` instead), and running them directly
-would fight `bin/claire stop`'s graceful-drain logic: their `Restart=always`
-would just relaunch whatever the script had just told to stop.
+This machine runs Claire via one systemd **wrapper** unit that calls
+`bin/claire`. (Per-service units with `Restart=always` would fight
+`bin/claire stop`'s graceful drain by relaunching what the script had just
+stopped; the templates for them, which pointed at a `/opt/Claire` path that
+never existed, were removed on 2026-11-11.)
 
-Installed unit (`systemd/claire.service` — a thin wrapper, not the two
-files above):
+Installed unit (`systemd/claire.service`):
 ```ini
 [Service]
 Type=oneshot
@@ -103,11 +102,14 @@ systemctl --user enable --now claire.service
 Gives reboot persistence, not crash recovery — if `claire-api` or
 `claire-dashboards` dies mid-session (not via a reboot), systemd won't
 notice or restart it, since the wrapper already exited after the one-shot
-start. `claire-custodian.timer` (DB-side safety net if claire-api is down)
-is a real systemd timer and can still be installed/enabled normally if
-recurring jobs need it — the schedules themselves live in desk.db, run by
-the scheduler inside claire-api, per the **/schedule page**. Market scans
-only run against exchanges that are open at fire time.
+start. Recurring jobs (custodian, price triggers, market scans, reconcile,
+maintenance) are not systemd timers: the schedules live in desk.db and are
+run by the scheduler inside claire-api, per the **Schedule page**. Market
+scans only run against exchanges that are open at fire time.
+
+Logs: `var/log/api.log` and `var/log/dashboards.log`, one timestamped line
+per event (`app/logsetup.py`); `CLAIRE_LOG_LEVEL` in `etc/claire.env` sets
+the level (default INFO). The maintainer rotates them.
 
 ## Layout
 
@@ -115,17 +117,18 @@ only run against exchanges that are open at fire time.
 app/graph/        pipeline StateGraph, typed state, LLM + execution nodes
 app/accounting/   desk.db schema + THE ONLY WRITER (integer micro-unit money)
 app/providers/    DB-backed multi-LLM registry, metering, health, seeds
-app/tools/        Yahoo market data, search, narrative jail, run_python
-                  sandbox, broker adapters (paper sim + MCP configs)
+app/tools/        market data (Twelve Data > TradingView > Yahoo), news
+                  search, narrative jail, run_python sandbox, broker
+                  adapters (in-process paper sim, Saxo)
 app/api/          claire-api :7788 (FastAPI): resume seam, runs, /ask
 app/dashboards.py :7787 stdlib server + approval authorization + watcher
-app/custodian.py  fills, TTLs, expiry, orphans, broker sync (in-process + timer)
+app/custodian.py  fills, TTLs, expiry, orphans, ledger check, broker sync
+app/logsetup.py   logging for both services
 app/maintenance.py daily checks, log rotation, backups, retention + AI note (§23)
 app/sessions.py   exchange calendars: is_open / next_open / close_of
 web/              dashboard pages (no build step)
-systemd/          claire-api/claire-dashboards/claire-custodian unit
-                  templates (not what's installed — see "Deploy"), plus
-                  the custodian timer and per-region pre-open analysis
+systemd/          claire.service — the wrapper unit (see "Deploy")
+docs/             SAXO.md; past reviews
 voice/            Claire's Piper TTS voice + custom-trained openWakeWord
                   detection model (gitignored — real binaries). Shared
                   with Bob's voice daemon via ~/voice symlinks; see
@@ -135,8 +138,12 @@ tests/            six layers per DESIGN.md §18
 
 ## Current limitations
 
-- Broker adapters run against the in-process paper sim; the MCP configs for
-  alpaca/saxo/moomoo are in `app/tools/brokers.py` and activate when
-  credentials exist.
-- Yahoo endpoints are unofficial: occasional 429s are retried once, then
-  surfaced honestly.
+- alpaca-paper and moomoo-paper are the in-process paper sim, not those
+  brokers; saxo-paper trades at Saxo SIM (SGX names are simulated locally,
+  as Saxo SIM lists them only as CFDs). The `mcp_servers` table and
+  `mcp/saxo_mcp.py` are not used by the desk itself.
+- Without a `TAVILY_API_KEY` the agents' web search is a news-headline
+  search (Bing News / Google News RSS), not a general web search.
+- Yahoo is the last-resort data source and rate-limits this machine; a
+  refusal is surfaced, never papered over.
+- Holiday calendars in `app/sessions.py` are hand-maintained per year.

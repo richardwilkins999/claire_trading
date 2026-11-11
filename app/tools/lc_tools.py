@@ -5,7 +5,6 @@ import json
 
 from langchain_core.tools import tool
 
-from .market import yahoo_symbol
 from .sandbox import run_python as _run_python
 from .search import fetch_page as _fetch_page
 from .search import web_search as _web_search
@@ -207,7 +206,3 @@ def build_tool_registry(market, narratives, env=None):
         return [registry[n] for n in names if n in registry]
 
     return tool_builder
-
-
-def default_symbol(state) -> str:
-    return yahoo_symbol(state.instrument.ticker, state.instrument.exchange)

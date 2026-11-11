@@ -260,13 +260,6 @@ def supports_temperature(model: str) -> bool:
                         model or "")
 
 
-# Below this, a prompt is too short for Anthropic to cache at all — the
-# marker is accepted and silently ignored. haiku-4-5 needs 4k, so the news
-# agent only benefits once its context has grown; the others cache sooner.
-CACHE_MINIMUM_TOKENS = {"claude-opus-5": 512, "claude-fable-5": 512,
-                        "claude-haiku-4-5": 4096}
-
-
 def build_llm(conn, provider_id, model, temperature=None, max_tokens=None,
               env=os.environ):
     p = provider_row(conn, provider_id)

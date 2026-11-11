@@ -1102,12 +1102,14 @@ rows**, and not even as separate `Restart=always` units — a single
 `claire.service` wrapper (see README "Deploy") starts/stops both via
 `bin/claire`, because installing `claire-api.service`/
 `claire-dashboards.service` directly would fight the script's graceful-stop
-logic. None of the timers (`claire-custodian`, the three regional analysis
-timers, `claire-reconcile`) are installed — no autonomous pre-open runs,
-no scheduled custodian pass, no reconcile timer are currently active. This
-table is the design target, not the current operational state; installing
-the rest is a real decision (what schedule, what regions matter) rather
-than a docs fix.
+logic. None of the timers were ever installed, and the unit templates for
+them were removed from `systemd/` on 2026-11-11 along with the
+`python -m app.autonomous` and `python -m app.custodian` entry points they
+called. **The work they describe does run** — inside claire-api, from the
+`schedules` table (the Schedule page): the custodian every 5 minutes, the
+price-trigger check, the regional pre-open scans, the daily reconcile and
+maintenance. This table is the original design; the Schedule page is the
+current operational state.
 
 ---
 

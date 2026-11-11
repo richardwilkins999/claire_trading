@@ -8,9 +8,6 @@ so runs already on disk benefit too — the raw file stays the audit record.
 import json
 import re
 
-ROLE_LABEL = {"human": "Task", "ai": "", "tool": "Tool result",
-              "system": "System"}
-
 
 def _blocks(content):
     """LangChain content is either a string or a list of content blocks."""

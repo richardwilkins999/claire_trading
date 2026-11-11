@@ -1,13 +1,10 @@
-"""Autonomous pre-open runs (DESIGN.md §16): `python -m app.autonomous
---region asia|eu|us`. Starting work needs no LLM — this CLI just asks
-claire-api to run the pipeline; verdicts land awaiting_approval like any
-other run.
+"""Regions and the deterministic fallback picker for scheduled runs
+(DESIGN.md §16). The scheduler inside claire-api starts the runs; the
+`python -m app.autonomous` CLI that systemd timers were meant to call was
+never installed and is gone.
 """
-import argparse
-import json
-
-import httpx
 import logging
+
 from .logsetup import swallowed
 
 log = logging.getLogger(__name__)
@@ -39,54 +36,3 @@ def pick_candidates(market, exchanges, held, limit=2):
                 out.append((ticker, ex))
                 break
     return out[:limit]
-
-
-def main(argv=None):
-    from .api.server import load_env
-    from .tools.market import Market
-
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--region", choices=list(REGIONS), required=True)
-    ap.add_argument("--api", default="http://127.0.0.1:7788")
-    ap.add_argument("--ignore-hours", action="store_true",
-                    help="scan even when the market is closed")
-    args = ap.parse_args(argv)
-    load_env()
-
-    from datetime import datetime, timezone
-
-    from . import sessions
-    from .accounting import db
-    from .api.server import ROOT
-    conn = db.connect(ROOT / "var" / "desk.db")
-    held = {r["ticker"] for r in conn.execute(
-        "SELECT DISTINCT i.ticker FROM lots l JOIN instruments i"
-        " ON i.id=l.instrument_id WHERE l.qty_remaining > 0")}
-
-    # the screener only scans markets that are actually trading
-    exchanges = REGIONS[args.region]
-    if not args.ignore_hours:
-        cal = sessions.load(conn) or None
-        now = datetime.now(timezone.utc)
-        open_ex = [ex for ex in exchanges if sessions.is_open(ex, now, cal)]
-        skipped = sorted(set(exchanges) - set(open_ex))
-        if skipped:
-            print(json.dumps({"skipped_closed": skipped}))
-        exchanges = open_ex
-
-    started = []
-    for ticker, ex in pick_candidates(Market(), exchanges, held):
-        r = httpx.post(f"{args.api}/api/run",
-                       json={"ticker": ticker, "exchange": ex,
-                             "currency": CCY[ex],
-                             "lot_size": 100 if ex == "SGX" else 1,
-                             "trigger": "screener (autonomous CLI): "
-                                        "most-active pick"},
-                       timeout=10)
-        if r.status_code == 200:
-            started.append(r.json()["work_item_id"])
-    print(json.dumps({"region": args.region, "started": started}))
-
-
-if __name__ == "__main__":
-    main()

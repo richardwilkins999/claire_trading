@@ -23,7 +23,6 @@ Real money: re-protection is never automatic on a live account. Placing
 sell orders on Richard's real account is a human decision; the custodian
 flags and alerts instead, and its flag disarms live trading (§22.3).
 """
-import json
 import uuid
 from decimal import Decimal
 
@@ -33,7 +32,6 @@ from .accounting.money import from_micro, to_micro
 # keeping orders.expires_at NOT NULL (2100-01-01 UTC)
 LEG_EXPIRES_AT = 4_102_444_800
 WORKING = ("placed", "partially_filled")
-TERMINAL = ("filled", "cancelled", "expired", "rejected")
 
 
 class LegCancelRefused(RuntimeError):
@@ -411,7 +409,3 @@ def backfill(repo, adapter, account_id, *, ts, dry_run=False):
                            "action": "would insert" if dry_run else "inserted",
                            "row": rid})
     return report
-
-
-def to_json(report):
-    return json.dumps(report, indent=2, default=str)
