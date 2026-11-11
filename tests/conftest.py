@@ -5,6 +5,19 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _fast_server_shutdown(monkeypatch):
+    """serve_forever() polls for shutdown every 0.5 s by default, so every
+    test that starts a dashboard server waited up to half a second to stop
+    it — about 30 s of the suite (REVIEW-2026-11-11 §3.7)."""
+    import socketserver
+    real = socketserver.BaseServer.serve_forever
+
+    def fast(self, poll_interval=0.01):
+        return real(self, poll_interval)
+    monkeypatch.setattr(socketserver.BaseServer, "serve_forever", fast)
+
+
+@pytest.fixture(autouse=True)
 def _fresh_log_throttle():
     """logsetup.swallowed holds repeats back for minutes; one test's failure
     must not silence the line another test is looking for."""

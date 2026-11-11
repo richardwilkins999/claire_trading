@@ -1,10 +1,18 @@
-"""Live smoke (DESIGN.md §18 layer 6) — auto-skips when services are down.
-Start them with systemd (or by hand) and re-run to exercise for real."""
+"""Live smoke (DESIGN.md §18 layer 6) — OPT-IN: `CLAIRE_SMOKE=1 pytest
+tests/test_smoke.py`. These talk to the RUNNING desk (one of them sends
+Claire a real chat turn), so the default suite leaves them out; they used to
+run whenever the services happened to be up (REVIEW-2026-11-11 §3.7)."""
+import os
+
 import httpx
 import pytest
 
+OPTED_IN = bool(os.environ.get("CLAIRE_SMOKE"))
+
 
 def _up(url):
+    if not OPTED_IN:                # do not even probe the live desk
+        return False
     try:
         return httpx.get(url, timeout=3).status_code < 500
     except Exception:                              # noqa: BLE001
@@ -12,9 +20,9 @@ def _up(url):
 
 
 needs_api = pytest.mark.skipif(not _up("http://127.0.0.1:7788/status"),
-                               reason="claire-api not running")
+                               reason="set CLAIRE_SMOKE=1 and start claire-api")
 needs_dash = pytest.mark.skipif(not _up("http://127.0.0.1:7787/api/overview"),
-                                reason="dashboards not running")
+                                reason="set CLAIRE_SMOKE=1 and start the dashboards")
 
 
 @needs_api

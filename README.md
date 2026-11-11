@@ -54,9 +54,8 @@ tests/run.sh          # about 800 offline tests, ~90 s: accounting (exact
                       # sessions, executor/custodian/watcher, dashboards HTTP
 ```
 
-`tests/test_smoke.py` runs against the LIVE services whenever they are up
-(it sends Claire one real chat turn). Leave it out with
-`pytest tests --deselect tests/test_smoke.py` to stay offline.
+`tests/test_smoke.py` talks to the LIVE services (it sends Claire one real
+chat turn), so it is opt-in: `CLAIRE_SMOKE=1 tests/run.sh tests/test_smoke.py`.
 
 ## Day-to-day control
 
