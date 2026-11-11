@@ -126,29 +126,29 @@ function sellRender(key) {
       <b>${fmt(p.held, 4)}</b> · now <b>${p.price == null ? '—'
       : money(p.price, ccy)}</b></span></p>
     <div class="row" style="flex-wrap:wrap">
-      <label>Order type <select id="so-${k}" onchange="sellMode(${a})">
+      <label for="so-${k}">Order type <select id="so-${k}" onchange="sellMode(${a})">
         <option value="market" ${mkt ? 'selected' : ''}>Sell at the current price — sells now</option>
         <option value="limit" ${mkt ? '' : 'selected'}>Set a sale price</option></select></label>
     </div>
     <div class="osum" id="sv-${k}"></div>
     <div class="row" style="flex-wrap:wrap">
-      <label title="${mkt ? 'the current price — choose “Set a sale price” to type your own'
+      <label for="sp-${k}" title="${mkt ? 'the current price — choose “Set a sale price” to type your own'
         : 'the least you accept per share — the order sells at this price or higher'}">Sale price
         <input id="sp-${k}" type="number" min="0" step="0.01" value="${esc(s.px)}"
           ${mkt ? 'readonly class="locked"' : ''} oninput="sellSave(${a})"> ${ccy}</label>
-      <label>Shares to sell <input id="sq-${k}" type="number" min="0"
+      <label for="sq-${k}">Shares to sell <input id="sq-${k}" type="number" min="0"
         step="${p.whole ? 1 : 'any'}" max="${esc(p.held)}"
         value="${esc(s.qty)}" oninput="sellSave(${a})"></label>
       <button type="button" class="ghost" onclick="sellPart(${a}, 1)">All</button>
       <button type="button" class="ghost" onclick="sellPart(${a}, 0.5)">Half</button>
-      <input id="sn-${k}" placeholder="note (optional)" maxlength="200"
+      <input id="sn-${k}" placeholder="note (optional)" maxlength="200" aria-label="Note (optional)"
         style="flex:1;min-width:140px" value="${esc(s.note)}"
         oninput="sellSave(${a})">
     </div>
     <div class="row" style="margin-top:.4rem;gap:.5rem">
       ${saxo ? `<button type="button" onclick="sellCheck(${a})">✓ Check with Saxo</button>` : ''}
       <button type="button" onclick="sellSend(${a})">Send to approval →</button>
-      <button type="button" class="ghost" onclick="sellClose(${a})">✖</button>
+      <button type="button" class="ghost" aria-label="close the sell form" title="close" onclick="sellClose(${a})">✖</button>
     </div>
     <p id="sm-${k}" style="font-size:.82rem;margin:.3rem 0">${s.msg || ''}</p>
     <p class="muted" style="font-size:.72rem;margin:0">Nothing is sold yet:
@@ -200,9 +200,8 @@ async function sellSend(key) {
       note: v.note, source: v.p.source || 'portfolio',
       suggested: {qty: v.qty, broker: v.p.broker,
                   order_type: v.mkt ? 'market' : 'limit'}});
-    sellMsg(key, `<b class="ok">✔ sent</b> — approve it on
-      <a href="/approvals#c-${esc(r.work_item_id)}">Approvals →</a>
-      <span class="muted">(${esc(r.work_item_id)})</span>`);
-    toast('sell sent to approval ✓');
-  } catch (e) { sellMsg(key, `<b class="bad">${esc(e.message)}</b>`); }
+    sellMsg(key, `<b class="ok">✔ sent</b> — taking you to its card on
+      <a href="/approvals#c-${esc(r.work_item_id)}" title="run ${esc(r.work_item_id)}">Approvals →</a>`);
+    if (r.work_item_id) toApprovalCard(r.work_item_id);   // straight to the card
+  } catch (e) { sellMsg(key, `<b class="bad">${esc(e.message)}</b>`); toast(e.message, false); }
 }

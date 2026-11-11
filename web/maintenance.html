@@ -38,8 +38,11 @@
 </main>
 <script>
 let M = {};
-const ICON = {ok: '<span class="ok">✓</span>', info: '<span class="muted">·</span>',
-              warn: '<span class="warn">!</span>', bad: '<span class="bad">✗</span>'};
+/* a shape and a word as well as a colour */
+const ICON = {ok: '<span class="ok" role="img" aria-label="fine" title="fine">✓</span>',
+              info: '<span class="muted" role="img" aria-label="for information" title="for information">·</span>',
+              warn: '<span class="warn" role="img" aria-label="worth a look" title="worth a look">!</span>',
+              bad: '<span class="bad" role="img" aria-label="needs attention" title="needs attention">✗</span>'};
 const WORD = {ok: 'Healthy', warn: 'Needs a look', bad: 'Needs attention'};
 const COLOR = {ok: 'var(--good)', warn: 'var(--warn)', bad: 'var(--bad)'};
 const ACTION = {
@@ -48,11 +51,8 @@ const ACTION = {
   prune_health: 'Prune old health rows', archive_narratives: 'Archive old write-ups',
   prune_sdk_transcripts: 'Delete old AI transcripts', prune_runs: 'Prune old reports'};
 
-function when(t) {
-  if (!t) return '—';
-  return new Date(t * 1000).toLocaleString([], {day: 'numeric', month: 'short',
-    hour: '2-digit', minute: '2-digit'});
-}
+/* "11 Nov 03:30 SGT" — your own time, with its zone (nav.js) */
+function when(t) { return esc(fmtWhen(t, {weekday: false})); }
 function mb(n) { return n ? (n / 1048576).toFixed(1) + ' MB' : '—'; }
 
 function render() {
@@ -64,7 +64,7 @@ function render() {
   document.getElementById('sched').innerHTML = !s
     ? 'No maintenance schedule yet: restart claire-api to add it.'
     : s.enabled
-      ? `Runs daily at ${esc(s.spec.time)} (${esc(s.spec.tz === 'local' ? 'this PC\'s time' : s.spec.tz)}) · next run ${when(s.next_run_at)} · change it on <a href="/agents">Agents &amp; Schedule</a>`
+      ? `Runs daily at ${esc(s.spec.time)} (${esc(s.spec.tz === 'local' ? 'this PC\'s time' : s.spec.tz)}) · next run ${esc(fmtUntil(s.next_run_at))} · change it on <a href="/agents">Agents &amp; Schedule</a>`
       : '<b class="bad">The daily maintenance run is switched OFF</b> on <a href="/agents">Agents &amp; Schedule</a>.';
 
   if (!L) {
@@ -103,7 +103,7 @@ function render() {
       <li><b>Logs</b> (var/log): rotated and compressed once over ${r.log_rotate_mb} MB; the newest ${r.log_keep} kept per log.</li>
       <li><b>Backups</b>: one copy of desk.db a day in var/backups; the newest ${r.backup_keep} kept. Same disk as Claire, so copy them elsewhere for real protection.</li>
       <li><b>Finished runs' graph state</b> (checkpoints.db): removed ${r.checkpoint_days} days after a run finishes. Runs still going or waiting for your approval are never touched.</li>
-      <li><b>Run write-ups</b>: packed into var/narratives-archive ${r.narrative_days} days after a run is archived. They stay readable on the Trading page.</li>
+      <li><b>Run write-ups</b>: packed into var/narratives-archive ${r.narrative_days} days after a run is archived. They stay readable on the Runs page.</li>
       <li><b>AI agent transcripts</b> (Claude's own session files): deleted after ${r.sdk_days} days.</li>
       <li><b>Health rows</b>: kept ${r.health_days} days. <b>Maintenance reports</b>: the newest ${r.runs_keep}.</li>
     </ul>
@@ -111,10 +111,18 @@ function render() {
     audit trail of every decision, runs and their costs, the live-trading log.</div>`;
 }
 
-async function load() {
-  try { M = await api('/api/maintenance'); render(); }
-  catch (e) { document.getElementById('status').innerHTML = `<p class="bad">${esc(e.message)}</p>`; }
+async function loadReport() {
+  try { M = await api('/api/maintenance'); }
+  catch (e) {
+    /* the first load: say why there is nothing. Later: keep the report on
+       screen — the menu bar says it is no longer current */
+    if (!M.retention) document.getElementById('status').innerHTML =
+      `<p class="bad">Could not load the maintenance report: ${esc(e.message)}</p>`;
+    throw e;
+  }
+  render();
 }
+const load = tracked(loadReport);
 
 async function runNow() {
   const btn = document.getElementById('run-btn');

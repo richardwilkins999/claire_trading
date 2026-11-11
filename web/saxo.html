@@ -46,15 +46,27 @@
   <a href="/portfolio">Portfolio</a>. Nothing on this page trades by itself:
   <b>Sell</b> (shown only for shares the desk bought on that account) sends a
   sell to <a href="/approvals">Approvals</a>, where you approve it.</p>
-  <div class="tabs" id="tabs">
-    <button data-env="live" class="live">Saxo LIVE — real money</button>
+  <div class="tabs" id="tabs" role="group" aria-label="Which Saxo account">
     <button data-env="sim">Saxo SIM — paper</button>
+    <button data-env="live" class="live">⚠ Saxo LIVE — real money</button>
   </div>
   <div id="view">loading…</div>
 </main>
 <script>
 const ACCOUNT = {live: 'Saxo LIVE', sim: 'Saxo SIM'};
-let ENV = new URLSearchParams(location.search).get('env') || 'live';
+/* Which account opens: the one the link asks for (?env=live from the
+   Portfolio page, the way back from Saxo's sign-in), else the tab you chose
+   last time on this browser, else SIM. It used to open on the real-money
+   account every time. */
+const ENVS = ['sim', 'live'];
+function startEnv() {
+  const asked = new URLSearchParams(location.search).get('env');
+  if (ENVS.includes(asked)) return asked;
+  let last = null;
+  try { last = localStorage.getItem('saxoEnv'); } catch {}
+  return ENVS.includes(last) ? last : 'sim';
+}
+let ENV = startEnv();
 
 /* This page's own formatter. It was called money(), which REPLACED the
    money() of orderform.js loaded above — so the shared Sell summary on this
@@ -99,17 +111,20 @@ function render(d) {
       ? 'Sign in again' : 'Sign in to ' + ACCOUNT[d.env]}</button>
     <span id="signin-msg" class="muted"></span></div>`;
   if (d.error) {
-    document.getElementById('view').innerHTML = head +
-      `<div class="card"><p class="muted">${esc(d.error)}</p></div>`;
+    swapHtml(document.getElementById('view'), head +
+      `<div class="card"><p class="muted">${esc(d.error)}</p></div>`);
     return;
   }
   const pos = d.positions || [], ord = d.orders || [];
-  const upl = pos.reduce((s, p) => s + (p.pnl_base || 0), 0);
+  /* a position with no price has no P/L: the total then says how many it
+     leaves out, instead of passing for the whole account's */
+  const upl = unrealisedOf(pos, b.UnrealizedMarginProfitLoss);
   const tiles = [
     ['Total value', sxMoney(b.TotalValue, ccy)],
     ['Cash', sxMoney(b.CashBalance, ccy)],
-    ['Unrealised P/L', signed(pos.some(p => p.pnl_base != null) ? upl
-                              : b.UnrealizedMarginProfitLoss, ccy)],
+    ['Unrealised P/L' + (upl.note ? ` <span class="warn">(${esc(upl.note)})</span>` : ''),
+     upl.unpriced ? `<span title="the priced positions only — ${esc(upl.note)}">${signed(upl.value, ccy)}</span>`
+       : signed(upl.value, ccy)],
     ['Available to trade', sxMoney(b.MarginAvailableForTrading, ccy)],
     ['Open positions', esc(b.OpenPositionsCount ?? pos.length)],
   ].map(([k, v]) => `<div class="tile"><div class="k">${k}</div>
@@ -134,6 +149,7 @@ function render(d) {
         of ${fmt(p.amount, 0)}</span>` : ''}`;
   const rows = pos.length ? pos.map((p, i) => `<tr class="pos${
       SEL && SEL.symbol === p.symbol ? ' sel' : ''}" onclick="pick(${i})"
+      tabindex="0" data-kbd="${esc(p.symbol)}"
       title="Click to ${SEL && SEL.symbol === p.symbol ? 'hide the chart' : 'chart ' + esc(p.symbol)}">
       <td><b>${esc(p.symbol)}</b> <span class="muted" style="font-size:.75rem">${
         SEL && SEL.symbol === p.symbol ? '▴ chart' : '📈'}</span><br><span class="muted">${esc(p.name || '')}</span></td>
@@ -144,7 +160,7 @@ function render(d) {
       <td class="num">${sxMoney(p.avg_open_price)}${p.open_fills > 1
         ? `<br><span class="muted" style="font-size:.72rem">${p.open_fills} buys</span>` : ''}</td>
       <td class="num">${p.cost_basis != null ? sxMoney(p.cost_basis, p.currency) : '—'}</td>
-      <td class="num">${p.price_missing ? '<span class="warn" title="Saxo sent no price for this market">—</span>'
+      <td class="num">${p.price_missing ? `<span class="warn" title="${esc(p.price_note || 'Saxo sent no price for this market')}">no price</span>`
         : sxMoney(p.current_price)}${p.price_src ? `<br><span class="muted" style="font-size:.7rem"
         title="${p.price_src === "Saxo's P/L" ? "Saxo sends no live price on this account, so this is the price Saxo used for its own profit/loss" : "Saxo sends no live price for this exchange on this account, so this is Claire's own quote"}">via ${esc(p.price_src)}</span>` : ''}</td>
       <td class="num">${sxMoney(p.market_value, p.currency)}</td>
@@ -159,7 +175,9 @@ function render(d) {
       <td class="num">${sxMoney(o.price, o.currency)}</td>
       <td>${esc(o.status)}</td><td>${esc(o.duration || '')}</td></tr>`).join('')
     : `<tr><td colspan="7" class="muted">No working orders.</td></tr>`;
-  document.getElementById('view').innerHTML = head +
+  /* swapHtml (nav.js): nothing is rebuilt when nothing changed, and the
+     row you reached with the keyboard keeps the focus */
+  swapHtml(document.getElementById('view'), head +
     `<div class="tiles">${tiles}</div>
      <h2>Positions <span class="muted" style="font-size:.8rem">
        allocation = share of gross exposure</span></h2>
@@ -168,7 +186,7 @@ function render(d) {
        <th class="num" title="average across all buys">Avg cost</th>
        <th class="num" title="what you paid in total">Cost</th><th class="num">Current price</th>
        <th class="num">Value</th><th class="num">P/L</th>
-       <th class="num">P/L %</th><th>Allocation</th><th></th></tr></thead>
+       <th class="num">P/L %</th><th>Allocation</th><th><span class="sr">Sell</span></th></tr></thead>
        <tbody>${rows}</tbody></table>
      ${pos.filter(p => p.desk && p.desk.held > 0).map(p =>
        `<div id="sellbox-${esc(skey(p))}"></div>`).join('')}
@@ -178,8 +196,8 @@ function render(d) {
      <table><thead><tr><th>Instrument</th><th>Side</th><th class="num">Qty</th>
        <th>Type</th><th class="num">Price</th><th>Status</th><th>Duration</th>
        </tr></thead><tbody>${orows}</tbody></table>
-     <p class="muted" style="font-size:.75rem">Refreshes every 30 s ·
-       ${new Date().toLocaleTimeString()}</p>`;
+     <p class="muted" style="font-size:.75rem">Refreshes every 30 s — the
+       menu bar says when it last did.</p>`);
 }
 
 let POS = [], SEL = null, CHART = null;
@@ -223,11 +241,12 @@ async function drawPosition(rerenderOnly) {
       <h3 style="margin:0">${esc(SEL.symbol)} <span class="muted">
         ${esc(SEL.name || '')}</span></h3>
       <span style="flex:1"></span>
-      <select id="crange" onchange="CHART=null;drawPosition()">
+      <select id="crange" aria-label="chart period" onchange="CHART=null;drawPosition()">
         ${['1mo', '3mo', '6mo', '1y', '2y', '5y'].map(r =>
           `<option ${r === range ? 'selected' : ''}>${r}</option>`).join('')}
       </select>
-      <button onclick="SEL=null;document.getElementById('chartbox').innerHTML=''">
+      <button aria-label="close the chart" title="close the chart"
+        onclick="SEL=null;document.getElementById('chartbox').innerHTML=''">
         ✖</button></div>
       <div id="pchart"><p class="muted">loading chart…</p></div>
       <p class="muted" style="font-size:.75rem">Daily prices from the desk's
@@ -253,46 +272,59 @@ async function drawPosition(rerenderOnly) {
 }
 window.addEventListener('resize', () => drawPosition(true));
 
-function bought(t) {               /* "3 Nov, 01:41" in your time zone */
-  if (!t) return '';
-  const d = new Date(t);
-  return isNaN(d) ? '' : d.toLocaleString([], {day: 'numeric', month: 'short',
-    hour: '2-digit', minute: '2-digit'});
+function bought(t) {               /* "3 Nov 01:41 SGT": your time, its zone */
+  return asDate(t) ? fmtWhen(t, {weekday: false}) : '';
 }
 
-async function load() {
-  document.querySelectorAll('#tabs button').forEach(b =>
-    b.classList.toggle('on', b.dataset.env === ENV));
-  try {
-    const d = await api('/api/saxo-account?env=' + encodeURIComponent(ENV));
-    POS = d.positions || [];
-    // keep the selected position (and its chart) across the 30 s refresh;
-    // ?pos=SYMBOL (from the Portfolio page) preselects one on first load
-    const want = new URLSearchParams(location.search).get('pos');
-    if (!SEL && want && !load.done) SEL = POS.find(p => p.symbol === want) || null;
-    load.done = true;
-    if (SEL) SEL = POS.find(p => p.symbol === SEL.symbol) || null;
-    render(d);
-    sellRestore();                    // an open Sell form survives refresh
-    if (SEL) drawPosition(true);
-  }
+let ON_SCREEN = null;         /* the account whose figures are on screen */
+let PRESELECT = true;         /* ?pos=SYMBOL applies to the first load only */
+async function loadAccount() {
+  const env = ENV;
+  document.querySelectorAll('#tabs button').forEach(b => {
+    b.classList.toggle('on', b.dataset.env === env);
+    b.setAttribute('aria-pressed', b.dataset.env === env);
+  });
+  let d;
+  try { d = await api('/api/saxo-account?env=' + encodeURIComponent(env)); }
   catch (e) {
-    document.getElementById('view').innerHTML = `<div class="card"><p class="bad">
+    /* nothing of this account on screen yet: say why. Otherwise keep the
+       figures — the menu bar says they are no longer current */
+    if (env === ENV && ON_SCREEN !== env) swapHtml(document.getElementById('view'),
+      `<div class="card"><p class="bad">
       ${esc(e.message)}</p><p class="muted">This page needs the dashboard key
-      (🔑 in the menu bar) because it shows your real account.</p></div>`;
+      (🔑 in the menu bar) because it shows your real account.</p></div>`);
+    throw e;
   }
+  if (env !== ENV) return;            // you changed tab while it was loading
+  POS = d.positions || [];
+  // keep the selected position (and its chart) across the 30 s refresh;
+  // ?pos=SYMBOL (from the Portfolio page) preselects one on first load
+  const want = new URLSearchParams(location.search).get('pos');
+  if (!SEL && want && PRESELECT) SEL = POS.find(p => p.symbol === want) || null;
+  PRESELECT = false;
+  if (SEL) SEL = POS.find(p => p.symbol === SEL.symbol) || null;
+  render(d);
+  ON_SCREEN = env;
+  sellRestore();                      // an open Sell form survives refresh
+  if (SEL) drawPosition(true);
 }
+// not while you are typing in a Sell form — a re-render would steal focus.
+// The 30-second refresh waits (the menu bar says "paused while you are
+// editing"); a refresh you ask for — a tab — always runs.
+const typing = () => ['INPUT', 'SELECT']
+  .includes((document.activeElement || {}).tagName);
+const load = tracked(loadAccount, {paused: timed => timed === true && typing()});
 document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => {
   ENV = b.dataset.env;
+  try { localStorage.setItem('saxoEnv', ENV); } catch {}   // opens here next time
   SEL = null; CHART = null;
   history.replaceState(null, '', '/saxo?env=' + ENV);
+  swapHtml(document.getElementById('view'), '<p class="muted">loading…</p>');
+  ON_SCREEN = null;
   load();
 });
 if (new URLSearchParams(location.search).get('signin') === 'ok')
   toast('Signed in to ' + ACCOUNT[ENV] + ' ✓');
 load();
-// not while you are typing in a Sell form — a re-render would steal focus
-const typing = () => ['INPUT', 'SELECT']
-  .includes((document.activeElement || {}).tagName);
-setInterval(() => { if (!document.hidden && !typing()) load(); }, 30000);
+poll(() => load(true), 30000);
 </script>

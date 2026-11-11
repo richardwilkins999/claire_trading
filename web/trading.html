@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en">
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1"><title>Claire — Trading</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Claire — Runs</title>
 <link rel="stylesheet" href="/style.css"><script src="/nav.js"></script><script src="/orderinfo.js"></script>
 <script>nav('/trading')</script>
 <style>
@@ -56,22 +56,43 @@
     border-radius:12px; }
   .feed li { padding:.3rem .8rem; border-bottom:1px solid var(--line); }
   .feed .t { color:var(--dim); font-size:.78rem; margin-right:.6rem; }
+  .filters { display:flex; gap:.4rem; flex-wrap:wrap; margin:.2rem 0 .6rem; }
+  .filters button { background:transparent; color:#8fa6bd;
+    border:1px solid var(--line); font-weight:600; padding:.3rem .75rem; }
+  .filters button[aria-pressed="true"] { color:var(--accent);
+    border-color:var(--accent); }
+  .filters button .n { color:var(--dim); font-weight:400; margin-left:.3rem; }
 </style>
 <main>
   <h1>Runs</h1>
   <p class="muted">Start a research run on a stock. Claire's analysts research
     it, a bull and a bear argue it out, and the arbiter gives a verdict. Any
     trade waits for your approval on <a href="/approvals">Approvals</a>.</p>
-  <div class="row">
-    <input id="ticker" placeholder="ticker e.g. NVDA">
-    <select id="exchange"><option>NASDAQ</option><option>NYSE</option>
-      <option>LSE</option><option>SGX</option><option>HKEX</option>
-      <option>TSE</option><option>ASX</option><option>XETRA</option>
-      <option>PARIS</option><option>NSE</option></select>
-    <button onclick="launch()">Run pipeline</button>
+  <!-- the same search as Markets and Watchlist: it used to be a free-text
+       ticker and an exchange you had to pick by hand -->
+  <div class="card">
+    <h3 style="font-size:.95rem">Start a run</h3>
+    <div class="row">
+      <input id="q" placeholder="search by name or ticker…" style="flex:1;min-width:220px"
+        aria-label="Search for a stock by name or ticker"
+        onkeydown="if (event.key === 'Enter') doSearch()">
+      <button onclick="doSearch()">Search</button>
+    </div>
+    <div id="results"></div>
+    <details style="margin-top:.4rem"><summary class="muted small">or type the
+      ticker and exchange yourself</summary>
+      <div class="row" style="margin-top:.4rem">
+        <input id="ticker" placeholder="ticker, e.g. NVDA" style="width:140px" aria-label="Ticker"
+          onkeydown="if (event.key === 'Enter') launch()">
+        <select id="exchange" aria-label="Exchange"></select>
+        <button class="ghost" onclick="launch()">Start a run</button>
+      </div>
+    </details>
   </div>
   <div id="ordedit"></div>
-  <h2>Recent runs — click one for the full story</h2><div id="runs"></div>
+  <h2>Recent runs — click one for the full story</h2>
+  <div class="filters" id="filters" role="group" aria-label="Which runs to show"></div>
+  <div id="runs"></div>
   <h2>Recent activity</h2><ul class="feed" id="feed"></ul>
   <details class="tech"><summary>raw event feed</summary>
     <pre id="rawfeed" style="max-height:280px;overflow:auto"></pre></details>
@@ -79,17 +100,51 @@
 <script>
 const CCY = DESK_CCY;                               // nav.js
 let openId = decodeURIComponent(location.hash.slice(1)) || null;   // /trading#<run id>
-async function launch() {
-  const ex = document.getElementById('exchange').value;
-  const t = document.getElementById('ticker').value.trim().toUpperCase();
-  if (!t) return toast('ticker?', false);
+/* ── start a run: find the stock, then one click ───────────────────── */
+async function doSearch() {
+  const q = document.getElementById('q').value.trim();
+  const el = document.getElementById('results');
+  if (!q) return;
+  el.innerHTML = '<p class="muted">searching…</p>';
   try {
-    await api('/api/run', {ticker: t, exchange: ex,
+    const found = (await api('/api/search?q=' + encodeURIComponent(q)))
+      .filter(r => r.symbol);
+    if (!found.length) {
+      el.innerHTML = '<p class="muted">Nothing found — try the company\'s ' +
+        'name, or type the ticker and exchange yourself below.</p>';
+      return;
+    }
+    el.innerHTML = `<table style="margin-top:.4rem">${found.slice(0, 12).map(r => {
+      /* [exchange, ticker] — or [null, symbol] when it is not listed on one
+         of the desk's ten exchanges: deskExchange (nav.js) never guesses */
+      const [ex, ticker] = deskExchange(r);
+      return `<tr><td><b>${esc(r.symbol)}</b></td><td>${esc(r.name || '')}</td>
+        <td class="muted">${esc(r.exchange || '')}${r.country ? ' · ' +
+          esc(r.country) : ''}${r.type ? ' · ' + esc(r.type) : ''}</td>
+        <td>${ex ? `<button class="ghost" onclick="startRun(${jsArg(ticker)},
+            ${jsArg(ex)})">Research ${esc(ticker)} · ${esc(ex)}</button>`
+          : '<span class="muted small">not one of the desk\'s markets</span>'}
+        </td></tr>`;
+    }).join('')}</table>`;
+  } catch (e) { el.innerHTML = `<p class="bad">${esc(e.message)}</p>`; }
+}
+async function startRun(ticker, ex) {
+  try {
+    await api('/api/run', {ticker, exchange: ex,
       currency: CCY[ex], lot_size: deskLot(ex),
       trigger: 'launched from the Trading page'});
-    toast(`Started researching ${t} — it will appear below`);
+    toast(`Started researching ${ticker} — it will appear below`);
+    document.getElementById('results').innerHTML = '';
+    if (!['all', 'running'].includes(FILTER)) FILTER = 'all';
     lastSig = null; refresh();
   } catch (e) { toast(e.message, false); }
+}
+/* the fallback: a ticker and an exchange typed by hand */
+function launch() {
+  const ex = document.getElementById('exchange').value;
+  const t = document.getElementById('ticker').value.trim().toUpperCase();
+  if (!t) return toast('enter a ticker', false);
+  startRun(t, ex);
 }
 
 /* ── plain-language vocabulary ─────────────────────────────────────── */
@@ -110,19 +165,11 @@ function badge(r) {
   return `<span class="badge ${tone}">${esc(label + why)}</span>`;
 }
 const VERDICT = {buy: 'Buy', sell: 'Sell', pass: 'Pass'};
+/* "11 Nov 14:02 SGT (3h ago)" — your own time, with its zone (nav.js) */
 function when(t) {
   if (!t) return '—';
-  const d = new Date(t * 1000);
-  return esc(d.toLocaleString(undefined, {day: 'numeric', month: 'short',
-    hour: '2-digit', minute: '2-digit'})) + ` <span class="muted">(${
+  return esc(fmtWhen(t, {weekday: false})) + ` <span class="muted">(${
     esc(ago(t))})</span>`;
-}
-function until(t) {
-  const s = t - Date.now() / 1000;
-  if (s <= 0) return 'now';
-  if (s < 5400) return 'in ' + Math.round(s / 60) + ' min';
-  if (s < 172800) return 'in ' + Math.round(s / 3600) + ' h';
-  return 'in ' + Math.round(s / 86400) + ' days';
 }
 function money(n, ccy) { return `${fmt(n, 2)} ${esc(ccy || '')}`.trim(); }
 function shares(q) { return `${fmt(q, 4)} share${Number(q) === 1 ? '' : 's'}`; }
@@ -146,7 +193,7 @@ function origin(r) {
     case 'daily_screen': return `Picked by the daily screen${d}.`;
     case 'volume_scan': return `Started by the hourly volume scan${d}.`;
     case 'price_alert':
-      return `Exit review: a price alert fired on a position you hold${d}.`;
+      return `Exit review: a trailing alert fired on a position you hold${d}.`;
     case 'override': return `Your override of ${
       s.override_of ? runLink(s.override_of, 'the earlier run') : 'a run'}.`;
     case 'other': return `Started by: ${esc(s.origin_detail)}.`;
@@ -195,7 +242,7 @@ function nextStep(r) {
     case 'awaiting_approval':
       return `<b>Waiting for your approval</b> — <a href="/approvals" ` +
         `onclick="event.stopPropagation()">review it on Approvals</a>` +
-        (r.expires_at ? ` (expires ${until(r.expires_at)})` : '') + '.';
+        (r.expires_at ? ` — it expires ${esc(fmtUntil(r.expires_at))}` : '') + '.';
     case 'approved':
       return `${apText}; sending the order to the broker.` + failNote +
         (fa.tries ? ' <a href="/approvals" onclick="event.stopPropagation()">' +
@@ -208,8 +255,8 @@ function nextStep(r) {
           : `Order working at ${esc(o.account)}: `) +
         `${esc(o.side)} ${shares(o.qty)}` +
         (o.limit_price != null ? `, limit price ${money(o.limit_price, s.currency)}/share` : '') +
-        (o.stop_loss != null ? `, stop ${money(o.stop_loss, s.currency)}` : '') +
-        (o.take_profit != null ? `, target ${money(o.take_profit, s.currency)}` : '') +
+        (o.stop_loss != null ? `, stop-loss ${money(o.stop_loss, s.currency)}` : '') +
+        (o.take_profit != null ? `, take-profit ${money(o.take_profit, s.currency)}` : '') +
         (o.status === 'partially_filled' ? ' (part filled)' : '') + '.' +
         `<br><span class="small">${orderNeeds(Object.assign({account: o.account}, o))}</span>` +
         (o.status !== 'partially_filled' ? ` <span onclick="event.stopPropagation()">
@@ -255,7 +302,7 @@ async function orderCancel(id) {
   if (!o) return toast('no working order to cancel', false);
   const where = o.status === 'pending_session'
     ? 'Claire is still holding it — nothing has been sent.'
-    : 'It will be cancelled at ' + (o.account || 'the broker') + ', with its stop and target.';
+    : 'It will be cancelled at ' + (o.account || 'the broker') + ', with its stop-loss and take-profit.';
   if (!await ask(`Cancel the ${esc(o.side)} of ${shares(o.qty)} ${esc(r.ticker)} at a limit price of ${esc(o.limit_price)} per share?\n\n${where}`)) return;
   try {
     await api('/api/order-control', {work_item_id: id, action: 'cancel'});
@@ -272,14 +319,14 @@ function orderEditOpen(id) {
   el.innerHTML = `<div class="card" style="border-color:var(--warn)">
     <h3 style="font-size:1rem;margin:0">Edit ${esc(r.ticker)} — ${esc(o.side)} order on ${esc(o.account || '')}</h3>
     <p class="muted small">${atVenue
-      ? 'This order is already at the broker. Saving <b>cancels it there</b> and puts a new order with these levels on the Approvals page for you to approve.'
+      ? 'This order is already at the broker. Saving <b>cancels it there</b> and puts a new order with these prices on the Approvals page for you to approve.'
       : 'Claire is still holding this order (it is sent when the market opens), so it is changed in place — no new approval needed.'}
-      Saxo refuses a stop or target more than 25% from the limit price.</p>
+      Saxo refuses a stop-loss or take-profit more than 25% from the limit price.</p>
     <div class="row" style="gap:.5rem;flex-wrap:wrap">
-      <label>shares <input id="oe-qty" type="number" min="1" step="1" style="width:80px" value="${esc(o.qty)}"></label>
-      <label>limit price <span class="muted small">(per share)</span> <input id="oe-entry" type="number" min="0" step="0.01" style="width:100px" value="${esc(o.limit_price ?? '')}"></label>
-      <label>stop <input id="oe-stop" type="number" min="0" step="0.01" style="width:100px" value="${esc(o.stop_loss ?? '')}"></label>
-      <label>target <input id="oe-target" type="number" min="0" step="0.01" style="width:100px" value="${esc(o.take_profit ?? '')}"></label>
+      <label for="oe-qty">shares <input id="oe-qty" type="number" min="1" step="1" style="width:80px" value="${esc(o.qty)}"></label>
+      <label for="oe-entry">limit price <span class="muted small">(per share)</span> <input id="oe-entry" type="number" min="0" step="0.01" style="width:100px" value="${esc(o.limit_price ?? '')}"></label>
+      <label for="oe-stop">stop-loss <input id="oe-stop" type="number" min="0" step="0.01" style="width:100px" value="${esc(o.stop_loss ?? '')}"></label>
+      <label for="oe-target">take-profit <input id="oe-target" type="number" min="0" step="0.01" style="width:100px" value="${esc(o.take_profit ?? '')}"></label>
       <button onclick="orderEditSend(${jsArg(id)})">Save</button>
       <button class="ghost" onclick="document.getElementById('ordedit').innerHTML=''">Close</button>
     </div>
@@ -295,16 +342,16 @@ async function orderEditSend(id) {
   if (!v.entry) { msg.innerHTML = '<b class="bad">enter a limit price</b>'; return; }
   const buy = o.side === 'buy';
   if (v.stop != null && (buy ? v.stop >= v.entry : v.stop <= v.entry)) {
-    msg.innerHTML = `<b class="bad">the stop must be ${buy ? 'below' : 'above'} the limit price</b>`; return; }
+    msg.innerHTML = `<b class="bad">the stop-loss must be ${buy ? 'below' : 'above'} the limit price</b>`; return; }
   if (v.target != null && (buy ? v.target <= v.entry : v.target >= v.entry)) {
-    msg.innerHTML = `<b class="bad">the target must be ${buy ? 'above' : 'below'} the limit price</b>`; return; }
+    msg.innerHTML = `<b class="bad">the take-profit must be ${buy ? 'above' : 'below'} the limit price</b>`; return; }
   if (o.status !== 'pending_session' && !await ask(
       `Cancel the ${esc(r.ticker)} order at the broker and send a new one (limit price ${esc(v.entry)} per share) to Approvals?`)) return;
   try {
     const out = await api('/api/order-control', {work_item_id: id, action: 'edit', ...v});
     msg.innerHTML = out.new_work_item_id
       ? `<b class="ok">✔ old order cancelled</b> — approve the new one on <a href="/approvals">Approvals →</a>`
-      : '<b class="ok">✔ saved</b> — Claire will send these levels when the market opens.';
+      : '<b class="ok">✔ saved</b> — Claire will send these prices when the market opens.';
     toast(r.ticker + ' order updated ✓');
     refresh();
   } catch (e) { msg.innerHTML = `<b class="bad">${esc(e.message)}</b>`; }
@@ -318,7 +365,48 @@ function keep(el) {
 }
 const isOpen = k => OPEN.has(k) ? 'open' : '';
 
-async function refresh() {
+/* ── which runs to show ────────────────────────────────────────────── */
+const FILTERS = {
+  all: ['All', () => true, 'every recent run'],
+  waiting: ['Waiting for you', r => r.state === 'awaiting_approval',
+    'a trade is on Approvals, waiting for your decision'],
+  running: ['Running', r => ['running', 'approved', 'executing'].includes(r.state),
+    'still researching, or its order is being sent or is at the broker'],
+  done: ['Done', r => ['done', 'rejected', 'expired', 'cancelled'].includes(r.state),
+    'finished: traded, passed, rejected by you, expired or cancelled'],
+  failed: ['Failed', r => r.state === 'failed', 'stopped with an error'],
+};
+let FILTER = 'all';
+function setFilter(f) { FILTER = f; renderRuns(); }
+function renderRuns() {
+  /* swapHtml (nav.js) gives the button you pressed its focus back */
+  swapHtml(document.getElementById('filters'), Object.entries(FILTERS)
+    .map(([k, [label, test, tip]]) => `<button type="button" id="flt-${k}"
+      aria-pressed="${k === FILTER}" title="${esc(tip)}"
+      onclick="setFilter(${jsArg(k)})">${esc(label)}<span class="n">${
+      RUNS.filter(test).length}</span></button>`).join(''));
+  const runs = RUNS.filter(FILTERS[FILTER][1]);
+  /* swapHtml (nav.js): the run you opened with the keyboard keeps the focus */
+  swapHtml(document.getElementById('runs'), runs.length ? runs.map(r =>
+    // ids and tickers are attacker-shaped data: jsArg for the inline
+    // handler, esc for the id attributes
+    `<div class="runcard ${openId === r.id ? 'sel' : ''}" id="d-${esc(r.id)}">
+      <div class="runhead" onclick="toggle(${jsArg(r.id)})" role="button"
+        tabindex="0" data-kbd="${esc(r.id)}" aria-expanded="${openId === r.id}">
+        <div class="runtitle">${stockName(r)} ${badge(r)}
+          <span class="when">${when(r.created_at)}</span></div>
+        <p class="story">${origin(r)} ${verdict(r)}</p>
+        <p class="next">${nextStep(r)}</p>
+      </div>
+      <div class="runbody" id="dc-${esc(r.id)}"
+        style="display:${openId === r.id ? '' : 'none'}"></div>
+    </div>`).join('')
+    : RUNS.length ? `<p class="muted">No run is “${esc(FILTERS[FILTER][0].toLowerCase())}”
+        right now. <button class="linkbtn" onclick="setFilter('all')">Show all ${RUNS.length}</button></p>`
+    : '<p class="muted">No runs yet — start one above.</p>');
+  if (openId) detail(openId);                // restore the open panel
+}
+async function refreshData() {
   const runs = await api('/api/runs');
   RUNS = runs;
   // only rebuild when something actually changed — a blind re-render every
@@ -330,24 +418,12 @@ async function refresh() {
       if (STAMP[r.id] && STAMP[r.id] !== r.updated_at) delete DETAIL[r.id];
       STAMP[r.id] = r.updated_at;
     }
-    document.getElementById('runs').innerHTML = runs.length ? runs.map(r =>
-      // ids and tickers are attacker-shaped data: jsArg for the inline
-      // handler, esc for the id attributes
-      `<div class="runcard ${openId === r.id ? 'sel' : ''}" id="d-${esc(r.id)}">
-        <div class="runhead" onclick="toggle(${jsArg(r.id)})">
-          <div class="runtitle">${stockName(r)} ${badge(r)}
-            <span class="when">${when(r.created_at)}</span></div>
-          <p class="story">${origin(r)} ${verdict(r)}</p>
-          <p class="next">${nextStep(r)}</p>
-        </div>
-        <div class="runbody" id="dc-${esc(r.id)}"
-          style="display:${openId === r.id ? '' : 'none'}"></div>
-      </div>`).join('')
-      : '<p class="muted">No runs yet — start one above.</p>';
-    if (openId) detail(openId);              // restore the open panel
+    renderRuns();
   }
   await refreshFeed();
 }
+/* reports "updated 12:03" / "cannot reach Claire" in the menu bar */
+const refresh = tracked(refreshData);
 /* First call: the latest 300 events. After that only what is newer than
    the last one seen — it used to re-download the same 70 KB every 8 s, and
    those were the OLDEST 300 events, so the feed never moved (B7). */
@@ -449,8 +525,8 @@ function render(id) {
       : `${fmt(L.entry_low)}–${money(L.entry_high, s.currency)}`;
     html += `<h3>The plan</h3><p class="levels">
       <span>${esc(VERDICT[s.verdict] || s.verdict)} at <b>${entry}</b></span>
-      <span>give up (stop) at <b>${money(L.stop_loss, s.currency)}</b></span>
-      <span>take profit at <b>${money(L.take_profit, s.currency)}</b></span>
+      <span>stop-loss at <b>${money(L.stop_loss, s.currency)}</b></span>
+      <span>take-profit at <b>${money(L.take_profit, s.currency)}</b></span>
       </p>`;
   }
 
@@ -480,7 +556,7 @@ function render(id) {
       s.currency)}` : ''} on ${esc(o.account)} — ${esc(String(o.status)
       .replace(/_/g, ' '))}</li>`).join('') + '</ul>';
 
-  // the pipeline, step by step
+  // the run, step by step
   const steps = d.steps || [];
   if (steps.length) {
     const stage = {fundamental: 'Research', technical: 'Research',
@@ -511,7 +587,8 @@ function render(id) {
   const cost = (d.agent_runs || []).reduce((a, r) => a + (r.cost_usd || 0), 0);
   html += `<details class="tech" data-k="${esc(k)}" ontoggle="keep(this)"
     ${isOpen(k)}><summary>details for developers</summary>
-    <p class="muted">run id <code>${esc(d.id)}</code> · type ${esc(d.kind)}
+    <p class="muted">run id <code>${esc(d.id)}</code> · type ${esc(kindName(d.kind))}
+      (<code>${esc(d.kind)}</code>)
       · state ${esc(d.state)} · trigger ${esc(d.trigger || '—')}
       ${d.override_of ? ` · override of <code>${esc(d.override_of)}</code>`
         : ''}</p>
@@ -530,7 +607,7 @@ function render(id) {
     ${(d.narratives || []).length ? `<p><b>files</b>: ${
       esc(d.narratives.join(', '))}</p>` : ''}
     <p><b>events</b></p><pre>${esc((d.events || []).map(e =>
-      `${ts(e.ts)}  ${e.actor}: ${e.from_state || ''}→${e.to_state}` +
+      `${fmtWhen(e.ts, {weekday: false, seconds: true})}  ${e.actor}: ${e.from_state || ''}→${e.to_state}` +
       (e.payload ? '  ' + e.payload : '')).join('\n'))}</pre>
   </details>`;
   el.innerHTML = html || '<span class="muted">no detail</span>';
@@ -545,7 +622,7 @@ const FEED = {running: 'research started', done: 'finished',
   override: 'you overrode the verdict', amended: 'you changed the levels'};
 function renderFeed(events) {
   document.getElementById('rawfeed').textContent = events.slice(-60).reverse()
-    .map(e => `${ts(e.ts)}  ${e.item_id}  ${e.actor}: ` +
+    .map(e => `${fmtWhen(e.ts, {weekday: false, seconds: true})}  ${e.item_id}  ${e.actor}: ` +
       `${e.from_state || ''}→${e.to_state}`).join('\n');
   const byId = Object.fromEntries(RUNS.map(r => [r.id, r]));
   const rows = [], lastOf = {};
@@ -578,6 +655,8 @@ function renderFeed(events) {
       — ${esc(x.said)}${x.n > 1 ? ` (${fmt(x.n, 0)} times)` : ''}</li>`)
     .join('') || '<li class="muted">nothing yet</li>';
 }
+document.getElementById('exchange').innerHTML =
+  DESK_EX.map(x => `<option value="${esc(x)}">${esc(x)}</option>`).join('');
 refresh().then(() => {                 // arrived by a link to one run
   const el = openId && document.getElementById('d-' + openId);
   if (el) el.scrollIntoView({block: 'start'});

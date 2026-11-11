@@ -20,13 +20,18 @@
   .panel label { font-size:.82rem; }
   .tabs button { margin-right:.3rem; }
   .tabs button.on { outline:2px solid var(--accent); }
+  /* a real-money account, wherever one can be chosen */
+  select.liveacct { border-color:var(--bad); box-shadow:0 0 0 1px var(--bad); }
+  option.liveopt { color:var(--bad); font-weight:700; }
+  .livebadge { background:var(--bad); color:#fff; border-radius:6px;
+    padding:.05rem .45rem; font-size:.72rem; letter-spacing:.06em; }
 </style>
 <main>
-  <h1>Watchlist <span id="conn" class="pill">loading…</span></h1>
+  <h1>Watchlist</h1>
   <p class="muted">Names you are watching, with the numbers that matter to
-  decide, and what the desk holds in each. <b>Buy now</b> and <b>Sell now</b>
-  put a trade on the Approvals page — nothing trades until you approve it
-  there. A <b>price trigger</b> waits for a price ("buy 50 when it falls to
+  decide, and what the desk holds in each. <b>Buy…</b> and <b>Sell…</b> open
+  a form; sending it takes you to the trade's card on the Approvals page —
+  nothing trades until you approve it there. A <b>price trigger</b> waits for a price ("buy 50 when it falls to
   5.00") and then asks you, or — on a paper account only, if you choose —
   places the order you pre-approved. Watchlisted names are also always
   considered by the screener.</p>
@@ -35,16 +40,18 @@
     <h3 style="font-size:.95rem">Add a stock</h3>
     <div class="row">
       <input id="q" placeholder="search by name or ticker…" style="flex:1;min-width:220px"
+        aria-label="Search for a stock by name or ticker"
         onkeydown="if (event.key === 'Enter') doSearch()">
       <button onclick="doSearch()">Search</button>
-      <input id="wnote" placeholder="note (optional)" maxlength="200" style="min-width:200px">
+      <input id="wnote" placeholder="note (optional)" maxlength="200" style="min-width:200px"
+        aria-label="Note to keep with the stock (optional)">
     </div>
     <div id="results"></div>
     <details style="margin-top:.4rem"><summary class="muted small">or type the
       ticker and exchange yourself</summary>
       <div class="row" style="margin-top:.4rem">
-        <input id="mticker" placeholder="ticker, e.g. D05" style="width:140px">
-        <select id="mexchange"></select>
+        <input id="mticker" placeholder="ticker, e.g. D05" style="width:140px" aria-label="Ticker">
+        <select id="mexchange" aria-label="Exchange"></select>
         <button class="ghost" onclick="addManual()">Add</button>
       </div>
     </details>
@@ -89,23 +96,30 @@ async function apiDelete(path) {
   return data;
 }
 
-async function refresh(force) {
-  if (LADDER_DRAG || (!force && typing())) return;
-  try {
-    DATA = await api('/api/watchlist-data');
-    document.getElementById('conn').textContent = 'live · ' + new Date().toLocaleTimeString();
-    document.getElementById('conn').className = 'pill ok';
-  } catch (e) {
-    document.getElementById('conn').textContent = 'error: ' + e.message;
-    document.getElementById('conn').className = 'pill bad';
-    return;
-  }
+async function refreshData() {
+  DATA = await api('/api/watchlist-data');
   renderTable();
   renderTriggers();
   const want = decodeURIComponent((location.hash.match(/^#trigger=(.+)$/) || [])[1] || '');
   if (want && rowBy(want)) { history.replaceState(null, '', '/watchlist'); openAction(want, 'trigger'); }
   if (SEL && !rowBy(SEL)) { SEL = null; document.getElementById('detail').innerHTML = ''; }
   if (SEL) { renderDetailInfo(); redrawChart(); }
+}
+/* never redrawn under your pointer or your cursor — the menu bar then says
+   "paused while you are editing"; refresh(true) follows your own action */
+const refresh = tracked(refreshData,
+  {paused: force => LADDER_DRAG || (!force && typing())});
+/* when a closed market opens again: "in 9 h 30 m (Wed 11 Nov 22:30 SGT)".
+   next_open arrives as an ISO time on the exchange's own clock, and used to
+   be printed raw */
+const opensIn = r => r.next_open ? fmtUntil(r.next_open) : 'at a time not known';
+/* a real-money account must be unmistakable wherever one can be chosen */
+function markLive(id) {
+  const sel = document.getElementById(id), flag = document.getElementById(id + '-live');
+  if (!sel || !flag) return;
+  const live = acctOf(sel.value).environment === 'live';
+  flag.hidden = !live;
+  sel.classList.toggle('liveacct', live);
 }
 
 /* ── the table ────────────────────────────────────────────────────── */
@@ -120,35 +134,40 @@ function heldCell(r) {
     const pl = h.pl == null ? '' : ` <span class="${h.pl >= 0 ? 'ok' : 'bad'}">${
       h.pl >= 0 ? '+' : ''}${fmt(h.pl, 2)} (${fmt(h.pl_pct, 1)}%)</span>`;
     const legs = (h.legs || []).map(l => `<span class="chip ${l.leg === 'stop' ? 'sell' : 'buy'}"
-      title="resting at the venue">${esc(l.leg)} ${px(l.price)} × ${fmt(l.qty, 4)}</span>`).join('');
+      title="an order resting at the broker">${esc(LEG_NAME[l.leg] || l.leg)} ${px(l.price)} × ${fmt(l.qty, 4)}</span>`).join('');
     return `<div><b>${fmt(h.qty, 4)}</b> @ ${px(h.avg_cost)}${pl}
       <span class="muted small">${esc(h.account_id)}</span>${legs ? '<br>' + legs : ''}</div>`;
   }).join('');
 }
 function trigChip(t) {
   return `<span class="chip ${t.direction === 'buy' ? 'buy' : 'sell'}" style="cursor:pointer"
+    role="button" tabindex="0" data-kbd="trig-${esc(t.id)}"
     onclick="event.stopPropagation();editTrigger(${jsArg(t.id)})" title="${esc(t.rule)}${
     t.mode === 'auto' ? ' — places automatically' : ' — asks you'} · click to edit">#${esc(t.id)}
     ${esc(t.kind === 'exit' ? 'sell' : t.kind)} ${COND[t.condition] || ''} ${px(t.trigger_price)}${
-    t.mode === 'auto' ? ' ⚡' : ''}</span>`;
+    t.mode === 'auto' ? ' ⚡<span class="sr"> places automatically</span>' : ''}</span>`;
 }
 function renderTable() {
   const rows = DATA.rows || [];
   const el = document.getElementById('table');
   if (!rows.length) {
-    el.innerHTML = '<p class="muted">Your watchlist is empty — search for a stock above.</p>';
+    swapHtml(el, '<p class="muted">Your watchlist is empty — search for a stock above.</p>');
     return;
   }
-  el.innerHTML = `<table class="wl"><tr><th>Stock</th><th>Current price</th><th>Today</th>
-    <th>Day range</th><th>SMA 20 / 50</th><th>20-day low / high</th>
-    <th title="average true range: the typical daily move">ATR 14</th>
+  /* swapHtml: a row you reached with the keyboard keeps the focus */
+  swapHtml(el, `<table class="wl"><tr><th>Stock</th><th>Current price</th><th>Today</th>
+    <th>Day range</th>
+    <th title="the average closing price of the last 20 and of the last 50 trading days (SMA 20 / SMA 50)">20 / 50-day average</th>
+    <th>20-day low / high</th>
+    <th title="how far the price usually moves in a day — the average true range over 14 days (ATR 14)">Typical daily move</th>
     <th>Desk holds</th><th>Triggers</th><th></th></tr>${rows.map(r => {
     const k = keyOf(r), q = r.quote || {}, L = r.levels || {}, a = jsArg(k);
     const active = (r.triggers || []).filter(t => t.status === 'active');
-    return `<tr class="wrow ${SEL === k ? 'sel' : ''}" onclick="select(${a})">
+    return `<tr class="wrow ${SEL === k ? 'sel' : ''}" onclick="select(${a})" tabindex="0" data-kbd="${esc(k)}"
+        title="show the chart and the buy, sell and trigger forms for ${esc(r.ticker)}">
       <td><b>${esc(r.ticker)}</b> <span class="muted">${esc(r.exchange)}</span>
-        ${r.is_open === false ? '<span class="pill small" title="next open ' +
-          esc(r.next_open || '') + '">closed</span>' : r.is_open ? '<span class="pill ok small">open</span>' : ''}
+        ${r.is_open === false ? '<span class="pill small" title="opens ' +
+          esc(opensIn(r)) + '">closed</span>' : r.is_open ? '<span class="pill ok small">open</span>' : ''}
         <br><span class="muted small">${esc(r.name || '')}</span>
         ${r.note ? `<br><span class="small">📝 ${esc(r.note)}</span>` : ''}</td>
       <td>${q.price == null ? `<span class="bad small">${esc(q.error || 'no price')}</span>`
@@ -162,12 +181,12 @@ function renderTable() {
       <td>${heldCell(r)}</td>
       <td>${active.length ? active.map(trigChip).join('') : '<span class="muted">—</span>'}</td>
       <td onclick="event.stopPropagation()" style="white-space:nowrap">
-        <button onclick="openAction(${a}, 'buy')">Buy now</button>
-        ${r.held_total > 0 ? `<button class="ghost" onclick="openAction(${a}, 'sell')">Sell now</button>` : ''}
+        <button onclick="openAction(${a}, 'buy')">Buy…</button>
+        ${r.held_total > 0 ? `<button class="ghost" onclick="openAction(${a}, 'sell')">Sell…</button>` : ''}
         <button class="ghost" onclick="openAction(${a}, 'trigger')">Add trigger</button>
-        <button class="ghost" title="remove from the watchlist" onclick="removeRow(${a})">✖</button>
+        <button class="ghost" title="remove from the watchlist" aria-label="remove ${esc(r.ticker)} from the watchlist" onclick="removeRow(${a})">✖</button>
       </td></tr>`;
-  }).join('')}</table>`;
+  }).join('')}</table>`);
 }
 
 /* ── detail: chart + Buy / Sell / Trigger forms ───────────────────── */
@@ -185,10 +204,11 @@ function openAction(k, which) {
   document.getElementById('detail').scrollIntoView({behavior: 'smooth', block: 'start'});
 }
 function accountOptions(id, onchange) {
-  return `<select id="${id}" onchange="${onchange}">${(DATA.accounts || []).map(a =>
-    `<option value="${esc(a.broker)}" ${a.disabled ? 'disabled' : ''}
-      title="${esc(a.disabled || '')}">${esc(a.label)}${a.disabled ? ' — ' + esc(a.disabled) : ''}</option>`
-  ).join('')}</select>`;
+  return `<select id="${id}" aria-label="Account" onchange="${onchange}">${(DATA.accounts || []).map(a =>
+    `<option value="${esc(a.broker)}" ${a.disabled ? 'disabled' : ''} ${a.environment === 'live' ? 'class="liveopt"' : ''}
+      title="${esc(a.disabled || '')}">${a.environment === 'live' ? '⚠ REAL MONEY · ' : ''}${esc(a.label)}${a.disabled ? ' — ' + esc(a.disabled) : ''}</option>`
+  ).join('')}</select>
+  <b id="${id}-live" class="livebadge" hidden>⚠ REAL MONEY ACCOUNT</b>`;
 }
 function buildDetail() {
   EDITING = null; B_LEAD = 'amount'; B_TOUCHED = false; T_LEAD = 'amount'; T_TOUCHED = false;
@@ -198,11 +218,11 @@ function buildDetail() {
     <div id="d-info"></div>
     <div class="row small" style="margin:.4rem 0">chart:
       ${['1mo', '3mo', '6mo', '1y'].map(g => `<button class="ghost" onclick="loadChart(${jsArg(g)})">${g}</button>`).join('')}
-      <span class="muted">dashed lines: your triggers (green buy, red sell), average cost (amber), resting stop / target</span></div>
+      <span class="muted">dashed lines: your triggers (green buy, red sell), average cost (amber), resting stop-loss / take-profit</span></div>
     <div id="d-chart"><p class="muted">loading chart…</p></div>
     <div class="tabs" style="margin-top:.6rem">
-      <button id="tab-buy" onclick="showPanel('buy')">Buy now</button>
-      <button id="tab-sell" onclick="showPanel('sell')">Sell now</button>
+      <button id="tab-buy" onclick="showPanel('buy')">Buy…</button>
+      <button id="tab-sell" onclick="showPanel('sell')">Sell…</button>
       <button id="tab-trigger" onclick="showPanel('trigger')">Add trigger</button>
     </div>
     <div id="p-buy" class="panel">${buyForm(r)}</div>
@@ -233,8 +253,9 @@ function renderDetailInfo() {
     · ${esc(r.name || '')}</span></h3>
     <p class="small">Current price <b>${px(q.price)} ${esc(q.currency || '')}</b> ${chg(q)}
       ${q.stale ? '<span class="warn">⚠ stale price</span>' : ''}
-      · ${r.is_open ? '<span class="ok">market open</span>' : 'market closed — next open ' + esc(r.next_open || '?')}
-      · ATR ${px(L.atr14)} · 20-day ${px(L.low20)} – ${px(L.high20)}
+      · ${r.is_open ? '<span class="ok">market open</span>' : 'market closed — opens ' + esc(opensIn(r))}
+      · <span title="how far the price usually moves in a day (ATR 14)">typical daily move ${px(L.atr14)}</span>
+      · 20-day range ${px(L.low20)} – ${px(L.high20)}
       ${r.levels_error ? `<span class="warn">levels unavailable: ${esc(r.levels_error)}</span>` : ''}</p>
     <div class="small">${r.held && r.held.length ? 'The desk holds: ' + heldCell(r)
       : '<span class="muted">The desk holds none of it.</span>'}</div>`;
@@ -255,7 +276,7 @@ function chartLevels(r) {
       label: esc(`avg cost ${px(h.avg_cost)} (${h.account_id})`), dash: '2 2'});
     (h.legs || []).forEach(l => out.push({value: l.price,
       color: l.leg === 'stop' ? '#ef5350' : '#26a69a', dash: '1 3',
-      label: esc(`resting ${l.leg} ${px(l.price)}`)}));
+      label: esc(`resting ${LEG_NAME[l.leg] || l.leg} ${px(l.price)}`)}));
   });
   return out;
 }
@@ -321,34 +342,34 @@ const lotOf = r => deskLot(r && r.exchange);     // nav.js
 let B_LEAD = 'amount', B_TOUCHED = false;   // which size you typed; did you edit stop/target
 function buyForm(r) {
   const c = qccy(r);
-  return `<h3>Buy ${esc(r.ticker)} now</h3>
+  return `<h3>Buy ${esc(r.ticker)}</h3>
     <div class="ord">
     <div class="row">
-      <label>Order type <select id="b-mode" onchange="buyMode()">
+      <label for="b-mode">Order type <select id="b-mode" onchange="buyMode()">
         <option value="market">Buy at the current price — fills now</option>
         <option value="manual">Manual — set your own price</option></select></label>
-      <label>Account ${accountOptions('b-acct', 'updBuy()')}</label>
+      <label for="b-acct">Account ${accountOptions('b-acct', 'updBuy()')}</label>
     </div>
     <div class="osum" id="b-sum" style="margin-bottom:.5rem"></div>
     <div class="row">
-      <label title="the most you pay per share — the order buys at this price or lower; “current price” sets it for you — choose Manual to type your own">Purchase price
+      <label for="b-px" title="the most you pay per share — the order buys at this price or lower; “current price” sets it for you — choose Manual to type your own">Purchase price
         <input id="b-px" type="number" min="0" step="any" readonly class="locked" oninput="limitTyped()"> <span class="muted">${c}/share</span></label>
-      <label title="sells all the shares at the market if the price FALLS to this — sent with the buy, held at the broker">Stop-loss
+      <label for="b-stop" title="sells all the shares at the market if the price FALLS to this — sent with the buy, held at the broker">Stop-loss
         <input id="b-stop" type="number" min="0" step="any" oninput="B_TOUCHED = true; updBuy()"> <span class="muted">${c}</span></label>
-      <label title="sells all the shares at this price or better if the price RISES to it — leave blank for none">Take-profit
+      <label for="b-tgt" title="sells all the shares at this price or better if the price RISES to it — leave blank for none">Take-profit
         <input id="b-tgt" type="number" min="0" step="any" placeholder="none" oninput="B_TOUCHED = true; updBuy()"> <span class="muted">${c} · optional</span></label>
-      <label data-trail="b" title="not an order: the watcher alerts you if the price falls this far below its best since you bought — it rises with the price"><span class="trail-name">Trailing alert</span>
+      <label for="b-trail" data-trail="b" title="not an order: the watcher alerts you if the price falls this far below its best since you bought — it rises with the price"><span class="trail-name">Trailing alert</span>
         <input id="b-trail" type="number" min="0.5" max="90" step="0.5" value="8" oninput="updBuy()"> <span class="muted">%</span></label>
       <button type="button" class="ghost" onclick="buySuggest()">suggest stop / take-profit</button>
     </div>
     <div class="row">
-      <label>Amount to spend <input id="b-amt" type="number" min="0" step="0.01" value="1000" oninput="B_LEAD = 'amount'; updBuy()">
+      <label for="b-amt">Amount to spend <input id="b-amt" type="number" min="0" step="0.01" value="1000" oninput="B_LEAD = 'amount'; updBuy()">
         <b id="b-ccy"></b></label>
       <span class="muted">⇄</span>
-      <label>Shares <input id="b-qty" type="number" min="0" step="any" oninput="B_LEAD = 'shares'; updBuy()"></label>
+      <label for="b-qty">Shares <input id="b-qty" type="number" min="0" step="any" oninput="B_LEAD = 'shares'; updBuy()"></label>
       <span class="muted small" id="b-sznote">type either — the other follows</span>
     </div>
-    <div class="row"><input id="b-note" placeholder="note (optional)" maxlength="200" style="flex:1;min-width:140px"></div>
+    <div class="row"><input id="b-note" placeholder="note (optional)" maxlength="200" style="flex:1;min-width:140px" aria-label="Note (optional)"></div>
     <div class="row" style="gap:.5rem">
       <span style="flex:1"></span>
       <button type="button" class="ghost" onclick="buyCheck()">✓ Check with Saxo</button>
@@ -356,7 +377,7 @@ function buyForm(r) {
     </div>
     <p id="b-msg" class="small" style="margin:.3rem 0"></p>
     <p class="muted small" style="margin:0">Nothing is bought yet: this puts the BUY on the Approvals
-      page with these prices and shares; you approve it there.</p>
+      page with these prices and shares and takes you to it; you approve it there.</p>
     </div>`;
 }
 function buyMode() {
@@ -389,6 +410,7 @@ async function updBuy() {
   if (!r || !el) return;
   const a = acctOf(val('b-acct')), c = qccy(r), mkt = val('b-mode') === 'market';
   syncTrail('b', a, r.exchange);         // trailing stop (Saxo) or alert
+  markLive('b-acct');
   const live = (r.quote || {}).price, lim = num('b-px'), px = mkt ? (live ?? lim) : fillPrice(lim, live);
   const fx = await fxTo((r.quote || {}).currency, a.ccy);
   document.getElementById('b-ccy').textContent = a.ccy || '';
@@ -462,11 +484,10 @@ async function buySend() {
       direction: 'buy', entry: v.entry, stop: v.stop, target: v.target, note: v.note,
       source: 'watchlist', suggested: {qty: v.qty, broker: v.broker,
         order_type: v.mkt ? 'market' : 'limit', ...(v.trail ? {trail_pct: v.trail} : {})}});
-    msg.innerHTML = `<b class="ok">✔ sent</b> — approve it on
-      <a href="/approvals#c-${esc(r.work_item_id)}">Approvals →</a>
-      <span class="muted">(${esc(r.work_item_id)})</span>`;
-    toast('buy sent to approval ✓');
-  } catch (e) { msg.innerHTML = `<b class="bad">${esc(e.message)}</b>`; }
+    msg.innerHTML = `<b class="ok">✔ sent</b> — taking you to its card on
+      <a href="/approvals#c-${esc(r.work_item_id)}" title="run ${esc(r.work_item_id)}">Approvals →</a>`;
+    if (r.work_item_id) toApprovalCard(r.work_item_id);   // straight to the card
+  } catch (e) { msg.innerHTML = `<b class="bad">${esc(e.message)}</b>`; toast(e.message, false); }
 }
 
 /* ── Sell now (web/sell.js, one form per account that holds shares) ── */
@@ -488,7 +509,7 @@ function renderSell() {
     return [key, h];
   });
   if (!el.querySelector('.sellrows')) {
-    el.innerHTML = `<h3>Sell ${esc(r.ticker)} now</h3><div class="sellrows">${keys.map(([k, h]) =>
+    el.innerHTML = `<h3>Sell ${esc(r.ticker)}</h3><div class="sellrows">${keys.map(([k, h]) =>
       `<div class="row small">${esc(h.account_id)}: ${fmt(h.qty, 4)} shares ${sellButton(k)}</div>
        <div id="sellbox-${esc(k)}"></div>`).join('')}</div>`;
   }
@@ -527,39 +548,39 @@ function triggerForm(r) {
     <p id="t-editnote" class="small warn" style="display:none;margin:.2rem 0"></p>
     <div class="ord">
     <div class="row">
-      <select id="t-dir" onchange="dirChanged()"><option value="buy">Buy</option>
+      <select id="t-dir" onchange="dirChanged()" aria-label="Buy or sell"><option value="buy">Buy</option>
         <option value="sell">Sell</option></select>
       <span>when the price</span>
-      <select id="t-cond" onchange="updTrig()"><option value="lte">falls to or below (≤)</option>
+      <select id="t-cond" onchange="updTrig()" aria-label="When the price"><option value="lte">falls to or below (≤)</option>
         <option value="gte">rises to or above (≥)</option></select>
-      <input id="t-px" type="number" min="0" step="any" placeholder="price" oninput="trigPriceTyped()">
+      <input id="t-px" type="number" min="0" step="any" placeholder="price" aria-label="Trigger price" oninput="trigPriceTyped()">
       <span class="muted">${c}</span>
-      <label>Account ${accountOptions('t-acct', 'acctChanged()')}</label>
+      <label for="t-acct">Account ${accountOptions('t-acct', 'acctChanged()')}</label>
     </div>
     <div class="osum" id="t-sum" style="margin-bottom:.5rem"></div>
     <div class="row">
-      <label title="the most you pay (buy) or the least you accept (sell) once it fires; blank = the trigger price"><span id="t-limword">Purchase price</span>
+      <label for="t-lim" title="the most you pay (buy) or the least you accept (sell) once it fires; blank = the trigger price"><span id="t-limword">Purchase price</span>
         <input id="t-lim" type="number" min="0" step="any" placeholder="= trigger" oninput="trigPriceTyped()"> <span class="muted">${c}/share</span></label>
       <span id="t-levels" style="display:contents">
-        <label><span id="t-stopword">Stop-loss</span>
+        <label for="t-stop"><span id="t-stopword">Stop-loss</span>
           <input id="t-stop" type="number" min="0" step="any" oninput="T_TOUCHED = true; updTrig()"> <span class="muted">${c}</span></label>
-        <label>Take-profit <input id="t-tgt" type="number" min="0" step="any" placeholder="none" oninput="T_TOUCHED = true; updTrig()">
+        <label for="t-tgt">Take-profit <input id="t-tgt" type="number" min="0" step="any" placeholder="none" oninput="T_TOUCHED = true; updTrig()">
           <span class="muted">${c} · optional</span></label>
-        <label id="t-traillbl" data-trail="t" title="not an order: after the buy fills, the watcher alerts you if the price falls this far below its best since you bought"><span class="trail-name">Trailing alert</span>
+        <label for="t-trail" id="t-traillbl" data-trail="t" title="not an order: after the buy fills, the watcher alerts you if the price falls this far below its best since you bought"><span class="trail-name">Trailing alert</span>
           <input id="t-trail" type="number" min="0.5" max="90" step="0.5" value="8" oninput="updTrig()"> <span class="muted">%</span></label>
         <button type="button" class="ghost" onclick="trigSuggest()">suggest stop / take-profit</button>
       </span>
     </div>
     <div class="row">
-      <label id="t-amtlbl">Amount to spend <input id="t-amt" type="number" min="0" step="0.01" value="1000"
+      <label for="t-amt" id="t-amtlbl">Amount to spend <input id="t-amt" type="number" min="0" step="0.01" value="1000"
         oninput="T_LEAD = 'amount'; updTrig()"> <b id="t-ccy"></b></label>
       <span id="t-arrow" class="muted">⇄</span>
-      <label>Shares <input id="t-qty" type="number" min="0" step="any" oninput="T_LEAD = 'shares'; updTrig()"></label>
+      <label for="t-qty">Shares <input id="t-qty" type="number" min="0" step="any" oninput="T_LEAD = 'shares'; updTrig()"></label>
       <span class="muted small" id="t-sznote"></span>
     </div>
     <div class="row">
-      <label>expires in <input id="t-days" type="number" min="1" max="365" step="1" value="30" style="width:60px"> days</label>
-      <input id="t-note" placeholder="note (optional)" maxlength="120" style="flex:1;min-width:140px">
+      <label for="t-days">expires in <input id="t-days" type="number" min="1" max="365" step="1" value="30" style="width:60px"> days</label>
+      <input id="t-note" placeholder="note (optional)" maxlength="120" style="flex:1;min-width:140px" aria-label="Note (optional)">
     </div>
     <div style="margin:.3rem 0" class="small">
       <label><input type="radio" name="t-run" value="ask" checked onchange="updTrig()">
@@ -673,6 +694,7 @@ async function updTrig() {
   document.getElementById('t-limword').textContent = buy ? 'Purchase price' : 'Sale price';
   const a = acctOf(val('t-acct')), c = qccy(r);
   syncTrail('t', a, r.exchange);         // trailing stop (Saxo) or alert
+  markLive('t-acct');
   document.getElementById('t-ccy').textContent = a.ccy || '';
   /* auto placement is a paper-only privilege; the server refuses it too */
   const autoEl = document.querySelector('input[name="t-run"][value="auto"]');
@@ -727,7 +749,7 @@ async function updTrig() {
     parts.push('<span class="muted">Breakout buy: a purchase price at the trigger may not fill once the price is above it — consider a purchase price a little higher.</span>');
   if (v.mode === 'auto') parts.push(`<b class="warn">Automatic:</b> when it hits, the desk approves this order for you on
     ${esc(a.label || v.broker)} — the usual checks (price band, cash, the account's risk caps${a.whole_shares ? ', whole shares' : ''}) still apply.`);
-  if (!r.is_open) parts.push(`<span class="muted">Market closed — it is checked from the next open (${esc(r.next_open || '?')}).</span>`);
+  if (!r.is_open) parts.push(`<span class="muted">Market closed — it is checked from the next open, ${esc(opensIn(r))}.</span>`);
   const err = trigErr(v);
   if (err && (v.trig || v.qty || v.amount)) parts.push(`<b class="bad">${esc(err)}</b>`);
   hint.innerHTML = parts.filter(Boolean).join('<br>');
@@ -766,7 +788,7 @@ async function trigCreate() {
 
 /* ── the triggers table ───────────────────────────────────────────── */
 function statusCell(t) {
-  const wi = t.work_item_id ? ` <a href="/approvals#c-${esc(t.work_item_id)}">${esc(t.work_item_id)}</a>` : '';
+  const wi = t.work_item_id ? ` <a href="/approvals#c-${esc(t.work_item_id)}" title="run ${esc(t.work_item_id)}">its approval card →</a>` : '';
   if (t.status === 'active') return `<span class="pill ok">active</span>${t.last_price != null
     ? `<br><span class="muted small">last ${px(t.last_price)} · ${ago(t.last_checked_at)}</span>` : ''}${
     t.last_error ? `<br><span class="muted small">${esc(t.last_error)}</span>` : ''}`;
@@ -781,15 +803,15 @@ function renderTriggers() {
   el.innerHTML = `<table class="wl"><tr><th>#</th><th>Rule</th><th>Account</th><th>When it hits</th>
     <th>Status</th><th>Created</th><th>Expires</th><th></th></tr>${ts_.map(t => `<tr>
     <td>${esc(t.id)}</td>
-    <td>${esc(t.rule)}${t.stop_loss != null ? `<br><span class="muted small">stop ${px(t.stop_loss)}${
-      t.take_profit != null ? ' · target ' + px(t.take_profit) : ''}</span>` : ''}${
+    <td>${esc(t.rule)}${t.stop_loss != null ? `<br><span class="muted small">stop-loss ${px(t.stop_loss)}${
+      t.take_profit != null ? ' · take-profit ' + px(t.take_profit) : ''}</span>` : ''}${
       t.note ? `<br><span class="small">📝 ${esc(t.note)}</span>` : ''}</td>
     <td>${esc(t.account_id)}</td>
     <td>${t.mode === 'auto' ? '<b class="warn">⚡ places automatically</b><br><span class="muted small">pre-approved by you</span>'
       : 'asks you (approval card)'}</td>
     <td>${statusCell(t)}</td>
-    <td class="small">${ts(t.created_at)}</td>
-    <td class="small">${ts(t.expires_at)}</td>
+    <td class="small">${esc(fmtWhen(t.created_at))}</td>
+    <td class="small">${esc(fmtUntil(t.expires_at))}</td>
     <td style="white-space:nowrap">${t.status === 'active' ? `<button class="ghost" onclick="editTrigger(${jsArg(t.id)})">✎ Edit</button>
       <button class="ghost" onclick="cancelTrigger(${jsArg(t.id)})">Cancel</button>` : ''}</td>
   </tr>`).join('')}</table>`;

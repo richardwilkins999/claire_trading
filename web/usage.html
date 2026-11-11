@@ -26,7 +26,7 @@ td.num, th.num { text-align:right; font-family:var(--mono); }
   <div class="row" style="justify-content:space-between;margin-top:1rem">
     <h2 style="margin:0">Tokens per day, by source</h2>
     <div class="row">
-      <select id="days" onchange="load()">
+      <select id="days" aria-label="period" onchange="load()">
         <option value="7">last 7 days</option>
         <option value="14">last 14 days</option>
         <option value="30">last 30 days</option>
@@ -112,7 +112,8 @@ function chart(d) {
   const n = s.length, bw = Math.max(3, (W - padL - padR) / n * 0.7);
   const x = i => padL + (W - padL - padR) * (i + 0.5) / n;
   const y = v => padT + (H - padT - padB) * (1 - v / max);
-  let svg = `<svg viewBox="0 0 ${W} ${H}">`;
+  let svg = `<svg viewBox="0 0 ${W} ${H}" role="img"
+    aria-label="Tokens per day, stacked by source. The same figures are in the table view.">`;
   for (let g = 0; g <= 4; g++) {
     const v = max * g / 4, yy = y(v);
     svg += `<line x1="${padL}" y1="${yy}" x2="${W - padR}" y2="${yy}"
@@ -191,7 +192,7 @@ function topRuns(d) {
     '<th class="num">API-equivalent</th></tr>' + d.top_runs.map(r => `<tr>
     <td><a href="/trading#${esc(encodeURIComponent(r.work_item_id))}"
       title="${esc(r.work_item_id)}"><b>${esc(r.ticker || '?')}</b></a>
-      <span class="muted">${esc(r.kind || '')}</span></td>
+      <span class="muted" title="${esc(r.kind || '')}">${esc(r.kind ? kindName(r.kind) : '')}</span></td>
     <td><b class="uswatch" style="background:${colorOf(r.source)}"></b>${
       esc(r.source_label)}<br><span class="muted" style="font-size:.75rem">${
       esc(r.trigger || '')}</span></td>
@@ -238,14 +239,11 @@ function bob(b) {
     days.map(x => row(x.date, x)).join('') + '</table>';
 }
 
-async function load() {
+/* a failed load says so in the menu bar ("cannot reach Claire"); what was
+   loaded before stays on screen */
+async function loadUsage() {
   const days = document.getElementById('days').value;
-  try {
-    DATA = await api('/api/usage?days=' + encodeURIComponent(days));
-  } catch (e) {
-    toast('usage: ' + e.message, false);
-    return;
-  }
+  DATA = await api('/api/usage?days=' + encodeURIComponent(days));
   const d = DATA;
   document.getElementById('tiles').innerHTML = tiles(d);
   document.getElementById('chart').innerHTML = chart(d);
@@ -261,6 +259,7 @@ async function load() {
   document.getElementById('bob').innerHTML = bob(d.bob);
   document.getElementById('note').textContent = d.pricing_note;
 }
+const load = tracked(loadUsage);
 load();
 poll(load, 60000);
 </script>
