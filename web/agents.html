@@ -35,12 +35,14 @@ let providers = [];
 const typing = () => ['INPUT', 'SELECT']
   .includes((document.activeElement || {}).tagName);
 
-async function refreshAgents() {
-  if (typing()) return;
+/* swapHtml (nav.js) redraws the cards without throwing away a provider or
+   model you have changed and not yet saved — the 15-second refresh used to.
+   A changed field is outlined until it is saved. */
+async function loadAgents() {
   const [agents, provs] = await Promise.all(
     [api('/api/agents'), api('/api/providers')]);
   providers = provs;
-  document.getElementById('agents').innerHTML = agents.map(a => {
+  swapHtml(document.getElementById('agents'), agents.map(a => {
     const opts = provs.map(p => {
       const compatible = a.requires.every(c => p.capabilities[c]);
       // display_name / model are user-set via /api/provider and /api/agent,
@@ -60,16 +62,17 @@ async function refreshAgents() {
         (${lr.tokens_in || 0}/${lr.tokens_out || 0} tok, ${ago(lr.started_at)})`
         : '· never run'}</p>
       <div class="row">
-        <select id="prov-${esc(a.id)}">${opts}</select>
-        <input id="model-${esc(a.id)}" value="${esc(a.model)}" style="width:220px">
+        <label>Provider <select id="prov-${esc(a.id)}">${opts}</select></label>
+        <label>Model <input id="model-${esc(a.id)}" value="${esc(a.model)}" style="width:220px"></label>
         <button onclick="saveAgent(${jsArg(a.id)})">Save</button>
         <button class="ghost" onclick="testProv(${jsArg(a.id)})">Test provider</button>
         <a class="pill" href="/" onclick="localStorage.setItem('openDrawer',
           ${jsArg(a.id)})" title="activity & direct Q&A live in the Mission
           Control drawer">activity ↗</a>
       </div></div>`;
-  }).join('');
+  }).join(''));
 }
+const refreshAgents = tracked(loadAgents, {key: 'agents', paused: () => typing()});
 async function saveAgent(id) {
   try {
     await api('/api/agent', {id,
@@ -95,18 +98,18 @@ const TZS = ['Asia/Singapore', 'Asia/Hong_Kong', 'Asia/Tokyo',
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 let JOBS = [];
 
-async function refreshJobs() {
-  if (typing()) return;
+async function loadJobs() {
   JOBS = await api('/api/schedules');
-  document.getElementById('jobs').innerHTML = JOBS.map(jobCard).join('');
+  swapHtml(document.getElementById('jobs'), JOBS.map(jobCard).join(''));
 }
+const refreshJobs = tracked(loadJobs, {key: 'jobs', paused: () => typing()});
 function jobCard(j) {
   const s = j.spec;
   const editor = s.type === 'interval'
-    ? `every <input id="min-${esc(j.job)}" type="number" min="1" max="1440"
-        value="${esc(s.minutes)}" style="width:70px"> minutes`
-    : `at <input id="time-${esc(j.job)}" value="${esc(s.time)}" style="width:70px">
-       <select id="tz-${esc(j.job)}">${TZS.map(z => `<option ${z === s.tz ?
+    ? `<label>every <input id="min-${esc(j.job)}" type="number" min="1" max="1440"
+        value="${esc(s.minutes)}" style="width:70px"> minutes</label>`
+    : `<label>at <input id="time-${esc(j.job)}" value="${esc(s.time)}" style="width:70px"></label>
+       <select id="tz-${esc(j.job)}" aria-label="time zone">${TZS.map(z => `<option ${z === s.tz ?
          'selected' : ''}>${z}</option>`).join('')}</select>
        <span style="display:inline-flex;gap:.3rem">${DAYS.map((d, i) =>
          `<label class="pill" style="cursor:pointer"><input type="checkbox"
@@ -141,15 +144,8 @@ function jobCard(j) {
     </div>
     <p class="muted" style="font-family:var(--mono);font-size:.78rem">
       next: <b class="${j.enabled ? 'ok' : 'muted'}">${j.next_run_at ?
-        ts(j.next_run_at) + ' (' + until(j.next_run_at) + ')' : '—'}</b>
+        esc(fmtUntil(j.next_run_at)) : '—'}</b>
       · last: ${last}</p></div>`;
-}
-function until(t) {
-  const s = t - Date.now() / 1000;
-  if (s < 0) return 'due';
-  if (s < 5400) return 'in ' + Math.round(s / 60) + 'm';
-  if (s < 172800) return 'in ' + Math.round(s / 3600) + 'h';
-  return 'in ' + Math.round(s / 86400) + 'd';
 }
 function lastSummary(r) {
   if (!r) return 'ok';
