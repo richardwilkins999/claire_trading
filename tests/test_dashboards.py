@@ -624,7 +624,6 @@ def _usage_rows(conn):
 
 
 def test_usage_api_totals_breakdowns_and_value(web, tmp_path, monkeypatch):
-    from app import dashboards
     base, conn = web
     _usage_rows(conn)
     bob = tmp_path / "usage.json"
@@ -634,7 +633,8 @@ def test_usage_api_totals_breakdowns_and_value(web, tmp_path, monkeypatch):
         day: {"requests": 2, "input_tokens": 10, "output_tokens": 20,
               "cache_read_tokens": 1000, "cache_creation_tokens": 100,
               "cost_usd": 0.5}}}))
-    monkeypatch.setattr(dashboards, "BOB_USAGE_FILE", bob)
+    from app.dash import usage          # where the report now lives
+    monkeypatch.setattr(usage, "BOB_USAGE_FILE", bob)
     d = httpx.get(base + "/api/usage?days=7").json()
     t = d["totals"]
     # tokens_in already includes the cache: input is NOT fresh + cache again

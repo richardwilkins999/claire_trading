@@ -29,6 +29,14 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 
 from . import approvals, scheduler, sessions
+# moved out of this file (REVIEW-2026-11-11 §3.2); re-exported because tests
+# and older call sites still import them from here
+from .accounts import (_approval_account, account_rank,  # noqa: F401
+                       ordered_accounts, sim_label, venue_adapter)
+from .dash.usage import (BOB_USAGE_FILE, USAGE_AGENT_LABELS,  # noqa: F401
+                         USAGE_SOURCE_LABELS, bob_usage, usage_report,
+                         usage_source)
+from .levels import LEVEL_KEYS, _levels, _range, quote_units  # noqa: F401
 from . import exchanges as desk_exchanges
 from .tools.files import JailError
 from .providers import health as provider_health
@@ -92,79 +100,6 @@ class HTTPError(Exception):
         self.code, self.message = code, message
 
 
-def _levels(c):
-    """Reference levels from daily bars: SMA20/50, the 20-day swing low and
-    high, the day's range, and ATR14 (Wilder) — the typical daily move that
-    the suggested stop is sized from."""
-    hi, lo, cl = c.get("high") or [], c.get("low") or [], c.get("close") or []
-    bars = [(h, l, x) for h, l, x in zip(hi, lo, cl)
-            if None not in (h, l, x)]
-    if len(bars) < 15:
-        return {}
-    closes = [b[2] for b in bars]
-    trs = [max(h - l, abs(h - pc), abs(l - pc))
-           for (h, l, _), (_, _, pc) in zip(bars[1:], bars[:-1])]
-    atr = sum(trs[:14]) / 14
-    for tr in trs[14:]:
-        atr = (atr * 13 + tr) / 14
-
-    def sma(n):
-        return round(sum(closes[-n:]) / n, 4) if len(closes) >= n else None
-    last20 = bars[-20:]
-    return {"sma20": sma(20), "sma50": sma(50), "atr14": round(atr, 4),
-            "low20": round(min(b[1] for b in last20), 4),
-            "high20": round(max(b[0] for b in last20), 4),
-            "day_high": round(bars[-1][0], 4), "day_low": round(bars[-1][1], 4),
-            "bars": len(bars)}
-
-
-LEVEL_KEYS = ("sma20", "sma50", "atr14", "low20", "high20", "day_high",
-              "day_low")
-
-
-def quote_units(d, price, keys=LEVEL_KEYS, probe=None):
-    """Price levels in the same unit as the live quote. London bars arrive
-    in PENCE — from Yahoo (labelled GBp) and from Saxo's chart (mislabelled
-    GBP) — while the quote is normalised to pounds, so a 9.48 GBP stock had
-    an SMA of 934.6 and an ATR of 31.4 (2026-11-10). When the levels sit
-    ~100× the price, they are pence: divide them by 100."""
-    if not d or not price:
-        return d
-    ref = d.get(probe or keys[0]) or next(
-        (d[k] for k in keys if d.get(k)), None)
-    if not ref or not 30 < float(ref) / float(price) < 300:
-        return d
-    return {**d, **{k: round(d[k] / 100, 6) for k in keys
-                    if isinstance(d.get(k), (int, float))}}
-
-
-def _range(c):
-    """{high, low, high_at, low_at} over a chart's bars (weekly bars: their
-    high/low include every day of the week) — the 2-year range on the card."""
-    ts = c.get("timestamps") or []
-    pts = [(h, l, t) for h, l, t in zip(c.get("high") or [], c.get("low") or [],
-                                         ts or [None] * len(c.get("high") or []))
-           if h is not None and l is not None]
-    if len(pts) < 10:
-        return None
-    hi = max(pts, key=lambda p: p[0])
-    lo = min(pts, key=lambda p: p[1])
-    return {"high": round(hi[0], 4), "low": round(lo[1], 4),
-            "high_at": hi[2], "low_at": lo[2], "bars": len(pts)}
-
-
-def venue_adapter(acct, env) -> str:
-    """Which adapter claire-api builds for this account (wiring.build_brokers
-    is the rule; this mirrors it for display — it places nothing)."""
-    b = acct["broker"]
-    if b == "saxo" and (env.get("SAXO_SIM_EXECUTION") or "").lower() == \
-            "enabled" and env.get("SAXO_SIM_ACCOUNT_KEY"):
-        return "saxo-sim"
-    if b == "saxo_live" and acct["environment"] == "live":
-        return "saxo-live"
-    return "paper-sim"
-
-
 def background_loops(env) -> list:
     """Recurring work that is not in the schedules table (fixed loops) —
     shown on the system map so nothing that runs on its own is invisible."""
@@ -209,63 +144,6 @@ def session_facts(exchange, cal, now):
                                                     cal).timestamp())}
     except KeyError:
         return {"is_open": None, "next_open": None}
-
-
-def sim_label(broker):
-    """A paper book Claire simulates itself — no broker ever sees it.
-    Named so it can never be mistaken for a broker's own paper account."""
-    return f"Claire sim · {broker} (simulated, not a broker)"
-
-
-def account_rank(a, env):
-    """Order of every account list, so the first (default) choice is the
-    realistic one: Saxo SIM, then Claire's own sims, then real money."""
-    sim_on = (env.get("SAXO_SIM_EXECUTION") or "").lower() == "enabled"
-    if a["environment"] == "live":
-        return 3
-    if a["broker"] == "saxo" and sim_on:
-        return 0
-    return 2
-
-
-def ordered_accounts(conn, env):
-    return sorted(conn.execute("SELECT * FROM broker_accounts").fetchall(),
-                  key=lambda a: (account_rank(a, env or {}), a["id"]))
-
-
-def _approval_account(a, repo, env, live):
-    """One broker choice on the approval card, labelled by the REAL account
-    it reaches. A live account is listed always but selectable only while
-    live trading is armed; the server enforces the same rule (§22)."""
-    sim_on = (env.get("SAXO_SIM_EXECUTION") or "").lower() == "enabled"
-    if a["environment"] == "live":
-        label = (f"Saxo LIVE {env.get('SAXO_LIVE_ACCOUNT_ID') or ''}"
-                 " — real money").replace("  ", " ")
-        disabled = None if live["armed"] else live["summary"]
-    elif a["broker"] == "saxo" and sim_on:
-        label = (f"Saxo SIM {env.get('SAXO_SIM_ACCOUNT_ID') or ''}"
-                 " — paper").replace("  ", " ")
-        disabled = None
-    else:
-        label, disabled = sim_label(a["broker"]), None
-    return {"id": a["id"], "broker": a["broker"], "ccy": a["base_currency"],
-            "environment": a["environment"],
-            # what is FREE to spend — the figure the approval gate checks
-            # (approvals.authorize). It used to be the whole balance, so with
-            # buy orders still open the card offered a size the gate refused
-            "cash": repo.available_cash(a["id"]) / 1e6,
-            "cash_reserved": repo.reserved_cash(a["id"]) / 1e6,
-            "fee_model": json.loads(a["fee_model"]),
-            "label": label, "disabled": disabled,
-            # Saxo fills whole shares only; the estimate must say so
-            "whole_shares": a["environment"] == "live" or (
-                a["broker"] == "saxo" and sim_on),
-            # stops (and the trailing floor) rest AT Saxo, except on the
-            # markets saxo-paper simulates itself (Saxo SIM: CFDs only)
-            "venue_stops": a["environment"] == "live" or (
-                a["broker"] == "saxo" and sim_on),
-            "local_exchanges": ["SGX"] if a["broker"] == "saxo" and sim_on
-            and a["environment"] != "live" else []}
 
 
 def default_allowed_hosts(bind):
@@ -341,312 +219,6 @@ def _validate_schedule_patch(current: dict, patch) -> dict:
             raise ValueError(f"spec {k}={v!r} is out of range")
         out[k] = v
     return out
-
-
-# ── LLM usage (the /usage page) ─────────────────────────────────────────────
-# Every model call is a row in agent_runs. On the Max subscription (claude_sdk)
-# cost_usd is 0 — nothing is billed — so the page counts TOKENS, and shows an
-# "API-equivalent value" (published per-token prices) purely as a measure of
-# what the subscription absorbs. tokens_in is stored as the TRUE prompt size
-# (fresh + cache write + cache read, see claude_sdk.Meter.finish and
-# registry.MeterCallback.on_llm_end); fresh input is derived, never re-added.
-BOB_USAGE_FILE = Path.home() / "bob" / "usage.json"   # read-only, never written
-
-USAGE_AGENT_LABELS = {
-    "screener": "Screener", "fundamental": "Fundamental analyst",
-    "technical": "Technical analyst", "news": "News analyst",
-    "bull": "Bull researcher", "bear": "Bear researcher",
-    "arbiter": "Arbiter", "claire_chat": "Claire chat",
-    "recorder": "Recorder (trade journal)"}
-
-USAGE_SOURCE_LABELS = {
-    "daily_asia": "Daily screen (Asia)", "daily_eu": "Daily screen (Europe)",
-    "daily_us": "Daily screen (US)", "daily": "Daily screen",
-    "volume_scan": "Volume scan", "exit_review": "Exit review",
-    "override": "Your override", "manual": "Your manual run",
-    "chat": "Claire chat", "agent_qa": "Agent Q&A", "screener": "Screener",
-    "journal": "Trade journal", "other": "Other research run"}
-
-
-def usage_source(agent_id, kind=None, trigger=None, exchange=None,
-                 linked=True):
-    """Which entry point paid for an agent_runs row. The rules, in order:
-
-    No work item (work_item_id NULL):
-      claire_chat           → chat       (Claire chat: Bob, Telegram, /ask)
-      screener              → screener   (the daily-screen picker itself)
-      recorder              → journal    (trade-journal prose after a fill)
-      any other agent       → agent_qa   (dashboard "ask this agent")
-    A work item (research run), by work_items.kind then trigger text:
-      kind override, or trigger "human override …"      → override
-      kind sell_review, or trigger "watcher: …"         → exit_review
-      trigger "event scan: …"                           → volume_scan
-      trigger "screener agent…" / "deterministic fallback…", or kind screen
-                         → daily_<region> (region from the ticker's exchange
-                           via autonomous.REGIONS; unknown → daily)
-      no trigger (dashboard Run button, Bob, autonomous CLI) → manual
-      any other trigger text                            → manual
-    `linked`: None = work_item_id is NULL, True = the work item exists,
-    False = work_item_id names a row that no longer exists → other."""
-    if linked is None:                       # no work item at all
-        if agent_id == "claire_chat":
-            return "chat"
-        if agent_id == "screener":
-            return "screener"
-        if agent_id == "recorder":
-            return "journal"
-        return "agent_qa"
-    if not linked:                           # dangling work_item_id
-        return "other"
-    t = (trigger or "").strip().lower()
-    if kind == "override" or t.startswith("human override"):
-        return "override"
-    if kind == "sell_review" or t.startswith("watcher:"):
-        return "exit_review"
-    if t.startswith("event scan"):
-        return "volume_scan"
-    if kind == "screen" or t.startswith("screener agent") or \
-            t.startswith("deterministic fallback"):
-        from .autonomous import REGIONS
-        for region, exchanges in REGIONS.items():
-            if exchange in exchanges:
-                return f"daily_{region}"
-        return "daily"
-    return "manual"
-
-
-def _usage_model_label(model):
-    """claude-sonnet-4-6 → Claude Sonnet 4.6; unknown ids pass through."""
-    m = str(model or "")
-    if not m.startswith("claude-"):
-        return m or "unknown"
-    words, nums = [], []
-    for part in m[len("claude-"):].split("-"):
-        if part.isdigit() and len(part) <= 2:
-            nums.append(part)
-        elif not part.isdigit():          # a date suffix is dropped
-            words.append(part.capitalize())
-    return " ".join(["Claude"] + words + ([".".join(nums)] if nums else []))
-
-
-def _usage_price(model):
-    """(in, out) $/1k from the published table, matching a dated id by
-    prefix; None for a model with no published price."""
-    if model in registry.MODEL_PRICES:
-        return registry.MODEL_PRICES[model]
-    for k in sorted(registry.MODEL_PRICES, key=len, reverse=True):
-        if str(model or "").startswith(k):
-            return registry.MODEL_PRICES[k]
-    return None
-
-
-def _usage_value(model, fresh, cwrite, cread, out):
-    """API-equivalent $ for one call — NOT billed on the subscription."""
-    p = _usage_price(model)
-    if not p:
-        return 0.0
-    cin, cout = p
-    return (fresh / 1000 * cin
-            + cwrite / 1000 * cin * registry.CACHE_WRITE_MULTIPLIER
-            + cread / 1000 * cin * registry.CACHE_READ_MULTIPLIER
-            + out / 1000 * cout)
-
-
-def _usage_bucket():
-    return {"calls": 0, "errors": 0, "input": 0, "fresh": 0, "cache_write": 0,
-            "cache_read": 0, "output": 0, "tokens": 0, "api_value": 0.0,
-            "billed": 0.0}
-
-
-def _usage_add(b, r):
-    b["calls"] += 1
-    b["errors"] += r["status"] == "error"
-    for k in ("input", "fresh", "cache_write", "cache_read", "output",
-              "tokens", "api_value", "billed"):
-        b[k] += r[k]
-
-
-def _usage_day_start(now, days_back):
-    """Local midnight `days_back` calendar days before now's day (built from
-    the date, not now - n*86400, so DST days stay whole)."""
-    from datetime import timedelta
-    d = datetime.fromtimestamp(now).date() - timedelta(days=days_back)
-    return int(datetime(d.year, d.month, d.day).timestamp())
-
-
-def bob_usage(path=None, *, now=None, days=7):
-    """Bob's own per-day token totals from ~/bob/usage.json (read-only).
-    Bob writes one bucket per local day; input_tokens there is FRESH input
-    only, so input here = fresh + cache read + cache write to match the
-    desk's convention. Bob's cost_usd is the CLI's API-equivalent estimate
-    — Bob also runs on the Max plan, so it is not billed either."""
-    from datetime import timedelta
-    path = Path(path or BOB_USAGE_FILE)
-    now = time.time() if now is None else now
-    try:
-        data = json.loads(path.read_text())
-        daily = data.get("daily") or {}
-        if not isinstance(daily, dict):
-            raise ValueError("daily is not an object")
-    except FileNotFoundError:
-        return {"available": False, "path": str(path),
-                "reason": "no usage file — Bob has not recorded any usage"}
-    except (OSError, ValueError) as e:
-        return {"available": False, "path": str(path),
-                "reason": f"unreadable usage file: {str(e)[:120]}"}
-
-    def norm(b):
-        b = b if isinstance(b, dict) else {}
-        g = lambda k: int(b.get(k) or 0)                       # noqa: E731
-        fresh, cr, cw = g("input_tokens"), g("cache_read_tokens"), \
-            g("cache_creation_tokens")
-        return {"calls": g("requests"), "fresh": fresh, "cache_read": cr,
-                "cache_write": cw, "input": fresh + cr + cw,
-                "output": g("output_tokens"),
-                "tokens": fresh + cr + cw + g("output_tokens"),
-                "api_value": float(b.get("cost_usd") or 0.0)}
-
-    today = datetime.fromtimestamp(now).date()
-
-    def window(n):
-        tot = norm({})
-        for i in range(n):
-            day = norm(daily.get((today - timedelta(days=i)).isoformat()))
-            for k in tot:
-                tot[k] += day[k]
-        return tot
-    series = [{"date": (today - timedelta(days=i)).isoformat(),
-               **norm(daily.get((today - timedelta(days=i)).isoformat()))}
-              for i in reversed(range(days))]
-    return {"available": True, "path": str(path),
-            "granularity": "per day (no per-call or per-agent detail)",
-            "last_day": max(daily) if daily else None,
-            "today": window(1), "d7": window(7), "d30": window(30),
-            "lifetime": norm(data.get("lifetime")), "series": series}
-
-
-def usage_report(conn, *, now=None, days=7, bob_path=None):
-    """Everything /api/usage returns. Read-only over desk.db."""
-    from datetime import timedelta
-    now = time.time() if now is None else now
-    days = max(1, min(int(days), 365))
-    span = max(days, 30)
-    since = _usage_day_start(now, span - 1)
-    win_start = _usage_day_start(now, days - 1)
-    starts = {"today": _usage_day_start(now, 0),
-              "d7": _usage_day_start(now, 6), "d30": _usage_day_start(now, 29)}
-    names = {r["id"]: r["display_name"] for r in conn.execute(
-        "SELECT id, display_name FROM agents")}
-    provs = {r["id"]: r["display_name"] for r in conn.execute(
-        "SELECT id, display_name FROM providers")}
-    exch = {}
-    for r in conn.execute("SELECT ticker, exchange FROM instruments"):
-        exch.setdefault(r["ticker"], r["exchange"])
-    rows = []
-    for r in conn.execute(
-            "SELECT r.id, r.agent_id, r.work_item_id, r.provider_id, r.model,"
-            " r.started_at, r.status, r.error,"
-            " COALESCE(r.tokens_in,0) ti, COALESCE(r.tokens_out,0) tout,"
-            " COALESCE(r.cache_write_tokens,0) cw,"
-            " COALESCE(r.cache_read_tokens,0) cr, COALESCE(r.cost_usd,0) cost,"
-            " w.id AS wid, w.kind, w.ticker, w.trigger, w.created_at AS wat"
-            " FROM agent_runs r LEFT JOIN work_items w ON w.id=r.work_item_id"
-            " WHERE r.started_at >= ? ORDER BY r.started_at", (since,)):
-        fresh = max(r["ti"] - r["cw"] - r["cr"], 0)
-        linked = None if r["work_item_id"] is None else bool(r["wid"])
-        src = usage_source(r["agent_id"], r["kind"], r["trigger"],
-                           exch.get(r["ticker"]), linked=linked)
-        rows.append({
-            "agent_id": r["agent_id"], "work_item_id": r["work_item_id"],
-            "provider_id": r["provider_id"], "model": r["model"],
-            "started_at": r["started_at"] or 0, "status": r["status"],
-            "error": r["error"], "source": src, "ticker": r["ticker"],
-            "kind": r["kind"], "trigger": r["trigger"], "wat": r["wat"],
-            "input": r["ti"], "fresh": fresh, "cache_write": r["cw"],
-            "cache_read": r["cr"], "output": r["tout"],
-            "tokens": r["ti"] + r["tout"], "billed": r["cost"],
-            "api_value": _usage_value(r["model"], fresh, r["cw"], r["cr"],
-                                      r["tout"])})
-
-    totals = {k: _usage_bucket() for k in starts}
-    for r in rows:
-        for k, s in starts.items():
-            if r["started_at"] >= s:
-                _usage_add(totals[k], r)
-    win = [r for r in rows if r["started_at"] >= win_start]
-
-    def group(keyfn, label):
-        out = {}
-        for r in win:
-            k = keyfn(r)
-            if k not in out:
-                out[k] = {"key": k, "label": label(r), **_usage_bucket()}
-            _usage_add(out[k], r)
-        return sorted(out.values(), key=lambda b: -b["tokens"])
-
-    by_agent = group(lambda r: r["agent_id"],
-                     lambda r: USAGE_AGENT_LABELS.get(r["agent_id"]) or
-                     names.get(r["agent_id"]) or r["agent_id"])
-    by_source = group(lambda r: r["source"],
-                      lambda r: USAGE_SOURCE_LABELS[r["source"]])
-    by_model = group(lambda r: f"{r['provider_id']}|{r['model']}",
-                     lambda r: _usage_model_label(r["model"]))
-    for b in by_model:
-        pid, model = b["key"].split("|", 1)
-        b.update(model=model, provider_id=pid,
-                 provider=provs.get(pid) or pid,
-                 priced=_usage_price(model) is not None)
-
-    today = datetime.fromtimestamp(now).date()
-    series = []
-    for i in reversed(range(days)):
-        d = today - timedelta(days=i)
-        series.append({"date": d.isoformat(), "by_source": {},
-                       **_usage_bucket()})
-    idx = {s["date"]: s for s in series}
-    for r in win:
-        s = idx.get(datetime.fromtimestamp(r["started_at"]).date().isoformat())
-        if s is None:
-            continue
-        _usage_add(s, r)
-        s["by_source"][r["source"]] = s["by_source"].get(r["source"], 0) \
-            + r["tokens"]
-
-    runs = {}
-    for r in win:
-        if not r["work_item_id"]:
-            continue
-        b = runs.setdefault(r["work_item_id"], {
-            "work_item_id": r["work_item_id"], "ticker": r["ticker"],
-            "kind": r["kind"], "trigger": r["trigger"],
-            "created_at": r["wat"] or r["started_at"], "source": r["source"],
-            "source_label": USAGE_SOURCE_LABELS[r["source"]],
-            **_usage_bucket()})
-        _usage_add(b, r)
-    top_runs = sorted(runs.values(), key=lambda b: -b["tokens"])[:10]
-
-    window = _usage_bucket()
-    for r in win:
-        _usage_add(window, r)
-    errs = [r for r in win if r["status"] == "error"]
-    return {
-        "now": int(now), "days": days, "window_start": win_start,
-        "totals": totals, "window": window,
-        "by_agent": by_agent, "by_source": by_source, "by_model": by_model,
-        "series": series, "top_runs": top_runs,
-        "errors": {"count": len(errs), "recent": [
-            {"agent_id": r["agent_id"],
-             "agent": USAGE_AGENT_LABELS.get(r["agent_id"]) or r["agent_id"],
-             "at": r["started_at"], "error": (r["error"] or "")[:200]}
-            for r in errs[-5:][::-1]]},
-        "source_labels": USAGE_SOURCE_LABELS,
-        "pricing_note": ("API-equivalent value = published per-token prices "
-                         "(registry.MODEL_PRICES; cache write x"
-                         f"{registry.CACHE_WRITE_MULTIPLIER}, cache read x"
-                         f"{registry.CACHE_READ_MULTIPLIER}). NOT billed: "
-                         "calls on the Claude Max subscription cost $0; "
-                         "'billed' is what metered API calls actually cost."),
-        "bob": bob_usage(bob_path, now=now, days=days)}
 
 
 def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
@@ -751,6 +323,24 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
             pass
 
         # ── plumbing ─────────────────────────────────────────────────────
+        def _failed(self, e):
+            """How every verb ends when its handler raises. Was pasted three
+            times (GET, POST, DELETE): a client that went away is not news;
+            an HTTPError is the answer the handler chose; anything else is a
+            500 with its traceback in the log."""
+            if isinstance(e, (BrokenPipeError, ConnectionResetError)):
+                return
+            if isinstance(e, HTTPError):
+                code, body = e.code, {"error": e.message}
+            else:
+                log.exception("HTTP 500 on %s %s", self.command,
+                              self.path.split("?", 1)[0])
+                code, body = 500, {"error": str(e)}
+            try:
+                self._send(code, body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
         def _send(self, code, body, ctype="application/json"):
             data = body if isinstance(body, bytes) else json.dumps(
                 body, default=str).encode()
@@ -983,20 +573,8 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                         "events": rows,
                         "last": rows[-1]["id"] if rows else since})
                 self._send(404, {"error": "not found"})
-            except (BrokenPipeError, ConnectionResetError):
-                return                           # client went away; not news
-            except HTTPError as e:
-                try:
-                    self._send(e.code, {"error": e.message})
-                except (BrokenPipeError, ConnectionResetError):
-                    pass
             except Exception as e:               # noqa: BLE001
-                log.exception("HTTP 500 on %s %s", self.command,
-                              self.path.split("?", 1)[0])
-                try:
-                    self._send(500, {"error": str(e)})
-                except (BrokenPipeError, ConnectionResetError):
-                    pass
+                self._failed(e)
 
         # ── POST ─────────────────────────────────────────────────────────
         def do_POST(self):                       # noqa: N802
@@ -1306,20 +884,8 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                             (t, ex, note, int(clock())))
                     return self._send(200, {"ok": True})
                 self._send(404, {"error": "not found"})
-            except (BrokenPipeError, ConnectionResetError):
-                return                           # client went away; not news
-            except HTTPError as e:
-                try:
-                    self._send(e.code, {"error": e.message})
-                except (BrokenPipeError, ConnectionResetError):
-                    pass
             except Exception as e:               # noqa: BLE001
-                log.exception("HTTP 500 on %s %s", self.command,
-                              self.path.split("?", 1)[0])
-                try:
-                    self._send(500, {"error": str(e)})
-                except (BrokenPipeError, ConnectionResetError):
-                    pass
+                self._failed(e)
 
         # ── DELETE (price triggers only) ─────────────────────────────────
         def do_DELETE(self):                     # noqa: N802
@@ -1341,20 +907,8 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                 except price_triggers.TriggerError as e:
                     raise HTTPError(e.code, e.message) from None
                 return self._send(200, out)
-            except (BrokenPipeError, ConnectionResetError):
-                return
-            except HTTPError as e:
-                try:
-                    self._send(e.code, {"error": e.message})
-                except (BrokenPipeError, ConnectionResetError):
-                    pass
             except Exception as e:               # noqa: BLE001
-                log.exception("HTTP 500 on %s %s", self.command,
-                              self.path.split("?", 1)[0])
-                try:
-                    self._send(500, {"error": str(e)})
-                except (BrokenPipeError, ConnectionResetError):
-                    pass
+                self._failed(e)
 
         def _ask_proxy(self, body, upstream="/ask"):
             """Stream claire-api NDJSON straight through to the browser."""

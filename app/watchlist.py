@@ -37,7 +37,7 @@ def _quotes(market, symbols):
 
 
 def _levels_for(market, sym):
-    from .dashboards import _levels
+    from .levels import _levels
     try:
         return _levels(market.chart(sym, "6mo", "1d")), None
     except Exception as e:                      # noqa: BLE001
@@ -48,7 +48,7 @@ def accounts(conn, repo, env):
     """The card's account list (same labels and live rule as Approvals),
     plus the trigger rule: automatic placement only on paper money."""
     from . import live_trading
-    from .dashboards import _approval_account, ordered_accounts
+    from .accounts import _approval_account, ordered_accounts
     live = live_trading.status(conn, env or {})
     out = []
     for a in ordered_accounts(conn, env):
@@ -112,7 +112,7 @@ def view(conn, repo, market, *, env=None, clock, cal=None):
                       "stale": bool(q.get("stale")), "src": q.get("src"),
                       "error": q.get("error")}
         r["levels"], r["levels_error"] = lv.get(sym, ({}, None))
-        from .dashboards import quote_units      # London bars are in pence
+        from .levels import quote_units      # London bars are in pence
         r["levels"] = quote_units(r["levels"], r["quote"]["price"])
         if m.get("day_low") is not None:        # today's range, live source
             r["levels"] = {**r["levels"], "day_low": float(m["day_low"]),
