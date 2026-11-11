@@ -49,6 +49,7 @@ from . import alerts, approvals
 import logging
 from .accounting import db
 from .exchanges import lot_size as board_lot
+from .accounting import holdings as _book
 
 log = logging.getLogger(__name__)
 
@@ -317,13 +318,8 @@ def accounts(conn, env, live_armed):
 
 
 def holdings(conn, ticker):
-    rows = conn.execute(
-        "SELECT l.account_id, SUM(CASE WHEN l.qty_opened < 0 THEN"
-        " -l.qty_remaining ELSE l.qty_remaining END)/1e6 AS q"
-        " FROM lots l JOIN instruments i ON i.id = l.instrument_id"
-        " WHERE i.ticker=? AND l.qty_remaining > 0"
-        " GROUP BY l.account_id", (ticker,)).fetchall()
-    return {r["account_id"]: float(r["q"]) for r in rows if r["q"]}
+    return {a: float(q) for a, q in
+            _book.by_account(conn, ticker=ticker).items()}
 
 
 def reports_for(conn, wi_row):

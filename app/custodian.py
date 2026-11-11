@@ -7,6 +7,7 @@ import time
 from datetime import datetime, timezone
 
 from . import approvals, health, sessions
+from .accounting import holdings
 from .accounting.money import to_micro
 import logging
 from .logsetup import swallowed
@@ -619,13 +620,8 @@ class Custodian:
                 "SELECT * FROM orders WHERE account_id=? AND leg IS NOT NULL"
                 " AND status IN ('placed','partially_filled')",
                 (acct["id"],)).fetchall()
-            positions = self.conn.execute(
-                "SELECT l.instrument_id, i.ticker, i.exchange, SUM(CASE WHEN"
-                " l.qty_opened<0 THEN -l.qty_remaining ELSE l.qty_remaining"
-                " END) AS q FROM lots l JOIN instruments i ON"
-                " i.id=l.instrument_id WHERE l.account_id=? AND"
-                " l.qty_remaining>0 GROUP BY l.instrument_id",
-                (acct["id"],)).fetchall()
+            positions = [{**p, "q": p["qty"]} for p in
+                         holdings.positions(self.conn, acct["id"])]
             if not book and not positions:
                 continue
             try:
@@ -697,12 +693,7 @@ class Custodian:
             adapter = self.brokers.get(acct["broker"])
             if adapter is None or not hasattr(adapter, "positions"):
                 continue
-            book = self.conn.execute(
-                "SELECT i.ticker, i.exchange, SUM(CASE WHEN l.qty_opened<0"
-                " THEN -l.qty_remaining ELSE l.qty_remaining END) AS q"
-                " FROM lots l JOIN instruments i ON i.id=l.instrument_id"
-                " WHERE l.account_id=? AND l.qty_remaining>0"
-                " GROUP BY l.instrument_id", (acct["id"],)).fetchall()
+            book = holdings.positions(self.conn, acct["id"])
             if not book:
                 continue
             try:
@@ -715,9 +706,9 @@ class Custodian:
             is_local = getattr(adapter, "is_local", lambda s: False)
             for p in book:
                 sym = yahoo_symbol(p["ticker"], p["exchange"])
-                if not p["q"] or is_local(sym):
+                if is_local(sym):
                     continue
-                have = Decimal(str(p["q"])) / 1_000_000
+                have = p["qty"]
                 held = Decimal(str(venue.get(sym, 0)))
                 short = have < 0
                 missing = held > have if short else held < have

@@ -32,6 +32,7 @@ from . import sessions
 from .accounting.money import from_micro, to_micro
 import logging
 from .logsetup import swallowed
+from .accounting import holdings
 
 log = logging.getLogger(__name__)
 
@@ -125,24 +126,14 @@ def whole_shares(account, env) -> bool:
 
 def held_on(conn, account_id, ticker, exchange) -> Decimal:
     """Signed shares the desk's book holds in this name on one account."""
-    (q,) = conn.execute(
-        "SELECT COALESCE(SUM(CASE WHEN l.qty_opened < 0 THEN -l.qty_remaining"
-        " ELSE l.qty_remaining END), 0) FROM lots l JOIN instruments i ON"
-        " i.id = l.instrument_id WHERE l.account_id=? AND i.ticker=? AND"
-        " i.exchange=? AND l.qty_remaining > 0",
-        (account_id, ticker, exchange)).fetchone()
-    return from_micro(q or 0)
+    return holdings.net(conn, account_id=account_id, ticker=ticker,
+                        exchange=exchange)
 
 
 def held_total(conn, ticker, exchange) -> Decimal:
     """Net shares across accounts in this instrument — what
     Desk.manual_trade uses to decide EXIT vs SHORT."""
-    (q,) = conn.execute(
-        "SELECT COALESCE(SUM(CASE WHEN l.qty_opened < 0 THEN -l.qty_remaining"
-        " ELSE l.qty_remaining END), 0) FROM lots l JOIN instruments i ON"
-        " i.id = l.instrument_id WHERE i.ticker=? AND i.exchange=? AND"
-        " l.qty_remaining > 0", (ticker, exchange)).fetchone()
-    return from_micro(q or 0)
+    return holdings.net(conn, ticker=ticker, exchange=exchange)
 
 
 def row_dict(r) -> dict:

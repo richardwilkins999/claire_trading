@@ -23,6 +23,7 @@ from ..logsetup import swallowed
 from ..tools import tradingview
 from ..tools.files import JailError
 from .common import session_facts
+from ..accounting import holdings
 
 log = logging.getLogger(__name__)
 
@@ -106,13 +107,8 @@ class RunViews:
                 "suggested": json.loads(r["suggested_json"] or "null"),
                 # what the desk holds per account: a sell card prefills
                 # its share count from it, and it says exit vs short
-                "held": {h["account_id"]: h["q"] for h in self.ctx.conn.execute(
-                    "SELECT l.account_id, SUM(CASE WHEN l.qty_opened<0"
-                    " THEN -l.qty_remaining ELSE l.qty_remaining END)"
-                    "/1e6 AS q FROM lots l JOIN instruments i ON"
-                    " i.id=l.instrument_id WHERE i.ticker=? AND"
-                    " l.qty_remaining>0 GROUP BY l.account_id",
-                    (r["ticker"],))}})
+                "held": {a: float(q) for a, q in holdings.by_account(
+                    self.ctx.conn, ticker=r["ticker"]).items()}})
         # a PASS never reaches the gate, so an empty Approvals page used
         # to be the only sign a run had concluded at all
         decided = []
@@ -676,14 +672,9 @@ class RunViews:
                     out.pop("levels_error", None)
             except Exception as e:          # noqa: BLE001
                 out.setdefault("levels_error", str(e)[:200])
-        held = self.ctx.conn.execute(
-            "SELECT l.account_id, SUM(CASE WHEN l.qty_opened < 0 THEN"
-            " -l.qty_remaining ELSE l.qty_remaining END)/1e6 AS q"
-            " FROM lots l JOIN instruments i ON i.id = l.instrument_id"
-            " WHERE i.ticker=? AND l.qty_remaining > 0"
-            " GROUP BY l.account_id", (r["ticker"],)).fetchall()
-        out["held"] = {h["account_id"]: h["q"] for h in held}
-        out["held_total"] = sum(h["q"] for h in held)
+        out["held"] = {a: float(q) for a, q in holdings.by_account(
+            self.ctx.conn, ticker=r["ticker"]).items()}
+        out["held_total"] = sum(out["held"].values())
         # London bars are in pence, the quote in pounds: same units
         px = (out.get("quote") or {}).get("price")
         # what the shares still held cost per share (the stock's own

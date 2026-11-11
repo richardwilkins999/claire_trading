@@ -18,6 +18,7 @@ from .. import sessions
 from ..graph.pipeline import (build_override_pipeline, build_pipeline,
                               build_sell_review_pipeline)
 from ..graph.state import Instrument, PipelineState, Thesis
+from ..accounting import holdings
 
 # The ticker is baked into the work-item id, and that id is rendered into
 # pages, handler attributes and narrative paths. Every run starter (the HTTP
@@ -372,12 +373,7 @@ class Desk:
         return wi
 
     def _held_instrument(self, instrument_id) -> float:
-        r = self.conn.execute(
-            "SELECT COALESCE(SUM(CASE WHEN qty_opened < 0 THEN -qty_remaining"
-            " ELSE qty_remaining END), 0) AS q FROM lots WHERE"
-            " instrument_id=? AND qty_remaining > 0",
-            (instrument_id,)).fetchone()
-        return (r["q"] or 0) / 1e6
+        return float(holdings.net(self.conn, instrument_id=instrument_id))
 
     def amend(self, wi, *, entry, stop=None, target=None, actor="human"):
         """Change the levels of an approved trade whose placement was
@@ -425,12 +421,7 @@ class Desk:
 
     def desk_held(self, ticker) -> float:
         """Shares the desk's book holds in `ticker`, net, across accounts."""
-        r = self.conn.execute(
-            "SELECT COALESCE(SUM(CASE WHEN l.qty_opened < 0 THEN"
-            " -l.qty_remaining ELSE l.qty_remaining END), 0) AS q"
-            " FROM lots l JOIN instruments i ON i.id = l.instrument_id"
-            " WHERE i.ticker=? AND l.qty_remaining > 0", (ticker,)).fetchone()
-        return (r["q"] or 0) / 1e6
+        return float(holdings.net(self.conn, ticker=ticker))
 
     def _instrument(self, ticker, currency):
         r = self.conn.execute(
