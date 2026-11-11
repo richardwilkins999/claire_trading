@@ -48,6 +48,26 @@ class SystemViews:
                 "transcript": format_narrative(transcript)[:12000]
                 if transcript else None}
 
+    def _chat_history(self, thread):
+        """The conversation so far on one chat thread, oldest first — so the
+        Claire page can show it again after a reload. The server always kept
+        it (chat_threads); the page just never asked."""
+        row = self.ctx.conn.execute(
+            "SELECT messages, updated_at FROM chat_threads WHERE thread=?",
+            (str(thread)[:64],)).fetchone()
+        if row is None:
+            return {"thread": thread, "messages": [], "updated_at": None}
+        try:
+            msgs = json.loads(row["messages"] or "[]")
+        except ValueError:
+            msgs = []
+        out = [{"role": m.get("role"), "content": m.get("content")}
+               for m in msgs[-60:] if isinstance(m, dict)
+               and m.get("role") in ("user", "assistant")
+               and isinstance(m.get("content"), str)]
+        return {"thread": thread, "messages": out,
+                "updated_at": row["updated_at"]}
+
     def _exchanges(self):
         """The world-markets strip: pure session-calendar data — no Yahoo,
         immune to rate limits, always instant."""

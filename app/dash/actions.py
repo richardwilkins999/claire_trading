@@ -309,8 +309,11 @@ class Actions:
         """Top-up / withdraw paper cash — paired browsers only (it moves
         the ledger), every movement is a cash_transactions row."""
         from ..accounting.money import to_micro
-        if self.ctx.dash_key and not self._paired():
-            return self._send(403, {"error": "dashboard not paired"})
+        # the same check as every other money route. It used to be skipped
+        # when no key was configured; do_POST already refuses that case, but
+        # a route that moves ledger cash should not depend on its caller
+        if not self._paired():
+            raise HTTPError(403, "dashboard not paired")
         account = body.get("account_id", "")
         action = body.get("action")
         try:

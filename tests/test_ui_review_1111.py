@@ -95,3 +95,25 @@ def test_nav_state_endpoint(web):                           # noqa: F811
                  "live_accounts": 0}
     # reading it must not write (it is polled by every open tab)
     assert conn.execute("SELECT COUNT(*) FROM live_trading").fetchone()[0] == 0
+
+
+def test_chat_history_is_served_to_paired_browsers_only(web):  # noqa: F811
+    import json
+
+    import httpx
+    base, conn = web
+    conn.execute(
+        "INSERT INTO chat_threads (thread, messages, updated_at) VALUES"
+        " ('dashboard', ?, 5)", (json.dumps(
+            [{"role": "user", "content": "what do I hold?"},
+             {"role": "assistant", "content": "Six positions."},
+             {"role": "tool", "content": "{raw}"},
+             "not a message"]),))
+    assert httpx.get(base + "/api/chat-history").status_code == 403
+    with paired(base) as c:
+        d = c.get("/api/chat-history?thread=dashboard").json()
+        assert d["messages"] == [
+            {"role": "user", "content": "what do I hold?"},
+            {"role": "assistant", "content": "Six positions."}]
+        assert d["updated_at"] == 5
+        assert c.get("/api/chat-history?thread=nope").json()["messages"] == []

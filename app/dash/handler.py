@@ -189,6 +189,13 @@ class Handler(SystemViews, RunViews, OrderViews, Actions, BaseHTTPRequestHandler
             }.get(u.path)
             if route:
                 return self._send(200, route())
+            if u.path == "/api/chat-history":
+                # what was said to Claire is more personal than the book:
+                # paired browsers only, like the real Saxo account page
+                if not self._paired():
+                    raise HTTPError(403, "dashboard not paired")
+                return self._send(200, self._chat_history(
+                    q.get("thread", "dashboard")))
             if u.path == "/api/usage":
                 return self._send(200, self._usage(q.get("days", "7")))
             if u.path == "/api/schedules":
