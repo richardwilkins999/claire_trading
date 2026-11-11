@@ -378,6 +378,32 @@ class SaxoBroker:
                     labelled[0]["order_id"] if labelled else ids[0])
         return PlacedOrder(str(stop), "accepted", legs=labelled)
 
+    def positions(self) -> dict:
+        """{desk symbol: net shares} of the stock positions open on THIS
+        account at Saxo — for the custodian's book-vs-venue check. Several
+        buys of one name are separate positions at Saxo; they are summed.
+        A position whose market the desk does not map is left out.
+        Read-only."""
+        data = self._req("GET", "/port/v1/positions/me?FieldGroups="
+                         "PositionBase,DisplayAndFormat&$top=500"
+                         ).get("Data", [])
+        out = {}
+        for p in data:
+            base = p.get("PositionBase") or {}
+            if base.get("AccountKey") and \
+                    base["AccountKey"] != self.account_key:
+                continue
+            if base.get("AssetType") not in ("Stock", "Etf", "Etn", "Etc"):
+                continue
+            if (base.get("Status") or "Open") != "Open":
+                continue
+            sym = desk_symbol((p.get("DisplayAndFormat") or {}).get("Symbol"))
+            if sym is None:
+                continue
+            out[sym] = out.get(sym, Decimal(0)) + Decimal(
+                str(base.get("Amount") or 0))
+        return out
+
     def working_orders(self) -> list:
         """Every order working at Saxo on this account, flattened: top-level
         orders and the related ones listed under them (an unfilled entry's
@@ -583,6 +609,12 @@ class SaxoSimWithLocalMarkets:
         if self._owner(order_id) is self.local:
             return self.local.related_order_ids(order_id)
         return self.venue.related_order_ids(order_id)
+
+    def positions(self) -> dict:
+        """What Saxo holds. Names this venue simulates itself (is_local:
+        Saxo SIM lists SGX shares only as CFDs) are not there and never
+        will be."""
+        return self.venue.positions()
 
     def working_orders(self) -> list:
         # the locally simulated legs are working orders of this venue too

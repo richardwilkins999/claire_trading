@@ -30,6 +30,7 @@ class Custodian:
         self.account_broker = account_broker    # account_id -> broker name
         self.fx_rate_for = fx_rate_for          # (instrument_id, account_id) -> micro rate
         self.clock, self.cal = clock, cal
+        self._drift_seen = {}       # (account, symbol) -> last mismatch seen
 
     # each duty runs on its own: one failing duty (or one bad order inside
     # it) used to abort run_once, so expiry, retries, orphan checks and drift
@@ -37,7 +38,8 @@ class Custodian:
     DUTIES = ("_place_pending_session", "_sim_triggers", "_poll_fills",
               "_expire_orders",
               "_reprotect", "_expire_approvals", "_retry_resumes", "_orphans",
-              "_ledger", "_drift", "_leg_drift", "_archive", "_broker_sync")
+              "_ledger", "_drift", "_position_drift", "_leg_drift",
+              "_archive", "_broker_sync")
 
     def run_once(self) -> dict:
         report = {"placed": [], "fills": 0, "completed": [], "order_expired": [],
@@ -125,8 +127,14 @@ class Custodian:
         live_ids = [r["id"] for r in self.conn.execute(
             "SELECT o.id FROM orders o JOIN broker_accounts a"
             " ON a.id=o.account_id WHERE a.environment='live'")]
+        live_accts = [r["id"] for r in self.conn.execute(
+            "SELECT id FROM broker_accounts WHERE environment='live'")]
         hits = [f for f in report["flags"]
-                if any(oid in f for oid in live_ids)]
+                if any(oid in f for oid in live_ids)
+                # shares the book counts on that the live account does not
+                # hold: the book is wrong about real money
+                or (f.startswith("POSITION DRIFT ") and any(
+                    f.startswith(f"POSITION DRIFT {a}:") for a in live_accts))]
         if hits and live_trading.disarm(self.conn, actor="custodian",
                                         reason=hits[0][:250],
                                         clock=self.clock):
@@ -668,6 +676,62 @@ class Custodian:
                 report["flags"].append(
                     f"LEDGER INCONSISTENT {acct['id']}: {e} — reconcile "
                     "before trading this account")
+
+    def _position_drift(self, report):
+        """Does the venue hold the shares the book says it does? For venues
+        that can list positions (Saxo). Flagged, never corrected (§12).
+
+        Only one direction is an error: the book holding MORE than the
+        venue (a sale the book never heard of — the lost fill of B2, a
+        position closed on Saxo's own platform). The venue holding more is
+        normal: the owner's own shares sit on the same account. Names the
+        venue simulates itself are skipped. A difference must be seen on
+        two runs in a row before it is flagged, so a fill that lands
+        between this run's poll and this check is not reported as drift."""
+        from decimal import Decimal
+
+        from .tools.market import yahoo_symbol
+        seen_now = {}
+        for acct in self.conn.execute(
+                "SELECT id, broker FROM broker_accounts").fetchall():
+            adapter = self.brokers.get(acct["broker"])
+            if adapter is None or not hasattr(adapter, "positions"):
+                continue
+            book = self.conn.execute(
+                "SELECT i.ticker, i.exchange, SUM(CASE WHEN l.qty_opened<0"
+                " THEN -l.qty_remaining ELSE l.qty_remaining END) AS q"
+                " FROM lots l JOIN instruments i ON i.id=l.instrument_id"
+                " WHERE l.account_id=? AND l.qty_remaining>0"
+                " GROUP BY l.instrument_id", (acct["id"],)).fetchall()
+            if not book:
+                continue
+            try:
+                venue = adapter.positions()
+            except Exception as e:              # noqa: BLE001 — per account
+                report["flags"].append(
+                    f"position check {acct['id']}: cannot list the venue's "
+                    f"positions ({str(e)[:120]})")
+                continue
+            is_local = getattr(adapter, "is_local", lambda s: False)
+            for p in book:
+                sym = yahoo_symbol(p["ticker"], p["exchange"])
+                if not p["q"] or is_local(sym):
+                    continue
+                have = Decimal(str(p["q"])) / 1_000_000
+                held = Decimal(str(venue.get(sym, 0)))
+                short = have < 0
+                missing = held > have if short else held < have
+                if not missing:
+                    continue
+                key = (acct["id"], sym)
+                seen_now[key] = (have, held)
+                if self._drift_seen.get(key) == (have, held):
+                    report["flags"].append(
+                        f"POSITION DRIFT {acct['id']}: the book holds "
+                        f"{have.normalize():f} {sym}, the venue holds "
+                        f"{held.normalize():f} — a sale the book does not "
+                        "know about; reconcile before trading this name")
+        self._drift_seen = seen_now
 
     def _drift(self, report):
         """Compare the latest broker snapshot with the book (§12): the
