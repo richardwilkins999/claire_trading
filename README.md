@@ -54,6 +54,11 @@ tests/run.sh          # about 800 offline tests, ~90 s: accounting (exact
                       # sessions, executor/custodian/watcher, dashboards HTTP
 ```
 
+To look at the pages without touching anything real:
+`./venv/bin/python tests/preview_server.py` serves made-up data on
+http://127.0.0.1:7799 (dashboard key `preview-key`) with Saxo, Telegram, the
+model provider and web search all blocked.
+
 `tests/test_smoke.py` talks to the LIVE services (it sends Claire one real
 chat turn), so it is opt-in: `CLAIRE_SMOKE=1 tests/run.sh tests/test_smoke.py`.
 
@@ -127,7 +132,8 @@ app/maintenance.py daily checks, log rotation, backups, retention + AI note (§2
 app/sessions.py   exchange calendars: is_open / next_open / close_of
 web/              dashboard pages (no build step)
 systemd/          claire.service — the wrapper unit (see "Deploy")
-docs/             SAXO.md; past reviews
+docs/             SAXO.md; past reviews; PORTING-TO-JAYDN.md (how to apply
+                  the 2026-11-11 changes to a sibling desk, with patches)
 voice/            Claire's Piper TTS voice + custom-trained openWakeWord
                   detection model (gitignored — real binaries). Shared
                   with Bob's voice daemon via ~/voice symlinks; see
