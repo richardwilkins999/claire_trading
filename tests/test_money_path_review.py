@@ -571,6 +571,9 @@ def test_m7_migration_dedupes_existing_rows(tmp_path):
     for thr in (8, 5, 6):
         conn.execute("INSERT INTO price_alerts (instrument_id, rule,"
                      " threshold) VALUES ('NASDAQ:NVDA','trail_pct',?)", (thr,))
+    # a database from before this migration existed: it has not had it, and
+    # says so (migrations now run once per database — PRAGMA user_version)
+    conn.execute("PRAGMA user_version = 0")
     db.init(conn)                               # re-runs the migrations
     rows = _trail_rows(conn)
     assert len(rows) == 1 and rows[0]["threshold"] == 6   # newest kept

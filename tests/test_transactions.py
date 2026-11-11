@@ -89,3 +89,35 @@ def test_the_multi_step_writers_use_it():
     app = Path(db.__file__).resolve().parents[1]
     assert (app / "approvals.py").read_text().count("with tx(conn):") == 2
     assert "with tx(conn):" in (app / "order_control.py").read_text()
+
+
+# ── schema version (REVIEW-2026-11-11 §3.4) ─────────────────────────────────
+def test_a_database_records_which_migrations_it_has_had():
+    c = db.connect(":memory:")
+    assert db.schema_version(c) == 0
+    db.init(c)
+    assert db.schema_version(c) == len(db.MIGRATIONS) > 0
+
+
+def test_applied_migrations_are_not_run_again(monkeypatch):
+    c = db.connect(":memory:")
+    db.init(c)
+    # a statement that would fail if it ran: proof the list is skipped
+    monkeypatch.setattr(db, "MIGRATIONS", list(db.MIGRATIONS))
+    db.MIGRATIONS[0] = "THIS IS NOT SQL"
+    db.init(c)                                      # no error
+    # a NEW migration, appended, runs exactly once
+    db.MIGRATIONS.append("ALTER TABLE watchlist ADD COLUMN test_col TEXT")
+    db.init(c)
+    assert "test_col" in [r[1] for r in c.execute(
+        "PRAGMA table_info(watchlist)")]
+    assert db.schema_version(c) == len(db.MIGRATIONS)
+    db.init(c)                                      # and not a second time
+
+
+def test_a_pre_version_database_is_brought_up_and_stamped():
+    c = db.connect(":memory:")
+    db.init(c)
+    c.execute("PRAGMA user_version = 0")            # as every DB was before
+    db.init(c)                                      # the old idempotent path
+    assert db.schema_version(c) == len(db.MIGRATIONS)

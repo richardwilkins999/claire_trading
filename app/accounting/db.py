@@ -213,16 +213,39 @@ def table_ddl(name: str) -> str:
     return m.group(0)
 
 
+def schema_version(conn) -> int:
+    """How many of MIGRATIONS this database has had applied."""
+    return conn.execute("PRAGMA user_version").fetchone()[0]
+
+
 def init(conn) -> None:
+    """Bring a database up to date: schema.sql (every statement is IF NOT
+    EXISTS), then the MIGRATIONS it has not had yet.
+
+    The database records how far it has got in PRAGMA user_version. Before
+    2026-11-11 there was no version: all the migrations ran on every start
+    and "already applied" was detected by the words "duplicate column" in
+    the error. A database from then reads as version 0, so it gets the whole
+    list once more (harmlessly, the same way) and is then stamped.
+
+    MIGRATIONS is APPEND-ONLY: a statement's position is its version
+    number. Never reorder, edit or delete one; add at the end."""
     conn.executescript(SCHEMA.read_text())
-    for stmt in MIGRATIONS:
+    have = schema_version(conn)
+    for n, stmt in enumerate(MIGRATIONS, start=1):
+        if n <= have:
+            continue
         try:
             conn.execute(stmt)
         except sqlite3.OperationalError as e:
+            # a column schema.sql already has on a fresh database, or one a
+            # pre-version database already gained
             if "duplicate column" not in str(e):
                 raise
     _widen_provider_kinds(conn)
     _widen_account_environments(conn)
+    if have < len(MIGRATIONS):
+        conn.execute(f"PRAGMA user_version = {len(MIGRATIONS)}")
 
 
 def _widen_provider_kinds(conn) -> None:
