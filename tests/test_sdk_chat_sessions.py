@@ -343,3 +343,25 @@ def test_stream_chat_resumes_and_reports_the_session():
         ("text", "hi"), ("session", "abc"), ("done", "hi")]
     assert seen == [("hello", "abc")]
     assert claude_sdk.base_options(model="m").resume is None
+
+
+def test_the_session_id_survives_a_restart(conn):
+    """It is kept in chat_threads.sdk_session, so a new process resumes the
+    conversation instead of spending a recap turn on every thread."""
+    from app.graph.claire_agent import _Sessions
+    conn.execute("INSERT INTO chat_threads (thread, messages, updated_at)"
+                 " VALUES ('t', '[]', 1)")
+    s = _Sessions(conn)
+    assert "t" not in s and s == {}
+    s["t"] = "sess-1"
+    again = _Sessions(conn)                     # "after a restart"
+    assert again["t"] == "sess-1" and again == {"t": "sess-1"}
+    assert again.pop("t") == "sess-1"           # a turn starts: forgotten...
+    assert _Sessions(conn) == {} and again.pop("t", None) is None
+    assert again.pop("never-seen", "x") == "x"
+    # saving a thread's messages does not wipe the id
+    s["t"] = "sess-2"
+    conn.execute("INSERT INTO chat_threads (thread, messages, updated_at)"
+                 " VALUES ('t', '[1]', 2) ON CONFLICT(thread) DO UPDATE SET"
+                 " messages=excluded.messages, updated_at=excluded.updated_at")
+    assert s["t"] == "sess-2"

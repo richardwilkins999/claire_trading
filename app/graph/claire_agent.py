@@ -183,15 +183,64 @@ def build_tools(conn, repo, desk, market):
             market_chart, market_search, explain_thesis, saxo_account]
 
 
+class _Sessions:
+    """thread -> SDK session id, stored in chat_threads.sdk_session. The
+    slice of the dict interface the chat code uses: `pop` when a turn starts
+    (so a turn that fails is never resumed into), `[thread] = id` once the
+    turn is answered and saved."""
+
+    def __init__(self, conn):
+        self.conn = conn
+
+    def get(self, thread, default=None):
+        row = self.conn.execute(
+            "SELECT sdk_session FROM chat_threads WHERE thread=?",
+            (thread,)).fetchone()
+        return (row["sdk_session"] if row else None) or default
+
+    def __getitem__(self, thread):
+        sid = self.get(thread)
+        if sid is None:
+            raise KeyError(thread)
+        return sid
+
+    def __contains__(self, thread):
+        return self.get(thread) is not None
+
+    def __setitem__(self, thread, session_id):
+        # the row exists: the turn's messages were saved just before
+        self.conn.execute(
+            "UPDATE chat_threads SET sdk_session=? WHERE thread=?",
+            (session_id, thread))
+
+    def as_dict(self) -> dict:
+        return {r["thread"]: r["sdk_session"] for r in self.conn.execute(
+            "SELECT thread, sdk_session FROM chat_threads"
+            " WHERE sdk_session IS NOT NULL")}
+
+    def __eq__(self, other):
+        return self.as_dict() == (other.as_dict()
+                                  if isinstance(other, _Sessions) else other)
+
+    __hash__ = None
+
+    def pop(self, thread, default=None):
+        sid = self.get(thread)
+        if sid is not None:
+            self.conn.execute(
+                "UPDATE chat_threads SET sdk_session=NULL WHERE thread=?",
+                (thread,))
+        return sid if sid is not None else default
+
+
 class Claire:
     def __init__(self, conn, repo, desk, market, *, env=None):
         self.conn, self.repo, self.desk, self.market = conn, repo, desk, market
         self.env = env
         self._histories = {}                    # cache over chat_threads table
-        # thread -> id of the Claude SDK session holding that conversation.
-        # In memory only (chat_threads has no column for it): after a restart
-        # the first turn of a thread starts a new session from a short recap.
-        self._sessions = {}
+        # thread -> id of the Claude SDK session holding that conversation,
+        # kept in chat_threads.sdk_session so a restart resumes it
+        self._sessions = _Sessions(conn)
         self._agent = None
         self._sdk_chat = None                   # (model, system, tools) on SDK
 

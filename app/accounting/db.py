@@ -176,6 +176,9 @@ MIGRATIONS = [
     # comes back after a day if it is still true, or at once if it changes.
     "CREATE TABLE IF NOT EXISTS dashboard_acks ("
     " key TEXT PRIMARY KEY, acked_at INTEGER NOT NULL)",
+    # B8: a chat thread is a resumed SDK session; remembering its id here
+    # means a restart does not cost each thread a recap turn
+    "ALTER TABLE chat_threads ADD COLUMN sdk_session TEXT",
 ]
 
 

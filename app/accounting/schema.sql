@@ -218,8 +218,9 @@ CREATE TABLE IF NOT EXISTS watchlist (      -- names YOU always want screened
 CREATE TABLE IF NOT EXISTS chat_threads (   -- Claire's conversation memory —
   thread TEXT PRIMARY KEY,                  -- survives service restarts (§17)
   messages TEXT NOT NULL,                   -- JSON list of {role, content}
-  updated_at INTEGER NOT NULL
-);
+  updated_at INTEGER NOT NULL,
+  sdk_session TEXT                          -- the Claude SDK session holding
+);                                          -- this thread, to resume (B8)
 
 -- ── views: derived, never stored (§7) ────────────────────────────────────
 CREATE VIEW IF NOT EXISTS v_positions AS
