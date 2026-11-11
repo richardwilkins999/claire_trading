@@ -383,6 +383,11 @@ def positions(which=None, **kw):
         base, view = p.get("NetPositionBase", {}), p.get("NetPositionView", {})
         disp = p.get("DisplayAndFormat", {})
         view = _price_from_pl(view, base.get("Amount"))
+        # Saxo had no price and none could be recovered: its "P/L" is then
+        # just minus what was paid (it valued the shares at 0), not a loss.
+        # Shown as a real number it read "-100%" per position and put a
+        # nonsense total on the page (2026-11-11). Unknown is unknown.
+        unpriced = not view.get("CurrentPrice")
         out.append({
             "symbol": disp.get("Symbol"), "name": disp.get("Description"),
             "asset_type": base.get("AssetType"),
@@ -391,11 +396,14 @@ def positions(which=None, **kw):
             "avg_open_price": view.get("AverageOpenPrice"),
             "current_price": view.get("CurrentPrice"),
             "market_value": view.get("MarketValue"),
-            "pnl": view.get("ProfitLossOnTrade"),
-            "pnl_base": view.get("ProfitLossOnTradeInBaseCurrency"),
+            "pnl": None if unpriced else view.get("ProfitLossOnTrade"),
+            "pnl_base": None if unpriced else view.get(
+                "ProfitLossOnTradeInBaseCurrency"),
+            "price_missing": unpriced,
             "pnl_pct": _pct(view.get("CurrentPrice"),
                             view.get("AverageOpenPrice"), base.get("Amount")),
-            "exposure_base": view.get("ExposureInBaseCurrency"),
+            "exposure_base": None if unpriced else view.get(
+                "ExposureInBaseCurrency"),
             # set when Saxo sent no price and it was worked out from P/L
             "price_src": view.get("_price_src"),
             "_net_id": p.get("NetPositionId"),

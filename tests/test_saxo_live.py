@@ -1,4 +1,5 @@
 """Read-only Saxo LIVE view — offline, mocked HTTP."""
+from decimal import Decimal
 import json
 
 import httpx
@@ -52,7 +53,28 @@ def test_positions_are_flattened(tok):
                      "currency": "SGD", "amount": 100, "avg_open_price": 10,
                      "current_price": 12, "market_value": None, "pnl": 200,
                      "pnl_base": None, "pnl_pct": 20.0,
+                     "price_missing": False,
                      "exposure_base": 1200, "price_src": None}]
+
+
+def test_a_position_saxo_cannot_price_has_no_pl_rather_than_minus_cost(tok):
+    """No market data for the exchange: Saxo sends price 0 and a "P/L" equal
+    to minus the whole cost. That is not a loss, and summed into the page's
+    total it was a nonsense figure (2026-11-11)."""
+    def handler(req):
+        return httpx.Response(200, json={"Data": [{
+            "NetPositionBase": {"Amount": 2000, "AssetType": "Stock"},
+            "NetPositionView": {"AverageOpenPrice": 0.8525, "CurrentPrice": 0,
+                                "CurrentPriceType": "None",
+                                "ProfitLossOnTrade": -1705.0,
+                                "ProfitLossOnTradeInBaseCurrency": -1509.45,
+                                "ExposureInBaseCurrency": 0.0},
+            "DisplayAndFormat": {"Symbol": "PRO:xasx", "Currency": "AUD"}}]})
+    (p,) = saxo_live.positions(client=client(handler), clock=lambda: T0,
+                               path=tok, env=ENV)
+    assert p["price_missing"] is True
+    assert p["pnl"] is None and p["pnl_base"] is None and p["pnl_pct"] is None
+    assert p["exposure_base"] is None and p["amount"] == 2000
 
 
 def test_refresh_rotates_and_persists(tok):
@@ -368,3 +390,49 @@ def test_a_zero_saxo_price_is_replaced_by_the_desks_quote(monkeypatch):
     assert p["pnl"] == round((0.065 - 0.8525) * 2000, 2)      # -1575, not -1705
     assert p["pnl_base"] == round(p["pnl"] * 0.885, 2)
     assert p["weight_pct"] == 100.0
+    assert p["price_missing"] is False
+
+
+@pytest.mark.parametrize("quote,why", [
+    ({"price": Decimal("131.04"), "currency": "USD", "src": "x"}, "currency"),
+    ({"price": Decimal("131.04"), "src": "x"}, "150 times the cost"),
+    ({"price": Decimal("0"), "currency": "AUD", "src": "x"}, "zero"),
+])
+def test_a_quote_for_a_namesake_is_not_used(monkeypatch, quote, why):
+    """2,000 PRO.AX bought at 0.85, "priced" from a US ticker of the same
+    name at 131: the page showed +260,383 on an account worth 2,035."""
+    import threading
+
+    from app import dashboards
+    from app.accounting import db
+    from app.accounting.repo import Repo
+    from app.tools import saxo_live
+    from tests.test_dashboards import DKEY
+
+    class M:
+        def spark(self, syms):
+            return {s: dict(quote) for s in syms}
+
+        def fx(self, a, b):
+            return Decimal("0.885") if a != b else Decimal(1)
+    monkeypatch.setattr(saxo_live, "summary", lambda which, **kw: {
+        "balance": {"Currency": "SGD"}, "orders": [],
+        "positions": [{"symbol": "PRO:xasx", "currency": "AUD",
+                       "amount": 2000.0, "avg_open_price": 0.8525,
+                       "current_price": 0.0, "pnl": None, "pnl_base": None,
+                       "price_missing": True, "exposure_base": None}]})
+    conn = db.connect(":memory:")
+    db.init(conn)
+    srv = dashboards.create_server(conn, Repo(conn), M(), secret="s",
+                                   dash_key=DKEY, port=0, sse_interval=None,
+                                   api_base="http://127.0.0.1:9")
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        base = f"http://127.0.0.1:{srv.server_address[1]}"
+        (p,) = httpx.get(base + "/api/saxo-account?env=live",
+                         headers={"X-Dash-Key": DKEY}).json()["positions"]
+    finally:
+        srv.shutdown()
+    assert p["price_missing"] is True, why
+    assert p["pnl"] is None and p["pnl_base"] is None
+    assert not p.get("market_value")

@@ -480,6 +480,25 @@ class OrderViews:
                 p["price_missing"] = True
                 continue
             avg, amt = p.get("avg_open_price") or 0, p["amount"]
+            # Is this a quote for the SAME share? A source that does not
+            # know the symbol can answer for a namesake on another exchange
+            # (a US "PRO" for ASX's PRO.AX): 20,000 shares of a 6-cent stock
+            # priced at over a hundred dollars showed a quarter-million
+            # "profit" on a 2,000 account. A different currency is not
+            # believed; nor is a price more than fifty times away from what
+            # was paid (a real holding here is down 13× — that must still
+            # show — but 150× is another company).
+            q_ccy, p_ccy = q.get("currency"), p.get("currency")
+            wrong_ccy = bool(q_ccy and p_ccy and str(q_ccy).upper()
+                             != str(p_ccy).upper())
+            far = bool(avg) and cur > 0 and not (0.02 <= cur / avg <= 50)
+            if cur <= 0 or wrong_ccy or far:
+                p["price_missing"] = True
+                p["price_note"] = (
+                    f"the desk's quote ({cur:g} {q_ccy or ''}) does not look "
+                    "like this share — not used").replace("  ", " ")
+                continue
+            p["price_missing"] = False
             p["current_price"] = cur
             p["market_value"] = round(amt * cur, 2)
             p["price_src"] = q.get("src") or "desk quote"
