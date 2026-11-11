@@ -974,8 +974,8 @@ def test_manual_trade_route_needs_the_key_and_forwards_only_known_fields(
 
 def test_manual_trade_route_is_key_gated_in_source():
     from pathlib import Path
-    src = (Path(__file__).resolve().parents[1] / "app" / "dashboards.py"
-           ).read_text()
+    src = (Path(__file__).resolve().parents[1] / "app" / "dash"
+           / "handler.py").read_text()
     i = src.index('"/api/manual-trade"')
     assert "_paired()" in src[i:i + 400]
     assert not "/api/manual-trade".startswith("/api/override")

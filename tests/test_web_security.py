@@ -133,9 +133,11 @@ def test_no_configured_key_means_nobody_is_paired(server, no_upstream):
 
 
 def test_pairing_uses_constant_time_compare():
-    src = Path(dashboards.__file__).read_text()
+    from app.dash import handler
+    src = Path(handler.__file__).read_text()
     body = src[src.index("def _paired"):src.index("# ── GET")]
     assert "hmac.compare_digest" in body and "== dash_key" not in body
+    assert "== self.ctx.dash_key" not in body
 
 
 def test_provider_key_ref_allowlist(web):
@@ -390,7 +392,8 @@ def test_sse_stream_has_a_max_lifetime(server):
 
 
 def test_sse_thread_exits_on_client_disconnect(server, monkeypatch):
-    monkeypatch.setattr(dashboards, "SSE_MAX_CLIENTS", 1)
+    from app.dash import common          # where the handler reads it
+    monkeypatch.setattr(common, "SSE_MAX_CLIENTS", 1)
     base, _ = server()
     host, port = base.split("//")[1].split(":")
     req = (f"GET /api/events HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n"

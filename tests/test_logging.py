@@ -254,7 +254,7 @@ def test_a_dashboard_500_is_logged_with_path_and_traceback(caplog):
     finally:
         srv.shutdown()
     assert 500 in codes.values(), codes
-    recs = [r for r in caplog.records if r.name == "app.dashboards"
+    recs = [r for r in caplog.records if r.name == "app.dash.handler"
             and r.getMessage().startswith("HTTP 500 on GET /api/")]
     assert recs and recs[0].exc_info
     assert "?" not in recs[0].getMessage()      # no query string in the log

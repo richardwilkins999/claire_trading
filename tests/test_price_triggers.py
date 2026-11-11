@@ -575,8 +575,8 @@ def test_page_escapes_what_it_renders():
 
 
 def test_routes_are_key_gated_in_source_and_not_override_prefixed():
-    src = (ROOT / "app" / "dashboards.py").read_text()
-    i = src.index('if u.path == "/api/price-triggers":\n                    #')
+    src = (ROOT / "app" / "dash" / "handler.py").read_text()
+    i = src.index('if u.path == "/api/price-triggers":\n                #')
     assert "_paired()" in src[i:i + 400]
     j = src.index("def do_DELETE")
     assert "_paired()" in src[j:j + 600]

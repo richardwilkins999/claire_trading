@@ -145,8 +145,8 @@ def test_the_money_path_is_gated_by_the_key_not_by_the_network():
     """Read routes are open to whoever can reach the port, so every action
     that moves money must check pairing itself rather than relying on the
     listener being loopback."""
-    src = (Path(__file__).resolve().parent.parent / "app"
-           / "dashboards.py").read_text()
+    src = (Path(__file__).resolve().parent.parent / "app" / "dash"
+           / "handler.py").read_text()       # where do_POST lives now
     for route in ("/api/thesis-action", "/api/override"):
         i = src.index(route)
         assert "_paired()" in src[i:i + 400], f"{route} is not key-gated"

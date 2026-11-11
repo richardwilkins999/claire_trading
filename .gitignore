@@ -10,3 +10,6 @@ __pycache__/
 voice/
 # real-account Saxo sign-in tokens (bin/saxo login) — never committed
 etc/saxo_*_token*
+
+# Claude Code agent worktrees and local launch configs
+.claude/

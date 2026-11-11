@@ -641,8 +641,8 @@ def test_decision_endpoint_requires_the_key_and_the_approver(conn, web):
 
 def test_route_name_stays_clear_of_the_override_prefix():
     from pathlib import Path
-    src = (Path(__file__).resolve().parent.parent / "app" /
-           "dashboards.py").read_text()
+    src = (Path(__file__).resolve().parent.parent / "app" / "dash" /
+           "handler.py").read_text()
     i = src.index("/api/telegram-decision")
     assert "_paired()" in src[i:i + 400]
     assert not "/api/telegram-decision".startswith("/api/override")
