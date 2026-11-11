@@ -362,7 +362,7 @@ function overrideForm(r) {
         <option value="manual">Manual — set your own price</option></select></label>
       <label>Account <select id="ovacct-${id}" onchange="updOverride(${J})">${(DATA.accounts || []).map(x =>
         `<option value="${esc(x.broker)}" ${x.disabled ? 'disabled' : ''}>${x.environment === 'live' ? '⚠ ' : ''}${
-        esc(x.label || x.broker)}${x.disabled ? ' — ' + esc(x.disabled) : ` (${fmt(x.cash, 0)} ${esc(x.ccy)} cash)`}</option>`).join('')}</select></label>
+        esc(x.label || x.broker)}${x.disabled ? ' — ' + esc(x.disabled) : ` (${fmt(x.cash, 0)} ${esc(x.ccy)} free${x.cash_reserved ? ', ' + fmt(x.cash_reserved, 0) + ' held for open buys' : ''})`}</option>`).join('')}</select></label>
     </div>
     <div class="osum" id="ovsum-${id}" style="margin-bottom:.5rem"></div>
     <div class="row">
@@ -738,7 +738,7 @@ function accountSelect(a, pick, sell) {
       x.environment === 'live' ? '⚠ ' : ''}${esc(x.label || x.broker)}${
       x.disabled ? ' — ' + esc(x.disabled)
                  : sell ? ` (desk holds ${fmt((a.held || {})[x.id] || 0, 4)})`
-                 : ` (${fmt(x.cash, 0)} ${esc(x.ccy)} cash)`}
+                 : ` (${fmt(x.cash, 0)} ${esc(x.ccy)} free${x.cash_reserved ? ', ' + fmt(x.cash_reserved, 0) + ' held for open buys' : ''})`}
       </option>`).join('')}
   </select>`;
 }
@@ -979,7 +979,7 @@ async function updEst(id) {
   if (tgt && px && tgt <= px) bad(`The take-profit must be above ${atWhat} (${money(px, ccy)}).`);
   if (acct.broker.startsWith('saxo') && px) for (const [n, v] of [['stop-loss', stop], ['take-profit', tgt]])
     if (v && Math.abs(v - px) / px * 100 > 25) bad(`Saxo refuses a ${n} more than 25% from the price.`);
-  if (amount && amount > acct.cash) bad(`More than the ${money(acct.cash, esc(acct.ccy))} cash on this account.`);
+  if (amount && amount > acct.cash) bad(`More than the ${money(acct.cash, esc(acct.ccy))} free on this account${acct.cash_reserved ? ' (' + money(acct.cash_reserved, esc(acct.ccy)) + ' is held for open buy orders)' : ''}.`);
   if (mode === 'manual' && live && lim && Math.abs(lim / live - 1) > 0.25)
     bad(`The purchase price is more than 25% from the current price (${money(live, ccy)}) — the desk will refuse it.`);
   est.innerHTML = `<div class="osum-title">Order summary</div>` +
@@ -1057,7 +1057,7 @@ async function act(id, action, token, sell) {
       body.confirm_live = 'LIVE';
     } else if (!confirm(msg + '\n\nApprove?')) return;
   }
-  try { await api('/api/thesis-action', body); toast(action + 'd ✓'); }
+  try { await api('/api/thesis-action', body); toast(({approve: 'approved', reject: 'rejected'}[action] || action) + ' ✓'); }
   catch (e) { toast(e.message, false); }
   refresh();
 }

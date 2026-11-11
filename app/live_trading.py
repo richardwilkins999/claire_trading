@@ -126,9 +126,28 @@ def set_limits(conn, new: dict, *, actor="terminal", clock=time.time):
     merged = {**before, **new}
     conn.execute("UPDATE live_trading SET limits=? WHERE id=1",
                  (json.dumps(merged),))
+    sync_account_caps(conn, merged)
     if merged != before:
         _event(conn, "limits", actor, clock, before=before, after=merged)
     return merged
+
+
+def sync_account_caps(conn, lim=None):
+    """Copy the live caps onto every live account's own risk_limits.
+
+    The ledger's check_risk enforces the account's copy; `bin/claire live
+    setup` froze the defaults into it, and raising a cap here or on the
+    Orders page changed only this module's row — so the old, lower cap kept
+    refusing orders with no way to see why (REVIEW-2026-11-11 B15). These
+    two keys are the caps; anything else in risk_limits is left alone."""
+    lim = lim or limits(conn)
+    for a in live_accounts(conn):
+        risk = json.loads(a.get("risk_limits") or "{}")
+        want = {**risk, "max_order_base": lim["max_order_base"],
+                "max_trades_per_day": lim["max_orders_per_day"]}
+        if want != risk:
+            conn.execute("UPDATE broker_accounts SET risk_limits=? WHERE id=?",
+                         (json.dumps(want), a["id"]))
 
 
 def metrics(conn, *, clock=time.time) -> dict:

@@ -74,6 +74,30 @@ def fills_for(conn, account_id, instrument_id) -> list[dict]:
                 (account_id, instrument_id))]
 
 
+def open_lots_avg_native(conn, position, short=False):
+    """Average price paid, in the instrument's own currency, for the shares
+    STILL HELD — from the open lots, not from every opening fill. None when
+    the position has no open lots on record (e.g. a chart for a name the
+    desk does not hold)."""
+    if not position or not position.get("account_id"):
+        return None
+    value, qty = Decimal(0), Decimal(0)
+    for r in conn.execute(
+            "SELECT l.qty_remaining AS q, l.cost_per_share_base AS c,"
+            " e.fx_rate AS fx FROM lots l JOIN executions e"
+            " ON e.id = l.open_execution_id WHERE l.account_id=? AND"
+            " l.instrument_id=? AND l.qty_remaining > 0 AND"
+            " (l.qty_opened < 0) = ?",
+            (position["account_id"], position["instrument_id"],
+             1 if short else 0)):
+        if not r["fx"]:
+            return None                     # cannot convert back: keep fills
+        # cost_per_share_base is native price × the fill's FX rate
+        value += Decimal(r["q"]) * Decimal(r["c"]) / Decimal(r["fx"])
+        qty += Decimal(r["q"])
+    return float(value / qty) if qty else None
+
+
 def levels_for(conn, position, fills, fx=None, now=None) -> dict:
     """The lines worth drawing: your average cost, the thesis stop/target
     that justified the trade, and the watcher's alert threshold — all in the
@@ -91,6 +115,13 @@ def levels_for(conn, position, fills, fx=None, now=None) -> dict:
         if qty:
             out["avg_cost_native"] = sum(
                 f["price_native"] * f["qty"] for f in opens) / qty
+    # ...but that is the average of everything ever bought. Once part of the
+    # position has been sold, the shares still held are the LATER lots (FIFO)
+    # and their average is what "you paid" means; the line used to stay at
+    # the all-time average.
+    held = open_lots_avg_native(conn, position, short)
+    if held is not None:
+        out["avg_cost_native"] = held
     wi_id = next((f["work_item_id"] for f in reversed(opens)
                   if f["work_item_id"]), None)
     if wi_id:

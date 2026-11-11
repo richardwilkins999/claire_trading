@@ -170,7 +170,7 @@ class Maintainer:
                    self._check_disk, self._check_backups,
                    self._check_signins,
                    self._check_arbiter_notes, self._check_sim_stops,
-                   self._check_growth):
+                   self._check_growth, self._check_calendars):
             try:
                 out.extend(fn(now))
             except Exception as e:              # noqa: BLE001
@@ -190,6 +190,18 @@ class Maintainer:
         # this code runs inside claire-api, so reaching here proves it is up
         out.append(_check("claire_api", "claire-api (:7788)", "ok", "running"))
         return out
+
+    def _check_calendars(self, now):
+        """The exchange holiday tables are typed in by hand, a year at a
+        time. Say so before they run out, not after."""
+        from datetime import datetime, timezone
+
+        from . import sessions
+        status, value, detail = sessions.calendar_check(
+            datetime.fromtimestamp(now, timezone.utc).date(),
+            sessions.load(self.conn) or None)
+        return [_check("calendars", "Exchange holiday calendars", status,
+                       value, detail)]
 
     def _health(self, service):
         return self.conn.execute(

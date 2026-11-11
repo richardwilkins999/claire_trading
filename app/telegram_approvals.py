@@ -47,6 +47,7 @@ from zoneinfo import ZoneInfo
 
 from . import alerts, approvals
 import logging
+from .accounting import db
 
 log = logging.getLogger(__name__)
 
@@ -66,21 +67,7 @@ TG_LIMIT = 4000                      # Telegram's hard limit is 4096
 
 _LOCK = threading.RLock()            # one decision / edit at a time
 
-TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS telegram_notices (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  work_item_id TEXT NOT NULL,
-  state_key TEXT NOT NULL,           -- 'approval' | 'failed:<failed_at ts>'
-  chat_id TEXT, message_id INTEGER, photo_message_id INTEGER,
-  status TEXT NOT NULL,              -- sending | sent | error | closed
-  attempts INTEGER NOT NULL DEFAULT 0,
-  base_html TEXT,                    -- the message as first sent
-  options_json TEXT,                 -- accounts, sizes, selection, pending
-  thesis_hash TEXT,
-  outcome TEXT,
-  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-  UNIQUE(work_item_id, state_key)
-)"""
+TABLE_SQL = db.table_ddl("telegram_notices")      # schema.sql is the one copy
 
 
 def ensure_table(conn):

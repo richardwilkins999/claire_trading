@@ -6,6 +6,8 @@ import functools
 
 import httpx
 
+from .market import hk_code
+
 # exchange → (tradingview market, tradingview exchange code)
 MARKETS = {"NASDAQ": ("america", "NASDAQ"), "NYSE": ("america", "NYSE"),
            "LSE": ("uk", "LSE"), "SGX": ("singapore", "SGX"),
@@ -199,6 +201,8 @@ def listing(exchange: str, sort: str = "mcap", start: int = 0,
         ticker = str(d.get("name") or "")
         if not ticker or "/" in ticker:
             continue
+        if code == "HKEX":              # the desk's form: 0861, not 861
+            ticker = hk_code(ticker)
         suffix = next((s for s, (_m, e, _c) in SUFFIX_MARKET.items()
                        if e == code), "")
         rows.append({"ticker": ticker, "symbol": ticker + suffix,
@@ -300,6 +304,8 @@ def factor_scan(exchange: str, preset: str, count: int = 12, *,
         ticker = str(d.get("name") or "")
         if not ticker or "/" in ticker:         # preferred/rights lines
             continue
+        if exchange == "HKEX":
+            ticker = hk_code(ticker)
         hi = d.get("price_52_week_high")
         close = d.get("close")
         off_high = ((close - hi) / hi * 100) if hi and close else None
@@ -353,6 +359,8 @@ def recommendations(exchange: str, count: int = 30, *, _client=None) -> dict:
     for row in rows:
         d = dict(zip(COLUMNS, row.get("d", [])))
         sym = (row.get("s") or ":").split(":", 1)[1]
+        if exchange == "HKEX":
+            sym = hk_code(sym)
         out.append({"ticker": sym, "name": d.get("description"),
                     "price": d.get("close"), "change_pct": d.get("change"),
                     "volume": d.get("volume"), "mcap": d.get("market_cap_basic"),

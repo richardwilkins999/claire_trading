@@ -385,3 +385,55 @@ CREATE TABLE IF NOT EXISTS maintenance_runs (
   summary TEXT,                        -- the maintainer agent's note
   summary_error TEXT
 );
+
+-- ── tables that used to be created ad hoc by the module that owns them ──
+-- (REVIEW-2026-11-11 §3.4). They live here now so one init builds the
+-- whole database and bin/claire-reset can see every table; each module
+-- still runs its own statement, read from this file by db.table_ddl().
+
+CREATE TABLE IF NOT EXISTS sim_orders (
+  id TEXT PRIMARY KEY,
+  venue TEXT NOT NULL,               -- which built-in sim (alpaca, moomoo …)
+  client_id TEXT,
+  book_json TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS telegram_notices (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_item_id TEXT NOT NULL,
+  state_key TEXT NOT NULL,           -- 'approval' | 'failed:<failed_at ts>'
+  chat_id TEXT, message_id INTEGER, photo_message_id INTEGER,
+  status TEXT NOT NULL,              -- sending | sent | error | closed
+  attempts INTEGER NOT NULL DEFAULT 0,
+  base_html TEXT,                    -- the message as first sent
+  options_json TEXT,                 -- accounts, sizes, selection, pending
+  thesis_hash TEXT,
+  outcome TEXT,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  UNIQUE(work_item_id, state_key)
+);
+
+CREATE TABLE IF NOT EXISTS arbiter_notes (
+  work_item_id TEXT NOT NULL,
+  notes_hash TEXT NOT NULL,          -- sha256 of the exact notes explained
+  summary TEXT NOT NULL,
+  explained_json TEXT NOT NULL,      -- [plain explanation per note, in order]
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (work_item_id, notes_hash)
+);
+
+
+-- ── indexes for what the pages and loops actually query (§4.3) ──────────
+-- every one of these was a full scan; agent_runs is read every 2 s by the
+-- live-update poller
+CREATE INDEX IF NOT EXISTS idx_agent_runs_agent ON agent_runs(agent_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_wi ON agent_runs(work_item_id);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_started ON agent_runs(started_at);
+CREATE INDEX IF NOT EXISTS idx_health_service ON service_health(service, checked_at);
+CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+CREATE INDEX IF NOT EXISTS idx_orders_wi ON orders(work_item_id);
+CREATE INDEX IF NOT EXISTS idx_orders_position ON orders(account_id, instrument_id);
+CREATE INDEX IF NOT EXISTS idx_work_items_state ON work_items(state);
+CREATE INDEX IF NOT EXISTS idx_exec_position ON executions(account_id, instrument_id, executed_at);
+CREATE INDEX IF NOT EXISTS idx_closures_lot ON lot_closures(lot_id);

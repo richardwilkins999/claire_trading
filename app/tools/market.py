@@ -91,10 +91,29 @@ def combined_search(saxo_search):
     return search
 
 
+def hk_code(ticker) -> str:
+    """Hong Kong stock codes are numbers, and everyone pads them differently:
+    TradingView's scans say 861, Yahoo 0861, Saxo 00861. The desk's ONE form
+    is Yahoo's four digits. It had none: scans stored HKEX:861, nothing
+    padded it, and agents improvised 0861.HK / 00861.HK until a chart
+    happened to load (REVIEW-2026-11-11 B10)."""
+    t = str(ticker).strip()
+    return (t.lstrip("0") or "0").zfill(4) if t.isdigit() else t
+
+
+def canonical_symbol(symbol: str) -> str:
+    """A market-data symbol in the desk's form: 861.HK / 00861.HK → 0861.HK.
+    Everything else is returned untouched."""
+    s = str(symbol)
+    return hk_code(s[:-3]) + ".HK" if s.upper().endswith(".HK") else s
+
+
 def yahoo_symbol(ticker: str, exchange: str) -> str:
     suf = SUFFIX.get(exchange, "")
     if suf and ticker.upper().endswith(suf.upper()):
-        return ticker              # already carries it ("APC.DE" on XETRA)
+        ticker = ticker[:-len(suf)]     # already carries it ("APC.DE")
+    if exchange == "HKEX":
+        ticker = hk_code(ticker)
     return ticker + suf
 
 
@@ -104,8 +123,8 @@ def desk_ticker(ticker: str, exchange: str) -> str:
     twice ("APC.DE.DE"), so it never priced (2026-11-06)."""
     suf = SUFFIX.get(exchange, "")
     if suf and ticker.upper().endswith(suf.upper()) and len(ticker) > len(suf):
-        return ticker[:-len(suf)]
-    return ticker
+        ticker = ticker[:-len(suf)]
+    return hk_code(ticker) if exchange == "HKEX" else ticker
 
 
 def currency_for(symbol: str) -> str:
@@ -261,6 +280,12 @@ class Market:
         """Per-symbol source partition: the keyed primary serves what its
         plan covers; everything else rides the free chain. Mixed `src`
         fields in one response are normal and honest."""
+        canon = {s: canonical_symbol(s) for s in symbols}
+        if any(s != c for s, c in canon.items()):
+            # asked in a non-canonical form (00861.HK): fetch the canonical
+            # one, answer under the name the caller used
+            got = self.spark(list(dict.fromkeys(canon.values())))
+            return {s: got[c] for s, c in canon.items() if c in got}
         out, rest = {}, list(symbols)
         if self._primary is not None:
             covered = tuple(s for s in symbols
@@ -342,6 +367,7 @@ class Market:
 
     # ── OHLCV ────────────────────────────────────────────────────────────
     def chart(self, symbol: str, range_="6mo", interval="1d") -> dict:
+        symbol = canonical_symbol(symbol)
         key = ("pchart", symbol, range_, interval)
         if self._primary is not None and not symbol.endswith("=X") \
                 and not symbol.startswith("^") \
@@ -437,6 +463,10 @@ class Market:
         52-week range. Keyed provider where its plan covers the symbol,
         TradingView (all exchanges) otherwise."""
         from . import tradingview
+        canon = {s: canonical_symbol(s) for s in symbols}
+        if any(s != c for s, c in canon.items()):
+            got = self.metrics(list(dict.fromkeys(canon.values())))
+            return {s: got[c] for s, c in canon.items() if c in got}
         out, rest = {}, list(symbols)
         if self._primary is not None and hasattr(self._primary, "metrics"):
             covered = tuple(s for s in symbols

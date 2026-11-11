@@ -108,7 +108,13 @@ from app.accounting import db
 conn = db.connect("var/desk.db")
 # Ordered so foreign keys unwind cleanly: closures before lots, lots before
 # executions, executions before orders, orders before the accounts they cite.
-TABLES = ["lot_closures", "lots", "executions", "orders", "cash_transactions",
+# sim_orders / price_triggers / telegram_notices / arbiter_notes /
+# broker_sync / dashboard_acks all point at orders, runs or accounts that
+# are about to go: left behind, the sim would still hold resting stops for
+# positions that no longer exist and old triggers could still fire.
+TABLES = ["sim_orders", "price_triggers", "telegram_notices", "arbiter_notes",
+          "broker_sync", "dashboard_acks",
+          "lot_closures", "lots", "executions", "orders", "cash_transactions",
           "broker_snapshots", "corporate_actions", "price_alerts",
           "agent_reports", "agent_runs", "events", "work_items",
           "broker_accounts", "service_health", "chat_threads"]

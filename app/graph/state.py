@@ -99,23 +99,29 @@ class Thesis(BaseModel):
         # must be coherent for its direction (H5). The buy limit is
         # entry_high; a range the wrong way round, or a target on the losing
         # side, would be approved as shown and executed as nonsense.
+        def need(ok, why):
+            # ValueError, not assert: `python -O` strips asserts, and these
+            # are what stop an incoherent order reaching the approval card
+            if not ok:
+                raise ValueError(why)
         if self.entry_low and self.entry_high:
-            assert self.entry_low <= self.entry_high, \
-                "entry_low must not exceed entry_high"
+            need(self.entry_low <= self.entry_high,
+                 "entry_low must not exceed entry_high")
         if self.direction == "buy":
-            assert self.entry_low and self.stop_loss, "buy thesis needs entry+stop"
-            assert self.stop_loss < self.entry_low, "stop must be below entry"
+            need(self.entry_low and self.stop_loss,
+                 "buy thesis needs entry+stop")
+            need(self.stop_loss < self.entry_low, "stop must be below entry")
             if self.take_profit is not None:
-                assert self.take_profit > (self.entry_high or self.entry_low), \
-                    "buy take-profit must be ABOVE entry"
+                need(self.take_profit > (self.entry_high or self.entry_low),
+                     "buy take-profit must be ABOVE entry")
         if self.direction == "sell":
             if self.entry_high and self.stop_loss:
-                assert self.stop_loss > self.entry_high, \
-                    "sell/short stop must be ABOVE entry"
+                need(self.stop_loss > self.entry_high,
+                     "sell/short stop must be ABOVE entry")
             if self.take_profit is not None and \
                     (self.entry_low or self.entry_high):
-                assert self.take_profit < (self.entry_low or self.entry_high), \
-                    "sell/short take-profit must be BELOW entry"
+                need(self.take_profit < (self.entry_low or self.entry_high),
+                     "sell/short take-profit must be BELOW entry")
         return self
 
 

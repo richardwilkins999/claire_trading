@@ -249,7 +249,11 @@ def _approval_account(a, repo, env, live):
         label, disabled = sim_label(a["broker"]), None
     return {"id": a["id"], "broker": a["broker"], "ccy": a["base_currency"],
             "environment": a["environment"],
-            "cash": repo.cash_balance(a["id"]) / 1e6,
+            # what is FREE to spend — the figure the approval gate checks
+            # (approvals.authorize). It used to be the whole balance, so with
+            # buy orders still open the card offered a size the gate refused
+            "cash": repo.available_cash(a["id"]) / 1e6,
+            "cash_reserved": repo.reserved_cash(a["id"]) / 1e6,
             "fee_model": json.loads(a["fee_model"]),
             "label": label, "disabled": disabled,
             # Saxo fills whole shares only; the estimate must say so
@@ -2197,7 +2201,8 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                 if t["closes"]:
                     pl = t["closes"]["pl"] or 0
                     tot(t)["realized"] += pl
-                    summary["wins" if pl > 0 else "losses"] += 1
+                    if pl:                  # break-even is neither
+                        summary["wins" if pl > 0 else "losses"] += 1
                 lot = t["lot"]
                 if lot and lot["remaining"] > 0:
                     last = quotes.get(t["symbol"])

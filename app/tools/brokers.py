@@ -14,6 +14,7 @@ import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from decimal import Decimal
+from ..accounting import db
 
 
 class BrokerError(Exception):
@@ -54,14 +55,7 @@ class _Book:
     oco: str | None = None
 
 
-SIM_TABLE = """
-CREATE TABLE IF NOT EXISTS sim_orders (
-  id TEXT PRIMARY KEY,
-  venue TEXT NOT NULL,               -- which built-in sim (alpaca, moomoo …)
-  client_id TEXT,
-  book_json TEXT NOT NULL,
-  updated_at INTEGER NOT NULL
-)"""
+SIM_TABLE = db.table_ddl("sim_orders")      # schema.sql is the one copy
 _DEC = ("qty", "limit", "stop_loss", "take_profit", "filled", "trigger")
 
 

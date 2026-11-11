@@ -178,6 +178,17 @@ MIGRATIONS = [
 ]
 
 
+def table_ddl(name: str) -> str:
+    """The CREATE TABLE statement for `name`, from schema.sql — for a module
+    that must be able to create its own table on a bare connection."""
+    import re
+    m = re.search(rf"CREATE TABLE IF NOT EXISTS {re.escape(name)} \(.*?\n\)",
+                  SCHEMA.read_text(), re.S)
+    if m is None:
+        raise KeyError(f"no table {name!r} in schema.sql")
+    return m.group(0)
+
+
 def init(conn) -> None:
     conn.executescript(SCHEMA.read_text())
     for stmt in MIGRATIONS:

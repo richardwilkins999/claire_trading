@@ -18,18 +18,11 @@ import threading
 import time
 import logging
 from .logsetup import swallowed
+from .accounting import db
 
 log = logging.getLogger(__name__)
 
-TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS arbiter_notes (
-  work_item_id TEXT NOT NULL,
-  notes_hash TEXT NOT NULL,          -- sha256 of the exact notes explained
-  summary TEXT NOT NULL,
-  explained_json TEXT NOT NULL,      -- [plain explanation per note, in order]
-  created_at INTEGER NOT NULL,
-  PRIMARY KEY (work_item_id, notes_hash)
-)"""
+TABLE_SQL = db.table_ddl("arbiter_notes")      # schema.sql is the one copy
 
 AGENT = "recorder"
 MAX_NOTES = 20
