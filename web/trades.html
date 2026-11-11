@@ -72,12 +72,15 @@ function render() {
   const q = document.getElementById('f-q').value.trim().toUpperCase();
   const rows = (DATA.trades || []).filter(t => (!side || t.side === side) &&
     (!acct || t.account === acct) && (!q || t.ticker.toUpperCase().includes(q)));
-  const s = DATA.summary || {}, ccy = (DATA.trades[0] || {}).base_currency || '';
+  /* per account currency: these three used to add SGD and USD trades and
+     label the sum with the first trade's currency */
+  const s = DATA.summary || {}, by = s.by_ccy || [];
   const pill = (label, val) => `<div class="stat"><span>${label}</span><b>${val}</b></div>`;
   document.getElementById('strip').innerHTML =
-    pill('realized P/L', money(s.realized, ccy)) +
-    pill('open (unrealized)', s.priced === false ? money(s.unrealized) + ' <span class="muted small">part priced</span>' : money(s.unrealized)) +
-    pill('fees paid', fmt(s.fees || 0, 2)) +
+    pill('realized P/L', perCcy(by, 'realized', {signed: true})) +
+    pill('open (unrealized)' + (s.priced === false ? ' — part priced' : ''),
+         perCcy(by, 'unrealized', {signed: true})) +
+    pill('fees paid', perCcy(by, 'fees')) +
     pill('closed trades won / lost', `${s.wins || 0} / ${s.losses || 0}`) +
     pill('buys / sells', `${s.buys || 0} / ${s.sells || 0}`);
   const el = document.getElementById('list');

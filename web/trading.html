@@ -344,8 +344,20 @@ async function refresh() {
       : '<p class="muted">No runs yet — start one above.</p>';
     if (openId) detail(openId);              // restore the open panel
   }
-  const f = await api('/api/feed');
-  renderFeed(f.events || []);
+  await refreshFeed();
+}
+/* First call: the latest 300 events. After that only what is newer than
+   the last one seen — it used to re-download the same 70 KB every 8 s, and
+   those were the OLDEST 300 events, so the feed never moved (B7). */
+let FEED_EVENTS = [], feedLast = 0;
+async function refreshFeed() {
+  const f = await api('/api/feed' + (feedLast ? '?since=' + feedLast : ''));
+  const ev = f.events || [];
+  if (ev.length) {
+    FEED_EVENTS = FEED_EVENTS.concat(ev).slice(-300);
+    feedLast = ev[ev.length - 1].id;
+  }
+  renderFeed(FEED_EVENTS);
 }
 function toggle(id) {
   openId = openId === id ? null : id;

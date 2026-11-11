@@ -150,17 +150,18 @@ async function renderSaxoLive() {
 
 function renderStrip() {
   const d = DATA;
-  const unreal = Object.values(d.exchanges).flat()
-    .reduce((s, p) => s + (p.unrealized_base || 0), 0);
-  const equity = d.accounts.reduce((s, a) => s + a.equity, 0);
+  /* one figure per account currency — these were single numbers that
+     added the SGD and USD accounts together */
+  const t = d.totals || [];
+  const unpriced = t.reduce((s, r) => s + (r.unpriced || 0), 0);
   const pill = (l, v, cls) =>
     `<div class="stat"><span>${l}</span><b class="${cls || ''}">${v}</b></div>`;
   document.getElementById('strip').innerHTML =
     pill('positions', d.position_count) +
-    pill('market value', fmt(d.total_value)) +
-    pill('unrealized', (unreal >= 0 ? '+' : '') + fmt(unreal),
-         unreal >= 0 ? 'ok' : 'bad') +
-    pill('equity', fmt(equity)) +
+    pill('market value' + (unpriced ? ` (${unpriced} unpriced)` : ''),
+         perCcy(t, 'value')) +
+    pill('unrealized', perCcy(t, 'unrealized', {signed: true})) +
+    pill('equity', perCcy(t, 'equity')) +
     pill('accounts', d.accounts.length);
 }
 
@@ -404,8 +405,9 @@ function posCard(p) {
     <div class="poshead">
       <div><span class="tk">${esc(p.ticker)}</span>
         <span class="nm">${esc(m.name || p.instrument_id)}</span><br>
-        <span class="nm">${fmt(p.qty, 4)} shares · ${fmt(p.weight_pct, 1)}%
-          of book · held ${p.holding_days}d</span></div>
+        <span class="nm">${fmt(p.qty, 4)} shares · <span
+          title="share of the ${esc(p.base_currency)} positions, by value">${fmt(p.weight_pct, 1)}%
+          of ${esc(p.base_currency)} book</span> · held ${p.holding_days}d</span></div>
       <div style="text-align:right">
         <div class="pl ${up ? 'ok' : 'bad'}">${p.unrealized_base == null
           ? '—' : (up ? '+' : '') + fmt(p.unrealized_base)}</div>
@@ -524,9 +526,10 @@ function renderRest() {
     '<table><tr><th>account</th><th>cash</th><th>positions</th>' +
     '<th>equity</th><th>realized P&amp;L</th><th></th></tr>' +
     d.accounts.map(a => `<tr><td><b>${esc(a.id)}</b></td>
-      <td>${fmt(a.cash)} ${esc(a.ccy)}</td><td>${fmt(a.positions_value)}</td>
-      <td><b>${fmt(a.equity)}</b></td>
-      <td class="${a.realized_pl >= 0 ? 'ok' : 'bad'}">${fmt(a.realized_pl)}</td>
+      <td>${fmt(a.cash)} ${esc(a.ccy)}</td>
+      <td>${fmt(a.positions_value)} ${esc(a.ccy)}</td>
+      <td><b>${fmt(a.equity)} ${esc(a.ccy)}</b></td>
+      <td class="${a.realized_pl >= 0 ? 'ok' : 'bad'}">${fmt(a.realized_pl)} ${esc(a.ccy)}</td>
       <td class="row"><input id="amt-${esc(a.id)}" type="number" placeholder="amount"
         style="width:100px">
         <button class="ghost" onclick="acct(${jsArg(a.id)},'deposit')">top up</button>

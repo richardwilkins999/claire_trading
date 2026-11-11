@@ -197,6 +197,15 @@ pre { background:var(--bg); border:1px solid var(--line); border-radius:8px;
   border-radius:8px; padding:.35rem .75rem; font-size:.8rem; }
 .stat span { color:var(--dim); font-size:.68rem; text-transform:uppercase;
   letter-spacing:.07em; margin-right:.45rem; }
+/* a figure per currency (nav.js perCcy): the value keeps the pill's own
+   look, the currency code takes the label's */
+.stat .cvs { display:inline-block; vertical-align:top; text-align:right;
+  margin:0; font-size:inherit; text-transform:none; letter-spacing:0;
+  color:inherit; line-height:1.35; }
+.stat .cv { margin:0; font-size:inherit; text-transform:none;
+  letter-spacing:0; color:inherit; }
+.stat .cv.ok { color:var(--good); } .stat .cv.bad { color:var(--bad); }
+.stat .cc { margin:0 0 0 .3rem; }
 
 /* staged pipeline strip (v1 trading.html pattern) */
 .desk { display:flex; gap:.4rem; align-items:stretch; overflow-x:auto;

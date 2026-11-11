@@ -490,7 +490,9 @@ function liveEditing() {
 
 /* broker sync: when the custodian last checked each broker, and whether it
    reached it. Stale once a check is more than 3 intervals old. */
-function ago(t) {
+/* named apart from nav.js's ago(): a page function of the same name
+   replaces the shared one for every script on the page */
+function syncAgo(t) {
   if (!t) return 'never';
   const s = Math.max(0, Math.round(Date.now() / 1000 - t));
   return s < 90 ? `${s}s ago` : s < 5400 ? `${Math.round(s / 60)} min ago`
@@ -502,18 +504,18 @@ function renderSync() {
   const fresh = t => t && Date.now() / 1000 - t < staleS;
   const head = sy.enabled === false
     ? '<b class="bad">Broker sync is OFF</b> (custodian schedule disabled)'
-    : `Broker sync: last check <b class="${fresh(sy.custodian_at) ? '' : 'bad'}">${ago(sy.custodian_at)}</b>
+    : `Broker sync: last check <b class="${fresh(sy.custodian_at) ? '' : 'bad'}">${syncAgo(sy.custodian_at)}</b>
        <span class="muted">· every ${every} min</span>`;
   const accts = (sy.accounts || []).map(a => {
     const ok = a.checked_at && a.ok && fresh(a.contact_at);
     const mark = !a.checked_at ? '<span class="muted">—</span>' : ok ? '<span class="ok">✓</span>' : '<span class="bad">✗</span>';
     const tip = !a.checked_at ? 'not checked yet'
-      : `${a.venue} · checked ${ago(a.checked_at)} · last reached ${ago(a.contact_at)}` +
+      : `${a.venue} · checked ${syncAgo(a.checked_at)} · last reached ${syncAgo(a.contact_at)}` +
         ` · ${a.orders_checked} working order${a.orders_checked === 1 ? '' : 's'} checked` +
         (a.error ? ` · ${a.error}` : '');
     const real = (a.venue || '').startsWith('Saxo');
     return `<span title="${esc(tip)}" style="margin-left:.8rem;white-space:nowrap">${mark} ${esc(a.label)}
-      <span class="muted">${a.checked_at ? (real ? esc(a.venue) + ' · ' + ago(a.contact_at)
+      <span class="muted">${a.checked_at ? (real ? esc(a.venue) + ' · ' + syncAgo(a.contact_at)
         : 'Claire\'s own sim — nothing external to sync') : 'not checked yet'}</span></span>`;
   }).join('');
   el.innerHTML = head + '<br>' + accts;

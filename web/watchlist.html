@@ -62,16 +62,8 @@ const DESK_EX = ['NASDAQ', 'NYSE', 'LSE', 'SGX', 'HKEX', 'TSE', 'ASX', 'XETRA',
   'PARIS', 'NSE'];
 const SUFFIX = {SGX: '.SI', HKEX: '.HK', TSE: '.T', ASX: '.AX', XETRA: '.DE',
   PARIS: '.PA', NSE: '.NS', LSE: '.L'};
-/* search results name venues their own way (Yahoo: "NMS", "SES"; Twelve
-   Data: "NASDAQ", "SGX", "XETR"). Only the desk's ten exchanges can be
-   traded; anything else is shown but cannot be added. */
-const EX_ALIAS = {NASDAQ: 'NASDAQ', NMS: 'NASDAQ', NGM: 'NASDAQ', NCM: 'NASDAQ',
-  NASDAQGS: 'NASDAQ', NASDAQGM: 'NASDAQ', NASDAQCM: 'NASDAQ',
-  NYSE: 'NYSE', NYQ: 'NYSE', SGX: 'SGX', SES: 'SGX', SINGAPORE: 'SGX',
-  HKEX: 'HKEX', HKG: 'HKEX', 'HONG KONG': 'HKEX', JPX: 'TSE', TSE: 'TSE',
-  TYO: 'TSE', TOKYO: 'TSE', ASX: 'ASX', SYDNEY: 'ASX', XETR: 'XETRA',
-  XETRA: 'XETRA', GER: 'XETRA', PAR: 'PARIS', PARIS: 'PARIS', NSE: 'NSE',
-  NSI: 'NSE', LSE: 'LSE', LON: 'LSE', LONDON: 'LSE'};
+/* which of the desk's ten exchanges a search hit belongs to: deskExchange()
+   in nav.js, shared with the Markets page */
 
 let DATA = {rows: [], accounts: [], triggers: []}, SEL = null, PANEL = null;
 let EDITING = null;          /* id of the trigger the form is editing, else null */
@@ -901,15 +893,6 @@ async function cancelTrigger(id) {
 }
 
 /* ── add / remove stocks ──────────────────────────────────────────── */
-function deskExchange(r) {
-  const sym = String(r.symbol || '');
-  for (const [ex, suf] of Object.entries(SUFFIX))
-    if (sym.toUpperCase().endsWith(suf.toUpperCase())) return [ex, sym.slice(0, -suf.length)];
-  const raw = String(r.exchange || '').toUpperCase().trim();
-  if (raw === 'EURONEXT' && String(r.country || '').toLowerCase() === 'france') return ['PARIS', sym];
-  const ex = EX_ALIAS[raw];
-  return ex ? [ex, sym] : [null, sym];
-}
 async function doSearch() {
   const q = val('q').trim(), el = document.getElementById('results');
   if (!q) return;

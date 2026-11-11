@@ -729,14 +729,13 @@ function renderStrip() {
     const v = (h[k] || {ok: 'never ran'}).ok;
     return pill(k, v, v === 'ok' ? 'ok' : v === 'stale' ? 'warn' : 'bad');
   };
-  const cash = o.cash.reduce((s, c) => s + c.cash, 0);
   document.getElementById('strip').innerHTML =
     pill('awaiting you', o.pending, o.pending ? 'warn' : '') +
     pill('claire-api', o.claire_api ? 'up' : 'down',
          o.claire_api ? 'ok' : 'bad') +
     hp('watcher') + hp('custodian') +
     pill('data', (GRAPH && GRAPH.market_data.source) || '—') +
-    pill('paper cash', fmt(cash, 0));
+    pill('paper cash', perCcy(sumByCcy(o.cash, 'cash'), 'cash', {dp: 0}));
 }
 async function refreshGraph() {
   try {

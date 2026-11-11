@@ -41,6 +41,56 @@ function fmt(n, dp = 2) {
   return n == null ? '—' : Number(n).toLocaleString(undefined,
     {maximumFractionDigits: dp});
 }
+/* Money in more than one currency is shown as one figure PER currency,
+   never as a sum: 56,801 SGD and 98,989 USD are not 155,790 of anything.
+   `totals` is [{ccy, <key>: number}]; opts.signed prints + / − and colours. */
+function perCcy(totals, key, opts = {}) {
+  const rows = (totals || []).filter(t => t[key] != null);
+  if (!rows.length) return '—';
+  return '<span class="cvs">' + rows.map(t => {
+    const v = t[key];
+    const cls = opts.signed ? (v > 0 ? ' ok' : v < 0 ? ' bad' : '') : '';
+    return `<span class="cv${cls}">${opts.signed && v > 0 ? '+' : ''}` +
+      `${fmt(v, opts.dp == null ? 2 : opts.dp)}</span>` +
+      `<span class="cc">${esc(t.ccy || '?')}</span>`;
+  }).join('<br>') + '</span>';
+}
+/* [{ccy, <key>}...] summed per currency, for rows that arrive per account */
+function sumByCcy(rows, key, ccyKey = 'ccy') {
+  const by = {};
+  for (const r of rows || []) {
+    const c = r[ccyKey] || '?';
+    by[c] = (by[c] || 0) + (r[key] || 0);
+  }
+  return Object.keys(by).sort().map(c => ({ccy: c, [key]: by[c]}));
+}
+
+/* The desk's ten exchanges, and how search results name them (Yahoo: "NMS",
+   "SES"; Twelve Data: "NASDAQ", "SGX", "XETR"). deskExchange(hit) answers
+   [exchange, ticker] — or [null, symbol] when the venue is not one the desk
+   trades. It never guesses: Markets used to fall back to whichever exchange
+   chip was selected, and sent runs and buys out with the wrong exchange and
+   currency (REVIEW-2026-11-11 B12). */
+const DESK_SUFFIX = {SGX: '.SI', HKEX: '.HK', TSE: '.T', ASX: '.AX',
+  XETRA: '.DE', PARIS: '.PA', NSE: '.NS', LSE: '.L'};
+const DESK_EX_ALIAS = {NASDAQ: 'NASDAQ', NMS: 'NASDAQ', NGM: 'NASDAQ',
+  NCM: 'NASDAQ', NASDAQGS: 'NASDAQ', NASDAQGM: 'NASDAQ', NASDAQCM: 'NASDAQ',
+  NYSE: 'NYSE', NYQ: 'NYSE', SGX: 'SGX', SES: 'SGX', SINGAPORE: 'SGX',
+  HKEX: 'HKEX', HKG: 'HKEX', 'HONG KONG': 'HKEX', JPX: 'TSE', TSE: 'TSE',
+  TYO: 'TSE', TOKYO: 'TSE', ASX: 'ASX', SYDNEY: 'ASX', XETR: 'XETRA',
+  XETRA: 'XETRA', GER: 'XETRA', PAR: 'PARIS', PARIS: 'PARIS', NSE: 'NSE',
+  NSI: 'NSE', LSE: 'LSE', LON: 'LSE', LONDON: 'LSE'};
+function deskExchange(r) {
+  const sym = String(r.symbol || '');
+  for (const [ex, suf] of Object.entries(DESK_SUFFIX))
+    if (sym.toUpperCase().endsWith(suf.toUpperCase()))
+      return [ex, sym.slice(0, -suf.length)];
+  const raw = String(r.exchange || '').toUpperCase().trim();
+  if (raw === 'EURONEXT' && String(r.country || '').toLowerCase() === 'france')
+    return ['PARIS', sym];
+  const ex = DESK_EX_ALIAS[raw];
+  return ex ? [ex, sym] : [null, sym];
+}
 function fmtBig(n) {
   if (n == null) return '—';
   const a = Math.abs(n);

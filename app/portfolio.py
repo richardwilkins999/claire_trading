@@ -267,13 +267,19 @@ def build(conn, market, *, clock, cal=None) -> dict:
             p["is_open"], p["next_open"] = None, None
 
     # weights are of GROSS exposure: a short's value is negative, and a
-    # net denominator would let longs and shorts cancel into nonsense %
-    gross = sum(abs(Decimal(str(p["value_base"]))) for p in positions
-                if p.get("value_base") is not None)
+    # net denominator would let longs and shorts cancel into nonsense %.
+    # Per account currency: value_base is in each account's OWN currency,
+    # so a weight across SGD and USD accounts would divide dollars by a sum
+    # of dollars and Singapore dollars.
+    gross = {}
     for p in positions:
-        p["weight_pct"] = (float(abs(Decimal(str(p["value_base"]))) /
-                                 gross * 100)
-                           if p.get("value_base") and gross else None)
+        if p.get("value_base") is not None:
+            gross[p["base_currency"]] = gross.get(p["base_currency"], 0) + \
+                abs(Decimal(str(p["value_base"])))
+    for p in positions:
+        g = gross.get(p["base_currency"])
+        p["weight_pct"] = (float(abs(Decimal(str(p["value_base"]))) / g * 100)
+                           if p.get("value_base") and g else None)
 
     exchanges = {}
     for p in positions:
@@ -302,8 +308,41 @@ def build(conn, market, *, clock, cal=None) -> dict:
                          "positions_value": held,
                          "equity": float(_d(cash)) + held})
     return {"exchanges": exchanges, "closed": closed, "accounts": accounts,
-            "total_value": float(total_value),
+            "totals": totals_by_currency(positions, accounts),
+            # one number only when there is one currency to put it in
+            "total_value": (float(total_value)
+                            if len({p["base_currency"] for p in positions})
+                            <= 1 else None),
             "position_count": len(positions)}
+
+
+def totals_by_currency(positions, accounts) -> list:
+    """Market value, unrealized P/L, cash and equity — one row per account
+    currency, never added across them. The page used to show a single
+    "market value" and "equity" that summed SGD and USD accounts as if they
+    were the same money (REVIEW-2026-11-11 B5)."""
+    rows = {}
+
+    def row(ccy):
+        return rows.setdefault(ccy, {
+            "ccy": ccy, "value": Decimal(0), "unrealized": Decimal(0),
+            "cash": Decimal(0), "equity": Decimal(0), "positions": 0,
+            "unpriced": 0, "accounts": 0})
+    for p in positions:
+        r = row(p["base_currency"])
+        r["positions"] += 1
+        if p.get("value_base") is None:
+            r["unpriced"] += 1          # its value is missing from the sums
+            continue
+        r["value"] += Decimal(str(p["value_base"]))
+        r["unrealized"] += Decimal(str(p["unrealized_base"]))
+    for a in accounts:
+        r = row(a["ccy"])
+        r["accounts"] += 1
+        r["cash"] += Decimal(str(a["cash"]))
+        r["equity"] += Decimal(str(a["equity"]))
+    return [{k: (float(v) if isinstance(v, Decimal) else v)
+             for k, v in rows[c].items()} for c in sorted(rows)]
 
 
 def chart_for(conn, market, instrument_id, *, range_="5d", interval="60m"):

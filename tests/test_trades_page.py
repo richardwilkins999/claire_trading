@@ -60,7 +60,10 @@ def test_trades_lists_the_buy_and_the_stop_sell_with_pl_and_reason(dash):
     assert round(sell["closes"]["pl"], 2) == -54.9
     assert "recommended" in buy["reason"]       # a pipeline run, approved
     assert buy["lot"]["remaining"] == 0
-    assert round(d["summary"]["realized"], 2) == -54.9
+    # money is totalled per account currency, never across accounts (B5)
+    (usd,) = d["summary"]["by_ccy"]
+    assert usd["ccy"] == "USD" and round(usd["realized"], 2) == -54.9
+    assert "realized" not in d["summary"]
     assert d["summary"]["losses"] == 1 and d["summary"]["sells"] == 1
     assert httpx.get(base + "/trades").status_code == 200
 
@@ -72,7 +75,7 @@ def test_an_open_buy_shows_unrealized_pl(dash):
     assert buy["lot"]["remaining"] == 9
     assert buy["lot"]["last"] == 101                # the fake market's price
     assert round(buy["lot"]["unrealized"], 2) == -18.0     # 9 × (101 − 103)
-    assert round(d["summary"]["unrealized"], 2) == -18.0
+    assert round(d["summary"]["by_ccy"][0]["unrealized"], 2) == -18.0
 
 
 def test_orders_carry_what_a_leg_would_make_and_the_session(dash):

@@ -46,12 +46,6 @@ let exchange = 'NASDAQ', tab = 'all', rows = [], page = 0, total = null;
 let sortKey = 'mcap', sortDir = -1, sel = null, chartData = null;
 let EXCHANGES = [], sparks = {}, clockTimer = null;
 
-function exchangeOf(symbol) {
-  for (const [ex, suf] of Object.entries(SUFFIX))
-    if (symbol.endsWith(suf)) return [ex, symbol.slice(0, -suf.length)];
-  return ['NASDAQ', symbol];
-}
-
 /* ── world-markets strip ─────────────────────────────────────────── */
 async function loadStrip() {
   EXCHANGES = await api('/api/exchanges');
@@ -141,10 +135,15 @@ async function doSearch() {
   const q = document.getElementById('q').value.trim();
   if (!q) return;
   const found = await api('/api/search?q=' + encodeURIComponent(q));
+  /* exchange is one of the desk's ten, or null: a hit listed anywhere
+     else can be charted here but not traded. It used to keep the venue's
+     own name ("NMS", "Euronext") and then fall back to whichever exchange
+     chip was selected. */
   rows = found.filter(r => r.symbol).map(r => {
-    const [ex, ticker] = exchangeOf(r.symbol);
-    return {symbol: r.symbol, ticker, name: r.name,
-            exchange: r.exchange || ex};
+    const [ex, ticker] = deskExchange(r);
+    return {symbol: r.symbol, ticker, name: r.name, exchange: ex,
+            venue: r.exchange || '', searched: true,
+            exch_label: ex || `${r.exchange || '?'} — not a desk market`};
   });
   document.getElementById('listnote').textContent =
     rows.length + ' results worldwide';
@@ -162,7 +161,7 @@ function renderList() {
     ? [['ticker', 'ticker'], ['name', 'name'], ['price', 'price'],
        ['change_pct', 'chg%'], ['rsi', 'RSI'], ['rating_label', 'rating']]
     : tab === 'search'
-    ? [['symbol', 'symbol'], ['name', 'name'], ['exchange', 'exch']]
+    ? [['symbol', 'symbol'], ['name', 'name'], ['exch_label', 'exch']]
     : [['symbol', 'symbol'], ['name', 'name'], ['spark', ''],
        ['price', 'price'], ['change_pct', 'chg%'], ['volume', 'vol'],
        ['mcap', 'mcap'], ['pe', 'P/E']];
@@ -222,7 +221,10 @@ async function loadSparks() {
 function pick(i) {
   sel = window._rows[i];
   renderList();
-  const ex = sel.exchange && CCY[sel.exchange] ? sel.exchange : exchange;
+  // a listing row belongs to the exchange being browsed; a search hit only
+  // to the desk exchange it resolved to — and to none if it did not
+  const ex = sel.searched ? sel.exchange
+    : (sel.exchange && CCY[sel.exchange] ? sel.exchange : exchange);
   document.getElementById('detail').innerHTML = `<div class="card"
     style="margin:0">
     <h3>${esc(sel.symbol)} <span class="muted">${esc(sel.name || '')}</span>
@@ -250,7 +252,7 @@ function pick(i) {
       <label><input type="checkbox" id="t-rsi" onchange="loadChart(true)">
         RSI</label>
       <span style="flex:1"></span>
-      <button class="ghost" id="wl-btn" onclick="toggleWatch(${jsArg(ex)})"
+      ${ex ? `<button class="ghost" id="wl-btn" onclick="toggleWatch(${jsArg(ex)})"
         title="watchlisted names always enter the screener's universe">
         ${onWatchlist(sel.ticker || sel.symbol, ex) ? '★ watching'
           : '☆ watchlist'}</button>
@@ -259,7 +261,10 @@ function pick(i) {
       <button class="ghost" onclick="setTrigger(${jsArg(ex)})"
         title="opens it on the Watchlist with the trigger form ready">Set a trigger</button>
       <button onclick="buyNow(${jsArg(ex)})"
-        title="puts a buy at the current price straight onto Approvals — nothing trades until you approve">Buy at current price</button>
+        title="puts a buy at the current price straight onto Approvals — nothing trades until you approve">Buy at current price</button>`
+      : `<span class="warn small">Listed on ${esc(sel.venue || 'another venue')},
+        which is not one of the desk's markets — you can chart it here, but
+        it cannot be watched, researched or bought.</span>`}
     </div>
     <p class="muted small" id="buy-note" style="margin:.2rem 0"></p>
     <div id="chart"><p class="muted">loading…</p></div>

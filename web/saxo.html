@@ -53,16 +53,19 @@
 const ACCOUNT = {live: 'Saxo LIVE', sim: 'Saxo SIM'};
 let ENV = new URLSearchParams(location.search).get('env') || 'live';
 
-function money(v, ccy) {
-  /* a per-share price under 1 (PRO at 0.065) needs more than 2 decimals */
-  const dp = !ccy && v != null && v !== 0 && Math.abs(v) < 1 ? 4 : 2;
+/* This page's own formatter. It was called money(), which REPLACED the
+   money() of orderform.js loaded above — so the shared Sell summary on this
+   real-money page rounded a 0.065 price to 0.07 (B13). A price under 1
+   keeps 4 decimals whether or not a currency follows it. */
+function sxMoney(v, ccy) {
+  const dp = v != null && v !== 0 && Math.abs(v) < 1 ? 4 : 2;
   return v == null ? '—' : `${fmt(v, dp)}${ccy ? ' ' + esc(ccy) : ''}`;
 }
 function signed(v, ccy) {
   if (v == null) return '—';
   // sign is printed, so gain/loss never relies on colour alone
   const cls = v > 0 ? 'ok' : v < 0 ? 'bad' : '';
-  return `<span class="${cls}">${v > 0 ? '+' : ''}${money(v, ccy)}</span>`;
+  return `<span class="${cls}">${v > 0 ? '+' : ''}${sxMoney(v, ccy)}</span>`;
 }
 function pctSigned(v) {
   if (v == null) return '—';
@@ -74,7 +77,7 @@ function allocBar(p) {
   const w = p.weight_pct;
   if (w == null) return '—';
   const tip = `${p.symbol}: ${fmt(w, 1)}% of exposure · ` +
-    `${money(p.exposure_base)} in account currency`;
+    `${sxMoney(p.exposure_base)} in account currency`;
   return `<div class="alloc" title="${esc(tip)}">
     <div class="track"><div class="bar" style="width:${Math.max(w, 0.5)}%"></div></div>
     <span class="pct">${fmt(w, 1)}%</span></div>`;
@@ -100,11 +103,11 @@ function render(d) {
   const pos = d.positions || [], ord = d.orders || [];
   const upl = pos.reduce((s, p) => s + (p.pnl_base || 0), 0);
   const tiles = [
-    ['Total value', money(b.TotalValue, ccy)],
-    ['Cash', money(b.CashBalance, ccy)],
+    ['Total value', sxMoney(b.TotalValue, ccy)],
+    ['Cash', sxMoney(b.CashBalance, ccy)],
     ['Unrealised P/L', signed(pos.some(p => p.pnl_base != null) ? upl
                               : b.UnrealizedMarginProfitLoss, ccy)],
-    ['Available to trade', money(b.MarginAvailableForTrading, ccy)],
+    ['Available to trade', sxMoney(b.MarginAvailableForTrading, ccy)],
     ['Open positions', esc(b.OpenPositionsCount ?? pos.length)],
   ].map(([k, v]) => `<div class="tile"><div class="k">${k}</div>
     <div class="v">${v}</div></div>`).join('');
@@ -132,16 +135,16 @@ function render(d) {
       <td><b>${esc(p.symbol)}</b> <span class="muted" style="font-size:.75rem">${
         SEL && SEL.symbol === p.symbol ? '▴ chart' : '📈'}</span><br><span class="muted">${esc(p.name || '')}</span></td>
       <td class="num">${fmt(p.amount, 0)}</td>
-      <td class="num">${p.first_open_price != null ? money(p.first_open_price) +
+      <td class="num">${p.first_open_price != null ? sxMoney(p.first_open_price) +
         `<br><span class="muted" style="font-size:.72rem">${esc(bought(p.first_open_time))}</span>`
         : '—'}</td>
-      <td class="num">${money(p.avg_open_price)}${p.open_fills > 1
+      <td class="num">${sxMoney(p.avg_open_price)}${p.open_fills > 1
         ? `<br><span class="muted" style="font-size:.72rem">${p.open_fills} buys</span>` : ''}</td>
-      <td class="num">${p.cost_basis != null ? money(p.cost_basis, p.currency) : '—'}</td>
+      <td class="num">${p.cost_basis != null ? sxMoney(p.cost_basis, p.currency) : '—'}</td>
       <td class="num">${p.price_missing ? '<span class="warn" title="Saxo sent no price for this market">—</span>'
-        : money(p.current_price)}${p.price_src ? `<br><span class="muted" style="font-size:.7rem"
+        : sxMoney(p.current_price)}${p.price_src ? `<br><span class="muted" style="font-size:.7rem"
         title="${p.price_src === "Saxo's P/L" ? "Saxo sends no live price on this account, so this is the price Saxo used for its own profit/loss" : "Saxo sends no live price for this exchange on this account, so this is Claire's own quote"}">via ${esc(p.price_src)}</span>` : ''}</td>
-      <td class="num">${money(p.market_value, p.currency)}</td>
+      <td class="num">${sxMoney(p.market_value, p.currency)}</td>
       <td class="num">${signed(p.pnl, p.currency)}</td>
       <td class="num">${pctSigned(p.pnl_pct)}</td>
       <td>${allocBar(p)}</td>
@@ -150,7 +153,7 @@ function render(d) {
   const orows = ord.length ? ord.map(o => `<tr>
       <td><b>${esc(o.symbol)}</b></td><td>${esc(o.side)}</td>
       <td class="num">${fmt(o.amount, 0)}</td><td>${esc(o.type)}</td>
-      <td class="num">${money(o.price, o.currency)}</td>
+      <td class="num">${sxMoney(o.price, o.currency)}</td>
       <td>${esc(o.status)}</td><td>${esc(o.duration || '')}</td></tr>`).join('')
     : `<tr><td colspan="7" class="muted">No working orders.</td></tr>`;
   document.getElementById('view').innerHTML = head +
@@ -226,7 +229,7 @@ async function drawPosition(rerenderOnly) {
       <div id="pchart"><p class="muted">loading chart…</p></div>
       <p class="muted" style="font-size:.75rem">Daily prices from the desk's
       market data · dashed line = your average cost at Saxo
-      (${money(SEL.avg_open_price, SEL.currency)})</p></div>`;
+      (${sxMoney(SEL.avg_open_price, SEL.currency)})</p></div>`;
   if (!SEL.chart_symbol) {
     document.getElementById('pchart').innerHTML = `<p class="muted">No chart:
       the desk has no market data mapping for ${esc(SEL.symbol)}.</p>`;

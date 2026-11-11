@@ -957,10 +957,26 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                         q.get("symbol", ""), q.get("range", "6mo"),
                         q.get("interval", "1d")))
                 if u.path == "/api/feed":
-                    rows = [dict(r) for r in conn.execute(
-                        "SELECT * FROM events WHERE id > ? ORDER BY id"
-                        " LIMIT 300", (int(q.get("since", 0)),))]
-                    return self._send(200, {"events": rows})
+                    # no `since`: the LATEST 300, oldest first. It used to
+                    # be the first 300 ever written, so once the desk had
+                    # more the Trading page showed August for good and
+                    # re-downloaded it every 8 s (B7). With `since`: only
+                    # what is newer, which is all a poll needs.
+                    try:
+                        since = max(0, int(q.get("since") or 0))
+                    except ValueError:
+                        raise HTTPError(400, "since must be an event id")
+                    if since:
+                        rows = [dict(r) for r in conn.execute(
+                            "SELECT * FROM events WHERE id > ? ORDER BY id"
+                            " LIMIT 300", (since,))]
+                    else:
+                        rows = [dict(r) for r in conn.execute(
+                            "SELECT * FROM (SELECT * FROM events ORDER BY"
+                            " id DESC LIMIT 300) ORDER BY id")]
+                    return self._send(200, {
+                        "events": rows,
+                        "last": rows[-1]["id"] if rows else since})
                 self._send(404, {"error": "not found"})
             except (BrokenPipeError, ConnectionResetError):
                 return                           # client went away; not news
@@ -2164,15 +2180,23 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                               if v.get("price") is not None}
                 except Exception:               # noqa: BLE001 — best effort
                     quotes = {}
-            summary = {"realized": 0.0, "unrealized": 0.0, "fees": 0.0,
-                       "wins": 0, "losses": 0, "buys": 0, "sells": 0,
-                       "priced": True}
+            # money is totalled per ACCOUNT currency, never across them:
+            # one "realized P/L" used to add SGD and USD trades (B5)
+            summary = {"by_ccy": [], "wins": 0, "losses": 0, "buys": 0,
+                       "sells": 0, "priced": True}
+            money = {}
+
+            def tot(t):
+                ccy = t["base_currency"] or t["currency"] or "?"
+                return money.setdefault(ccy, {
+                    "ccy": ccy, "realized": 0.0, "unrealized": 0.0,
+                    "fees": 0.0})
             for t in rows:
-                summary["fees"] += (t["fees"] or 0) + (t["other_fees"] or 0)
+                tot(t)["fees"] += (t["fees"] or 0) + (t["other_fees"] or 0)
                 summary["buys" if t["side"] == "buy" else "sells"] += 1
                 if t["closes"]:
                     pl = t["closes"]["pl"] or 0
-                    summary["realized"] += pl
+                    tot(t)["realized"] += pl
                     summary["wins" if pl > 0 else "losses"] += 1
                 lot = t["lot"]
                 if lot and lot["remaining"] > 0:
@@ -2190,9 +2214,10 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                             sign = 1 if t["side"] == "buy" else -1
                             lot["unrealized"] = sign * (
                                 last * fx - lot["cost"]) * lot["remaining"]
-                            summary["unrealized"] += lot["unrealized"]
+                            tot(t)["unrealized"] += lot["unrealized"]
                     else:
                         summary["priced"] = False
+            summary["by_ccy"] = [money[c] for c in sorted(money)]
             return {"trades": rows, "summary": summary, "days": days,
                     "now": int(clock())}
 
