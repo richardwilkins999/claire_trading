@@ -69,28 +69,10 @@
 let GRAPH = null, PROVIDERS = [];
 let OVERVIEW = null, SCHEDULES = [], selected = null;
 
-const typing = () => ['INPUT', 'TEXTAREA', 'SELECT']
-  .includes((document.activeElement || {}).tagName);
-
 /* ── system map ──────────────────────────────────────────────────── */
 const L = {railX: 12, railW: 152, railH: 40, railGap: 8, railTop: 46,
   stageX: 200, stageW: 128, pitch: 148, nodeH: 40, nodeGap: 8, band: 122,
   gIn: 180};
-const STAGES = [
-  // only the SCHEDULED scans use the screener to pick stocks; every other
-  // entry starts at the analysts (prepare is deterministic bookkeeping
-  // before them, not drawn as its own box)
-  {label: 'SCREEN (scans)', ids: ['screener']},
-  {label: 'ANALYZE ∥', ids: ['fundamental', 'technical', 'news']},
-  {label: 'DEBATE', ids: ['bull', 'bear']},
-  {label: 'ARBITRATE', ids: ['arbiter']},
-  {label: 'APPROVE', ids: ['gate']},
-  {label: 'EXECUTE', ids: ['execute']},
-  {label: 'RECORD', ids: ['recorder']}];
-const DET = {
-  gate: ['🔒 approve', 'your token ⏸'],
-  execute: ['execute', 'guards · place']};
-
 function jobNext(prefix) {
   const t = SCHEDULES.filter(j => j.job.startsWith(prefix) && j.enabled &&
     j.next_run_at).map(j => j.next_run_at);

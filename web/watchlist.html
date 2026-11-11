@@ -289,20 +289,6 @@ function redrawChart() {
    +26% refused, both sides). Suggestions for a Saxo account stay inside 24%. */
 const SAXO_MAX_PCT = 25, SAXO_CAP = 0.24;
 function isSaxo(broker) { return String(broker || '').startsWith('saxo'); }
-function suggest(r, entry, kind, broker) {
-  const atr = ((r || {}).levels || {}).atr14;
-  if (!entry || !atr || kind === 'exit') return null;
-  let risk = 2 * atr, reward = 2 * risk, capped = false;
-  if (isSaxo(broker)) {
-    const cap = entry * SAXO_CAP;
-    if (risk > cap) { risk = cap; capped = true; }
-    if (reward > cap) { reward = cap; capped = true; }
-  }
-  const out = kind === 'short' ? {stop: rp(entry + risk), target: rp(entry - reward)}
-    : {stop: rp(entry - risk), target: rp(entry + reward)};
-  out.capped = capped;
-  return out;
-}
 function saxoTooFar(entry, stop, tgt, broker) {
   if (!isSaxo(broker) || !entry) return '';
   const far = [['stop', stop], ['target', tgt]].filter(([, v]) =>
@@ -310,23 +296,6 @@ function saxoTooFar(entry, stop, tgt, broker) {
   return far.length ? `<b class="bad">Saxo will refuse this: the ${far.join(' and ')}
     ${far.length > 1 ? 'are' : 'is'} more than ${SAXO_MAX_PCT}% from the purchase price
     (TooFarFromEntryOrder). Bring ${far.length > 1 ? 'them' : 'it'} within ${SAXO_MAX_PCT}%.</b>` : '';
-}
-function levelsHint(kind, entry, stop, tgt, s, r, broker) {
-  const parts = [];
-  if (s) parts.push(`<span class="muted">Suggestion: stop <b>${s.stop}</b> (2 × daily move
-    ${px(r.levels.atr14)}) · target <b>${s.target}</b> (2:1 reward:risk)${s.capped
-    ? ` — <b>held within ${Math.round(SAXO_CAP * 100)}% of the entry</b>, the most Saxo accepts`
-    : ''}</span>`);
-  const far = saxoTooFar(entry, stop, tgt, broker);
-  if (far) parts.push(far);
-  if (entry && stop) {
-    const wrong = kind === 'short' ? stop <= entry : stop >= entry;
-    parts.push(wrong ? `<b class="bad">the stop must sit ${kind === 'short' ? 'ABOVE' : 'BELOW'}
-      the purchase price</b>` : `risk <b>${fmt(Math.abs(entry - stop) / entry * 100, 1)}%</b>${
-      tgt ? ` · reward <b>${fmt(Math.abs(tgt - entry) / entry * 100, 1)}%</b> · reward:risk <b>${
-      fmt(Math.abs(tgt - entry) / Math.abs(entry - stop), 1)} : 1</b>` : ''}`);
-  }
-  return parts.join('<br>');
 }
 async function fxTo(from, to) {
   if (!from || !to || from === to) return 1;
@@ -408,7 +377,6 @@ function defaultsBuy(refill) {
   updBuy();
 }
 function limitTyped() { if (!B_TOUCHED) buySuggest(true); updBuy(); }
-function buyLast() { defaultsBuy(true); }
 function buySuggest(quiet) {
   const r = rowBy(SEL), s = suggestLevels(num('b-px'), ((r || {}).levels || {}).atr14, true);
   if (s.stop == null) return;

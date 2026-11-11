@@ -1083,7 +1083,13 @@ function connectSSE() {
         .includes(e.to_state)) refresh();
   }, connPill);
 }
-refresh(); connectSSE(); poll(refresh, 30000);
+/* /approvals#c-<id> is linked from Orders, Trading, Portfolio and Telegram:
+   bring that card into view once the first load has drawn it */
+refresh().then(() => {
+  const el = location.hash && document.getElementById(decodeURIComponent(location.hash.slice(1)));
+  if (el) { el.scrollIntoView({block: 'start'}); el.style.outline = '2px solid var(--accent)'; }
+}).catch(() => {});
+connectSSE(); poll(refresh, 30000);
 
 /* ── archive: processed approvals leave the page and are kept here ── */
 const OUTCOME = {

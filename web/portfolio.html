@@ -372,7 +372,9 @@ function ptile(o) {
   return `<div class="ptile ${kind}">
     <div class="pt-head"><span class="pt-label">${label}</span>${chip}</div>
     ${body}
-    ${status || action ? `<div class="pt-foot">${status ? `<span><i class="pt-dot ${status[0]}"></i>${status[1]}</span>` : '<span></span>'}${action}</div>` : ''}
+    ${status || action ? `<div class="pt-foot">${status ? (status[0] === 'plan'
+        ? `<span class="pill warn" title="No order exists for this level. If the price gets there, nothing happens unless you act.">⚠ ${status[1]}</span>`
+        : `<span><i class="pt-dot ${status[0]}"></i>${status[1]}</span>`) : '<span></span>'}${action}</div>` : ''}
   </div>`;
 }
 

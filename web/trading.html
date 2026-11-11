@@ -78,7 +78,7 @@
 </main>
 <script>
 const CCY = DESK_CCY;                               // nav.js
-let openId = null;
+let openId = decodeURIComponent(location.hash.slice(1)) || null;   // /trading#<run id>
 async function launch() {
   const ex = document.getElementById('exchange').value;
   const t = document.getElementById('ticker').value.trim().toUpperCase();
@@ -578,5 +578,9 @@ function renderFeed(events) {
       — ${esc(x.said)}${x.n > 1 ? ` (${fmt(x.n, 0)} times)` : ''}</li>`)
     .join('') || '<li class="muted">nothing yet</li>';
 }
-refresh(); poll(refresh, 8000);
+refresh().then(() => {                 // arrived by a link to one run
+  const el = openId && document.getElementById('d-' + openId);
+  if (el) el.scrollIntoView({block: 'start'});
+}).catch(() => {});
+poll(refresh, 8000);
 </script>
