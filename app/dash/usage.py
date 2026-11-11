@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..providers import registry
+from .. import origin
 
 # ── LLM usage (the /usage page) ─────────────────────────────────────────────
 # Every model call is a row in agent_runs. On the Max subscription (claude_sdk)
@@ -65,15 +66,14 @@ def usage_source(agent_id, kind=None, trigger=None, exchange=None,
         return "agent_qa"
     if not linked:                           # dangling work_item_id
         return "other"
-    t = (trigger or "").strip().lower()
-    if kind == "override" or t.startswith("human override"):
+    code, _ = origin.classify(kind, trigger)
+    if code == origin.OVERRIDE:
         return "override"
-    if kind == "sell_review" or t.startswith("watcher:"):
+    if code == origin.EXIT_REVIEW:
         return "exit_review"
-    if t.startswith("event scan"):
+    if code == origin.VOLUME_SCAN:
         return "volume_scan"
-    if kind == "screen" or t.startswith("screener agent") or \
-            t.startswith("deterministic fallback"):
+    if code in (origin.DAILY_SCREEN, origin.DAILY_FALLBACK):
         from ..exchanges import REGIONS
         for region, exchanges in REGIONS.items():
             if exchange in exchanges:

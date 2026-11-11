@@ -50,6 +50,7 @@ import logging
 from .accounting import db
 from .exchanges import lot_size as board_lot
 from .accounting import holdings as _book
+from . import origin as run_origin
 
 log = logging.getLogger(__name__)
 
@@ -148,28 +149,33 @@ def thesis_hash(thesis_json):
 
 
 def origin(kind, trigger):
-    """What started the run, in words (mirrors dashboards.usage_source)."""
+    """What started the run, in words. The decision is app/origin.py's (the
+    Runs page and the Usage page read the same one); this is the wording."""
     t = (trigger or "").strip()
-    tl = t.lower()
-    reason = t.split(": ", 1)[1] if ": " in t else ""
-    if tl.startswith("manual ") and " from trigger" in tl:
-        return "Your price trigger" + (f" — {reason}" if reason else "")
-    if kind == "manual" or tl.startswith("manual "):
+    code, detail = run_origin.classify(kind, trigger)
+    more = f" — {detail}" if detail else ""
+    if code == run_origin.PRICE_TRIGGER:
+        return "Your price trigger" + more
+    if code == run_origin.MANUAL_TRADE:
         src = t.split(" from ", 1)[1] if " from " in t else ""
         return "Manual trade you started" + (f" from {src}" if src else "")
-    if kind == "override" or tl.startswith("human override"):
-        return "Your override of a PASS" + (f" ({t[len('human override of '):]})"
-                                            if tl.startswith("human override of ")
-                                            else "")
-    if kind == "sell_review" or tl.startswith("watcher:"):
-        return "Exit review (price watcher)" + (f" — {reason}" if reason else "")
-    if tl.startswith("event scan"):
-        return "Volume scan" + (f" — {reason}" if reason else "")
-    if tl.startswith("deterministic fallback"):
+    if code == run_origin.OVERRIDE:
+        return "Your override of a PASS" + (f" ({detail})" if detail else "")
+    if code == run_origin.EXIT_REVIEW:
+        return "Exit review (price watcher)" + more
+    if code == run_origin.VOLUME_SCAN:
+        return "Volume scan" + more
+    if code == run_origin.DAILY_FALLBACK:
         return "Daily screen (most-active fallback)"
-    if kind == "screen" or tl.startswith("screener"):
-        return "Daily screen" + (f" — {reason}" if reason else "")
-    if not t:
+    if code == run_origin.DAILY_SCREEN:
+        return "Daily screen" + more
+    if code == run_origin.LAUNCH_FORM:
+        return "Manual run (the Launch form on the Runs page)"
+    if code == run_origin.MARKETS_PAGE:
+        return "Manual run (Research on the Markets page)"
+    if code == run_origin.CHAT:
+        return "Asked for in Claire's chat" + more
+    if code == run_origin.UNRECORDED:
         return "Manual run (you, Bob or the dashboard)"
     return f"Other — {t}"
 

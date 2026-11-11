@@ -24,6 +24,7 @@ from ..tools import tradingview
 from ..tools.files import JailError
 from .common import session_facts
 from ..accounting import holdings
+from .. import origin as run_origin
 
 log = logging.getLogger(__name__)
 
@@ -298,36 +299,27 @@ class RunViews:
             (d["ticker"],)).fetchone()
         trig = d.get("trigger") or ""
         kind = d.get("kind")
-        reason = None
-        if kind == "override" or d.get("override_of"):
-            origin = "override"
-        elif kind == "sell_review" or trig.startswith("watcher:"):
-            origin = "price_alert"
-            reason = trig.split(": ", 1)[1] if ": " in trig else trig
-        elif trig.startswith("event scan"):
-            origin = "volume_scan"
-            reason = trig.split(": ", 1)[1] if ": " in trig else None
-        elif trig.startswith("deterministic fallback"):
-            origin = "daily_screen"
-            reason = ("near the top of the most-active list (the "
-                      "screener agent was unavailable)")
-        elif trig.startswith("screener") or kind == "screen":
-            origin = "daily_screen"
-            reason = trig.split(": ", 1)[1] if ": " in trig else None
-        elif trig.startswith("launched from the Trading page"):
-            origin, reason = "you", "the Launch form on the Trading page"
-        elif trig.startswith("launched from the Markets page"):
-            origin, reason = "you", "Research on the Markets page"
-        elif trig.startswith("manual "):
-            origin, reason = "you", trig
-        elif trig.startswith("chat: "):
-            origin, reason = "chat", trig[len("chat: "):]
-        elif not trig:
+        # what started it: decided in app/origin.py (the Usage page and
+        # the Telegram card read the same decision), worded here
+        code, detail = run_origin.classify(kind, trig,
+                                           override_of=d.get("override_of"))
+        origin, reason = {
+            run_origin.OVERRIDE: ("override", None),
+            run_origin.EXIT_REVIEW: ("price_alert", detail),
+            run_origin.VOLUME_SCAN: ("volume_scan", detail),
+            run_origin.DAILY_FALLBACK: (
+                "daily_screen", "near the top of the most-active list (the "
+                                "screener agent was unavailable)"),
+            run_origin.DAILY_SCREEN: ("daily_screen", detail),
+            run_origin.LAUNCH_FORM: (
+                "you", "the Launch form on the Trading page"),
+            run_origin.MARKETS_PAGE: ("you", "Research on the Markets page"),
+            run_origin.PRICE_TRIGGER: ("you", trig),
+            run_origin.MANUAL_TRADE: ("you", trig or None),
+            run_origin.CHAT: ("chat", detail),
             # runs launched before 2026-11-06 recorded no source
-            origin = "unrecorded"
-        else:
-            origin = "other"
-            reason = trig
+            run_origin.UNRECORDED: ("unrecorded", None),
+        }.get(code, ("other", trig))
         conv = th.get("conviction")
         word = None
         if isinstance(conv, (int, float)):
