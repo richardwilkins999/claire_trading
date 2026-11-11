@@ -23,6 +23,7 @@ DST transitions are honoured; it is resolved on every call, not cached.
 """
 import json
 import os
+import queue
 import threading
 import time
 from datetime import date, datetime, time as dtime, timedelta
@@ -246,8 +247,83 @@ class Scheduler:
     Jobs whose `runs_in` isn't this process (watcher) are displayed by the UI
     but executed elsewhere."""
 
-    def __init__(self, conn, runners: dict, *, clock=time.time, poll=20):
+    # Jobs that can take minutes — the screener's model call, a network
+    # scan, the nightly backup and its AI note. They used to run inline, so
+    # one of them held up the 2-minute price-trigger check and the 5-minute
+    # custodian for as long as it took (REVIEW-2026-11-11 §3.5). They now
+    # run one at a time on a worker thread. Everything else — the custodian,
+    # price triggers, reconcile: the jobs that touch orders and the ledger —
+    # still runs inline on the tick, in order, never two at once.
+    BACKGROUND = ("analysis_", "event_scan", "maintenance")
+
+    def __init__(self, conn, runners: dict, *, clock=time.time, poll=20,
+                 background=None):
         self.conn, self.runners, self.clock, self.poll = conn, runners, clock, poll
+        self.background = self.BACKGROUND if background is None \
+            else tuple(background)
+        self._queue = queue.Queue()
+        self._busy = set()              # background jobs queued or running
+        self._busy_lock = threading.Lock()
+        self._worker = None
+
+    def _is_background(self, job) -> bool:
+        return any(job == b or job.startswith(b) for b in self.background)
+
+    def _run(self, job, spec):
+        """Run one job; → its result dict. Errors are data, never a crash."""
+        started = time.monotonic()
+        try:
+            result = self.runners[job](spec)
+        except Exception as e:                  # noqa: BLE001
+            result = {"error": str(e)[:300]}
+            log.exception("scheduled job %r failed", job)
+        took = time.monotonic() - started
+        if took > SLOW_JOB_S:
+            if self._is_background(job):
+                log.info("scheduled job %r took %.0f s (in the background)",
+                         job, took)
+            else:
+                log.warning("scheduled job %r took %.0f s; the other "
+                            "schedules waited for it", job, took)
+        return result
+
+    def _work(self):
+        while True:
+            job, spec = self._queue.get()
+            try:
+                result = self._run(job, spec)
+                self.conn.execute(
+                    "UPDATE schedules SET last_result=? WHERE job=?",
+                    (json.dumps(result, default=str), job))
+            except Exception as e:              # noqa: BLE001
+                swallowed(log, f"background job {job!r}: result not saved",
+                          e, trace=True)
+            finally:
+                with self._busy_lock:
+                    self._busy.discard(job)
+                self._queue.task_done()
+
+    def _enqueue(self, job, spec, now) -> bool:
+        """Hand a slow job to the worker. False if it is still queued or
+        running from last time — it is not started twice."""
+        with self._busy_lock:
+            if job in self._busy:
+                return False
+            self._busy.add(job)
+        # stamped now, so the next tick does not see it as due again
+        self.conn.execute(
+            "UPDATE schedules SET last_run_at=?, last_result=? WHERE job=?",
+            (now, json.dumps({"running": True, "started_at": now}), job))
+        if self._worker is None or not self._worker.is_alive():
+            self._worker = threading.Thread(target=self._work, daemon=True,
+                                            name="scheduler-worker")
+            self._worker.start()
+        self._queue.put((job, spec))
+        return True
+
+    def wait_idle(self):
+        """Block until every background job handed over has finished."""
+        self._queue.join()
 
     def tick(self):
         now = int(self.clock())
@@ -272,17 +348,11 @@ class Scheduler:
                 swallowed(log, f"schedule {job!r} has a spec that cannot be "
                                "read; it is not running", e, every=3600)
                 continue
-            started = time.monotonic()
-            try:
-                result = self.runners[job](spec)
-            except Exception as e:              # noqa: BLE001 — job errors are
-                result = {"error": str(e)[:300]}  # data, never crashes
-                log.exception("scheduled job %r failed", job)
-            took = time.monotonic() - started
-            if took > SLOW_JOB_S:
-                # jobs run inline: a slow one holds up every other schedule
-                log.warning("scheduled job %r took %.0f s; the other "
-                            "schedules waited for it", job, took)
+            if self._is_background(job):
+                if self._enqueue(job, spec, now):
+                    fired.append(job)
+                continue
+            result = self._run(job, spec)
             self.conn.execute(
                 "UPDATE schedules SET last_run_at=?, last_result=? WHERE job=?",
                 (now, json.dumps(result, default=str), job))

@@ -4,6 +4,7 @@ the sibling modules; everything a request needs from the server is on
 `self.ctx` (app/dash/ctx.py), which create_server sets on a subclass.
 Moved out of the create_server closure in app/dashboards.py
 (REVIEW-2026-11-11 §3.2)."""
+import gzip
 import hmac
 import json
 import logging
@@ -72,14 +73,44 @@ class Handler(SystemViews, RunViews, OrderViews, Actions, BaseHTTPRequestHandler
         except (BrokenPipeError, ConnectionResetError):
             pass
 
-    def _send(self, code, body, ctype="application/json"):
+    GZIP_MIN = 1024         # below this the saving is not worth the CPU
+    GZIP_TYPES = ("application/json", "text/", "application/javascript",
+                  "image/svg+xml")
+
+    def _send(self, code, body, ctype="application/json", headers=()):
         data = body if isinstance(body, bytes) else json.dumps(
             body, default=str).encode()
+        extra = list(headers)
+        # /api/runs and /api/approvals are over 100 KB of JSON and are
+        # polled; nothing was compressed (REVIEW-2026-11-11 §4.2)
+        if len(data) >= self.GZIP_MIN and ctype.startswith(self.GZIP_TYPES) \
+                and "gzip" in (self.headers.get("Accept-Encoding") or ""):
+            data = gzip.compress(data, compresslevel=5)
+            extra += [("Content-Encoding", "gzip"),
+                      ("Vary", "Accept-Encoding")]
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        for k, v in extra:
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(data)
+
+    def _send_file(self, path, ctype):
+        """A page or a shared script/stylesheet. The browser keeps its copy
+        and asks "still this version?" each time (no-cache = always check):
+        an unchanged file costs a 304 with no body, a changed one is picked
+        up at once — nothing is ever served stale."""
+        st = path.stat()
+        etag = f'"{st.st_mtime_ns:x}-{st.st_size:x}"'
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            return
+        self._send(200, path.read_bytes(), ctype,
+                   headers=[("ETag", etag), ("Cache-Control", "no-cache")])
 
     def _check_request(self):
         """Host allowlist + Origin match, for every method. Without the
@@ -138,11 +169,11 @@ class Handler(SystemViews, RunViews, OrderViews, Actions, BaseHTTPRequestHandler
             u = urlparse(self.path)
             q = {k: v[0] for k, v in parse_qs(u.query).items()}
             if u.path in PAGES:
-                return self._send(200, (WEB / PAGES[u.path]).read_bytes(),
-                                  "text/html; charset=utf-8")
+                return self._send_file(WEB / PAGES[u.path],
+                                       "text/html; charset=utf-8")
             if u.path in STATIC:
                 name, ctype = STATIC[u.path]
-                return self._send(200, (WEB / name).read_bytes(), ctype)
+                return self._send_file(WEB / name, ctype)
             route = {
                 "/api/overview": self._overview,
                 "/api/approvals": self._approvals,
