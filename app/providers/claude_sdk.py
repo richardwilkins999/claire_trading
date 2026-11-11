@@ -435,14 +435,18 @@ class SdkChat:
         meter = _meter_from(cbs, self.provider_id, self.model)
         return self._copy(meter=meter or self.meter)
 
-    def invoke(self, messages, config=None, *, timeout_s=None, **_):
+    def invoke(self, messages, config=None, *, resume=None, timeout_s=None,
+               **_):
+        """`resume` makes this call one more turn of an earlier session (an
+        analyst's research loop, say) instead of a conversation of its own."""
         system, prompt = split_messages(messages)
         fmt = None
         if self.schema is not None:
             fmt = {"type": "json_schema",
                    "schema": self.schema.model_json_schema()}
         opts = base_options(model=self.model, fallback_model=self.fallback_model,
-                            system_prompt=system, output_format=fmt)
+                            system_prompt=system, output_format=fmt,
+                            resume=resume)
         result, texts = self._converse(prompt, opts, timeout_s=timeout_s)
         if self.schema is not None:
             if result.structured_output is None:
@@ -533,11 +537,12 @@ def _tool_events(sdk, m):
 
 
 def run_tool_loop(chat: SdkChat, system, task, lc_tools, *,
-                  max_turns=TOOL_LOOP_MAX_TURNS, timeout_s=None):
+                  max_turns=TOOL_LOOP_MAX_TURNS, timeout_s=None, info=None):
     """An analyst's research loop. Returns (transcript lines, truncation note).
     A loop that runs out of turns — or out of time — still hands back what it
     gathered, which then goes to the structured extraction like any other
-    transcript."""
+    transcript. `info`, if given, receives "session_id" for a loop that ran
+    to its end: the session a follow-up call may resume."""
     sdk = _sdk()
     q = chat._query or sdk.query
     tools = lc_to_sdk_tools(lc_tools)
@@ -574,6 +579,8 @@ def run_tool_loop(chat: SdkChat, system, task, lc_tools, *,
             meter.finish(result)
     if result is not None and result.is_error and not truncated:
         truncated = _result_error(result)[:200]
+    if info is not None and result is not None and not truncated:
+        info["session_id"] = result.session_id
     return lines, truncated
 
 

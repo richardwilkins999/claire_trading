@@ -6,6 +6,7 @@ call is metered; structured output is validated at the moment of production.
 offline in tests; production uses the registry.
 """
 import json
+import os
 from datetime import datetime, timezone
 
 from ..providers import registry
@@ -191,6 +192,34 @@ def make_debater(conn, agent_id, narratives, *, structured_factory):
     return node
 
 
+# Opt-in (REVIEW-2026-11-11 §4.1 item 4): on the Claude SDK, ask for the
+# report as one more turn of the research session instead of spawning a
+# second subprocess that is sent the transcript. Off unless set to 1 — it
+# has not been run against the real CLI yet.
+ONE_SESSION_ENV = "CLAIRE_SDK_ANALYST_ONE_SESSION"
+
+
+def _one_session(env) -> bool:
+    raw = (env if env is not None else os.environ).get(ONE_SESSION_ENV)
+    return str(raw or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _extract_in_session(llm, system, ask, session_id):
+    """The AnalystReport from the research session itself, or None when that
+    is not possible (not the SDK, no finished session) or did not work —
+    the caller then extracts from the transcript, as it always has."""
+    from ..providers import claude_sdk
+    if not session_id or not claude_sdk.is_sdk(llm):
+        return None
+    try:
+        return llm.invoke([("system", system), ("user", ask)],
+                          resume=session_id)
+    except Exception as e:                      # noqa: BLE001
+        swallowed(log, "analyst report could not be taken from the research "
+                       "session — extracting from the transcript instead", e)
+        return None
+
+
 def make_analyst(conn, agent_id, narratives, tool_builder, *,
                  structured_factory, agent_factory=None, env=None):
     """Tool loop for research, then one structured extraction call — robust
@@ -203,24 +232,28 @@ def make_analyst(conn, agent_id, narratives, tool_builder, *,
                 f"Run kind: {state.kind}."
                 + (f"\n{render_trigger(state)}" if state.trigger else ""))
         tools = tool_builder(json.loads(a["tools"]), state)
+        session = {} if _one_session(env) else None
         transcript = _run_agent(conn, agent_id, state, system, task, tools,
-                                agent_factory, env)
+                                agent_factory, env, session)
         llm, _ = structured_factory(agent_id, AnalystReport,
                                     state.work_item_id)
-        obj = llm.invoke([
-            ("system", system),
-            ("user", f"{task}\n\nYour research transcript:\n{transcript}\n\n"
-                     f"Now emit the structured AnalystReport "
-                     f"(agent='{agent_id}', ticker='{state.ticker}', "
-                     f"data_asof=now in ISO-8601 UTC). `summary` must be ONE "
-                     f"plain sentence under 300 characters — no markdown, no "
-                     f"tables; your full reasoning belongs in the narrative. "
-                     f"`conviction` is strength 0..1; the signal carries "
-                     f"direction. `key_findings` MUST list 4-8 concrete facts "
-                     f"WITH NUMBERS and dates that a colleague could act on "
-                     f"(valuations, growth rates, levels, catalysts) — this "
-                     f"is what the debate and the arbiter actually receive, "
-                     f"so anything you leave out is lost.")])
+        ask = (f"Now emit the structured AnalystReport "
+               f"(agent='{agent_id}', ticker='{state.ticker}', "
+               f"data_asof=now in ISO-8601 UTC). `summary` must be ONE "
+               f"plain sentence under 300 characters — no markdown, no "
+               f"tables; your full reasoning belongs in the narrative. "
+               f"`conviction` is strength 0..1; the signal carries "
+               f"direction. `key_findings` MUST list 4-8 concrete facts "
+               f"WITH NUMBERS and dates that a colleague could act on "
+               f"(valuations, growth rates, levels, catalysts) — this "
+               f"is what the debate and the arbiter actually receive, "
+               f"so anything you leave out is lost.")
+        obj = _extract_in_session(llm, system, ask, (session or {}).get("id"))
+        if obj is None:
+            obj = llm.invoke([
+                ("system", system),
+                ("user", f"{task}\n\nYour research transcript:\n{transcript}"
+                         f"\n\n{ask}")])
         if isinstance(obj, dict):
             obj = AnalystReport.model_validate(obj)
         # two artifacts, deliberately separate: the REPORT is the conclusion
@@ -253,11 +286,15 @@ RECURSION_LIMIT = 30
 STEP_BUDGET = 8                       # what we tell the agent it has
 
 
-def _run_agent(conn, agent_id, state, system, task, tools, agent_factory, env):
+def _run_agent(conn, agent_id, state, system, task, tools, agent_factory, env,
+               session=None):
     """Run the research loop, STREAMING so that a step-budget overrun still
     leaves us the work done so far. Hitting the limit used to raise and throw
     the whole analyst away (the SBUX fundamental run cost 40 steps and
-    produced nothing) — now it degrades to a partial report."""
+    produced nothing) — now it degrades to a partial report.
+
+    `session`, if given, receives "id": the Claude SDK session of a loop
+    that ran to its end, for the extraction to resume."""
     # Say the budget out loud, before anything dispatches. An agent that knows
     # it has roughly eight calls spends them on distinct sources instead of
     # re-querying one that came back empty, and finishes on evidence rather
@@ -275,11 +312,15 @@ def _run_agent(conn, agent_id, state, system, task, tools, agent_factory, env):
     if claude_sdk.is_sdk(model):
         # Max subscription: the SDK runs its own tool loop over the same
         # LangChain tools; metering and the partial-report behaviour match.
-        lines, truncated = claude_sdk.run_tool_loop(model, system, task, tools)
+        info = {}
+        lines, truncated = claude_sdk.run_tool_loop(model, system, task, tools,
+                                                    info=info)
         if truncated:
             lines.append(f"[system] RESEARCH CUT SHORT: {truncated}. Report "
                          f"on what was gathered above and say plainly what "
                          f"is missing.")
+        elif session is not None and info.get("session_id"):
+            session["id"] = info["session_id"]
         return "\n".join(lines[-60:])
     from langchain.agents import create_agent
     meter = registry.MeterCallback(conn, agent_id, state.work_item_id)
