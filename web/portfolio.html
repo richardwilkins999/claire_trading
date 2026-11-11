@@ -67,11 +67,11 @@
     paper book</span></h2>
   <div id="accounts"></div>
 
-  <h2>Price alerts</h2>
+  <h2>Trailing alerts</h2>
   <p class="muted small" style="margin-top:-.3rem">Safety alerts on positions you
-    hold: if the price falls this far from its best since you bought, Claire puts
-    a "should we sell?" review on Approvals — it never sells on its own. An alert
-    is removed when the position is sold.</p>
+    hold: if the price falls this far from its best since you bought, Claire starts
+    an exit review ("should we sell?") and puts it on Approvals — an alert never
+    sells on its own. It is removed when the position is sold.</p>
   <div id="alerts"></div>
 
   <h2>Closed in the last 30 days <a href="/trades" style="font-size:.8rem;font-weight:400">every trade, with the reason →</a></h2>
@@ -85,14 +85,16 @@ const RANGES = [['5d', '1W'], ['1mo', '1M'], ['3mo', '3M'], ['1y', '1Y']];
 const typing = () => ['INPUT', 'SELECT']
   .includes((document.activeElement || {}).tagName);
 
-async function refresh() {
-  if (typing()) return;
+async function refreshData() {
   DATA = await api('/api/portfolio');
   renderStrip(); renderCols(); renderRest();
   sellRestore();                      // an open Sell form survives refresh
   startClocks();
   renderSaxoLive();                   // independent: a Saxo hiccup never
 }                                     // blanks the rest of the page
+/* not redrawn under your cursor — the menu bar then says "paused while you
+   are editing", and "cannot reach Claire" when the load fails */
+const refresh = tracked(refreshData, {paused: () => typing()});
 
 /* Real money, read-only, straight from Saxo (same data as /saxo?env=live).
    Kept visibly apart from the desk's paper book above and below it. */
@@ -119,16 +121,16 @@ async function renderSaxoLive() {
   const sgn = (v, c) => v == null ? '—' :
     `<span class="${v > 0 ? 'ok' : v < 0 ? 'bad' : ''}">${v > 0 ? '+' : ''}${
       fmt(v, 2)}${c ? ' ' + esc(c) : ''}</span>`;
-  const upl = pos.some(p => p.pnl_base != null)
-    ? pos.reduce((s, p) => s + (p.pnl_base || 0), 0)
-    : b.UnrealizedMarginProfitLoss;
+  /* a position with no price has no P/L: the total says how many it leaves
+     out, instead of passing for the whole account's (nav.js) */
+  const upl = unrealisedOf(pos, b.UnrealizedMarginProfitLoss);
   const rows = pos.length ? pos.map(p => `<tr>
       <td><a href="/saxo?env=live&pos=${encodeURIComponent(p.symbol || '')}"
         title="open its chart on the Saxo accounts page">
         <b>${esc(p.symbol)}</b></a><br><span class="muted">${esc(p.name || '')}</span></td>
       <td style="text-align:right">${fmt(p.amount, 0)}</td>
       <td style="text-align:right">${fmt(p.avg_open_price, p.avg_open_price < 1 ? 4 : 2)}</td>
-      <td style="text-align:right">${p.price_missing ? '<span class="warn" title="Saxo sent no price for this market">—</span>'
+      <td style="text-align:right">${p.price_missing ? `<span class="warn" title="${esc(p.price_note || 'Saxo sent no price for this market')}">no price</span>`
         : fmt(p.current_price, p.current_price < 1 ? 4 : 2)}${p.price_src ? `<br><span class="muted" style="font-size:.7rem"
         title="Saxo sends no live price for this exchange on this account">via ${esc(p.price_src)}</span>` : ''}</td>
       <td style="text-align:right">${sgn(p.pnl, p.currency)}</td>
@@ -141,7 +143,8 @@ async function renderSaxoLive() {
     <p><b class="bad">⚠ REAL MONEY</b> · Saxo account
       ${esc(d.account_id || '')} · read-only · ${link}</p>
     <p>Total value <b>${m(b.TotalValue)}</b> · cash <b>${m(b.CashBalance)}</b>
-      · unrealised P/L <b>${sgn(upl, ccy)}</b> · available to trade
+      · unrealised P/L${upl.note ? ` <span class="warn">(${esc(upl.note)})</span>` : ''}
+      <b>${sgn(upl.value, ccy)}</b> · available to trade
       <b>${m(b.MarginAvailableForTrading)}</b></p>
     <table><thead><tr><th>Instrument</th><th style="text-align:right">Qty</th>
       <th style="text-align:right">Avg cost</th>
@@ -172,9 +175,9 @@ function renderCols() {
   const ex = DATA.exchanges;
   const names = Object.keys(ex).sort();
   document.getElementById('empty').innerHTML = names.length ? '' :
-    `<p class="muted">No open positions yet. When a thesis is approved on
-     <a href="/">Mission Control</a> and the order fills, the stock appears
-     here automatically — with its chart, your entry price and your stop.</p>`;
+    `<p class="muted">No open positions yet. When you approve a trade on
+     <a href="/approvals">Approvals</a> and the order fills, the stock appears
+     here automatically — with its chart, what you paid and your stop-loss.</p>`;
   document.getElementById('cols').innerHTML = names.map(name => {
     const items = ex[name];
     const open = items[0].is_open;
@@ -222,7 +225,7 @@ function floorEditor(p) {
   if (!ed) return '';
   return `<div class="pfloor">
     <div class="row" style="gap:.5rem;flex-wrap:wrap;align-items:center;margin:.2rem 0">
-      <label title="how far below the best price since you bought (above, for a short) the alert sits">Trailing alert
+      <label for="fl-${esc(k)}" title="how far below the best price since you bought (above, for a short) the alert sits">Trailing alert
         <input id="fl-${esc(k)}" type="number" min="0.5" max="90" step="0.5" style="width:70px"
           value="${esc(ed.pct ?? '')}" oninput="floorTyped(${a})"> %</label>
       <button onclick="floorSave(${a})">Save</button>
@@ -286,14 +289,13 @@ async function floorSave(k) {
    3% before alerting again, up to 6 times a day) */
 function alertFired(lv, ccy, short) {
   if (!lv.alert_fired_today) return '';
-  const t = lv.alert_last_fired ? new Date(lv.alert_last_fired * 1000)
-    .toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}) : '';
+  const t = lv.alert_last_fired ? esc(fmtClock(lv.alert_last_fired)) : '';
   const rv = lv.alert_review || {};
   const said = rv.verdict === 'pass' ? 'the desk reviewed it and said <b>hold</b>'
     : rv.verdict === 'sell' ? 'the desk reviewed it and said <b>sell</b> — see Approvals'
     : rv.state === 'failed' ? 'the review it started <b class="bad">failed</b>'
     : rv.state ? `its review is ${esc(rv.state)}` : 'it started a sell review';
-  const link = rv.id ? ` (<a href="/trading#${esc(rv.id)}">review</a>)` : '';
+  const link = rv.id ? ` (<a href="/trading#${esc(rv.id)}" title="run ${esc(rv.id)}">the review</a>)` : '';
   return `<div class="pt-callout"><b class="warn">Hit today${t ? ' at ' + t : ''}</b> at your ${fmt(lv.alert_pct, 1)}% level
     (${money(lv.alert_set_level, ccy)}) — ${said}${link}. ` +
     (lv.alert_done_today ? 'It has alerted the most it does in a day; it watches again tomorrow.'
@@ -374,7 +376,7 @@ function ptile(o) {
     ${body}
     ${status || action ? `<div class="pt-foot">${status ? (status[0] === 'plan'
         ? `<span class="pill warn" title="No order exists for this level. If the price gets there, nothing happens unless you act.">⚠ ${status[1]}</span>`
-        : `<span><i class="pt-dot ${status[0]}"></i>${status[1]}</span>`) : '<span></span>'}${action}</div>` : ''}
+        : `<span><i class="pt-dot ${status[0]}" aria-hidden="true"></i>${status[1]}</span>`) : '<span></span>'}${action}</div>` : ''}
   </div>`;
 }
 
@@ -490,11 +492,13 @@ function drawPosChart(id, d) {
   if (lv.avg_cost_native != null) levels.push({value: lv.avg_cost_native,
     color: 'var(--accent)', label: 'your avg cost', dash: '5 3'});
   if (lv.stop_loss != null) levels.push({value: lv.stop_loss,
-    color: 'var(--bad)', label: 'thesis stop', dash: '7 4'});
+    color: 'var(--bad)', label: 'stop-loss', dash: '7 4'});
   if (lv.take_profit != null) levels.push({value: lv.take_profit,
-    color: 'var(--good)', label: 'target', dash: '7 4'});
+    color: 'var(--good)', label: 'take-profit', dash: '7 4'});
   if (lv.alert != null) levels.push({value: lv.alert,
-    color: 'var(--warn)', label: lv.alert_rule || 'alert', dash: '2 3'});
+    color: 'var(--warn)', dash: '2 3',      // "trailing alert · −8% of 101.20"
+    label: esc('trailing alert' + (lv.alert_rule
+      ? ' · ' + String(lv.alert_rule).replace(/^trailing\s*/, '') : ''))});
   drawChart(el, d.chart, {height: 210, volume: true, sma20: false,
     levels, fills: (d.fills || []).map(f => ({ts: f.ts, price: f.price_native,
       side: f.side, qty: f.qty}))});
@@ -514,8 +518,8 @@ function startClocks() {
   const tick = () => {
     for (const [name, items] of Object.entries(DATA.exchanges)) {
       const el = document.getElementById('clk-' + name);
-      if (el) el.textContent = new Date().toLocaleTimeString('en-GB',
-        {timeZone: TZ[name] || 'UTC', hour: '2-digit', minute: '2-digit'});
+      /* the exchange's own clock, labelled as such: "09:31 EST" */
+      if (el) el.textContent = fmtClock(new Date(), TZ[name] || 'UTC');
     }
   };
   tick(); clockTimer = setInterval(tick, 30000);
@@ -524,19 +528,20 @@ const TZ = DESK_TZ;                                 // nav.js
 
 function renderRest() {
   const d = DATA;
-  document.getElementById('accounts').innerHTML =
+  /* swapHtml (nav.js): an amount you typed is still there after a refresh */
+  swapHtml(document.getElementById('accounts'),
     '<table><tr><th>account</th><th>cash</th><th>positions</th>' +
-    '<th>equity</th><th>realized P&amp;L</th><th></th></tr>' +
+    '<th>equity</th><th>realized P&amp;L</th><th><span class="sr">top up or withdraw</span></th></tr>' +
     d.accounts.map(a => `<tr><td><b>${esc(a.id)}</b></td>
       <td>${fmt(a.cash)} ${esc(a.ccy)}</td>
       <td>${fmt(a.positions_value)} ${esc(a.ccy)}</td>
       <td><b>${fmt(a.equity)} ${esc(a.ccy)}</b></td>
       <td class="${a.realized_pl >= 0 ? 'ok' : 'bad'}">${fmt(a.realized_pl)} ${esc(a.ccy)}</td>
       <td class="row"><input id="amt-${esc(a.id)}" type="number" placeholder="amount"
-        style="width:100px">
+        aria-label="amount of paper cash to top up or withdraw on ${esc(a.id)}, in ${esc(a.ccy)}" style="width:100px">
         <button class="ghost" onclick="acct(${jsArg(a.id)},'deposit')">top up</button>
         <button class="ghost" onclick="acct(${jsArg(a.id)},'withdraw')">withdraw
-        </button></td></tr>`).join('') + '</table>';
+        </button></td></tr>`).join('') + '</table>');
 
   document.getElementById('closed').innerHTML = d.closed.length === 0
     ? '<p class="muted">Nothing closed in the last 30 days.</p>'
@@ -549,17 +554,23 @@ function renderRest() {
       <td class="muted">${ts(c.closed_at)}</td></tr>`).join('') + '</table>';
 
   document.getElementById('alerts').innerHTML = d.alerts.length === 0
-    ? `<p class="muted">No alert rules yet — every position automatically
-       gets a down-8%-from-entry rule once it fills.</p>`
-    : '<table><tr><th>instrument</th><th>rule</th><th>threshold</th>' +
-      '<th>fires today</th><th>last fired</th></tr>' +
+    ? `<p class="muted">No alerts yet — every position automatically
+       gets an 8% trailing alert once it fills.</p>`
+    : '<table><tr><th>stock</th><th>alert</th><th>when it fires</th>' +
+      '<th>fired today</th><th>last fired</th></tr>' +
       d.alerts.map(a => `<tr><td>${esc(a.instrument_id)}</td>
-        <td>${esc(a.rule)}</td><td>${fmt(a.threshold)}</td>
+        <td title="rule code: ${esc(a.rule)}">${esc((ALERT_RULE[a.rule] || [a.rule])[0])}</td>
+        <td>${esc(ALERT_RULE[a.rule] ? ALERT_RULE[a.rule][1](a.threshold) : fmt(a.threshold))}</td>
         <td>${a.fire_count_today || 0}</td>
         <td class="muted">${ts(a.last_fired_at)}</td></tr>`).join('') +
       '</table>';
 }
 
+/* the alert rules, in words (the data says trail_pct, below_price, …) */
+const ALERT_RULE = {
+  trail_pct: ['trailing alert', t => `the price falls ${fmt(t, 1)}% from its best since you bought`],
+  below_price: ['price alert', t => `the price falls below ${fmt(t)}`],
+  above_price: ['price alert', t => `the price rises above ${fmt(t)}`]};
 async function acct(id, action) {
   const amount = Number(document.getElementById('amt-' + id).value);
   if (!amount || amount <= 0) return toast('enter an amount', false);
@@ -569,6 +580,7 @@ async function acct(id, action) {
     const r = await api('/api/account-action',
       {account_id: id, action, amount});
     toast(`${action} ✓ — balance ${fmt(r.balance)}`);
+    document.getElementById('amt-' + id).value = '';     // done: not an unsaved edit
   } catch (e) { toast(e.message, false); }
   refresh();
 }
