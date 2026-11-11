@@ -30,6 +30,10 @@ from decimal import ROUND_CEILING, Decimal
 
 from . import sessions
 from .accounting.money import from_micro, to_micro
+import logging
+from .logsetup import swallowed
+
+log = logging.getLogger(__name__)
 
 DEFAULT_EXPIRY_DAYS = 30
 MAX_EXPIRY_DAYS = 365
@@ -406,7 +410,8 @@ def _quotes(market, symbols):
     blind the rest."""
     try:
         return dict(market.spark(list(symbols))), {}
-    except Exception:                           # noqa: BLE001
+    except Exception as e:                      # noqa: BLE001
+        swallowed(log, "batch quote failed; pricing each symbol on its own", e)
         pass
     out, errors = {}, {}
     for s in symbols:
@@ -517,7 +522,8 @@ def _alert(alert, text):
         return
     try:
         alert(text, title="Claire trigger")
-    except Exception:                           # noqa: BLE001 — best effort
+    except Exception as e:                      # noqa: BLE001 — best effort
+        swallowed(log, "price-trigger alert was not sent", e)
         pass
 
 

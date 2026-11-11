@@ -34,6 +34,10 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 import httpx
+import logging
+from ..logsetup import swallowed
+
+log = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[2]
 ENVS = ("sim", "live")
@@ -398,7 +402,9 @@ def positions(which=None, **kw):
         })
     try:
         _add_openings(out, _get("openings", which, **kw).get("Data", []))
-    except Exception:                       # noqa: BLE001 — extra detail only
+    except Exception as e:                  # noqa: BLE001 — extra detail only
+        swallowed(log, "Saxo position-opening detail unavailable",
+                  e, every=600)
         pass
     for r in out:
         r.pop("_net_id", None)

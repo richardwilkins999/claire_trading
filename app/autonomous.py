@@ -7,6 +7,10 @@ import argparse
 import json
 
 import httpx
+import logging
+from .logsetup import swallowed
+
+log = logging.getLogger(__name__)
 
 REGIONS = {
     "asia": ["SGX", "HKEX", "TSE", "ASX"],
@@ -24,7 +28,9 @@ def pick_candidates(market, exchanges, held, limit=2):
     for ex in exchanges:
         try:
             rows = market.screener(ex, count=25)["rows"]
-        except Exception:                       # noqa: BLE001 — screener is
+        except Exception as e:                  # noqa: BLE001 — screener is
+            swallowed(log, "exchange listing failed while picking candidates",
+                      e)
             continue                            # unofficial; skip, don't die
         for r in rows:
             sym = r.get("symbol") or ""

@@ -16,6 +16,10 @@ import json
 import re
 import threading
 import time
+import logging
+from .logsetup import swallowed
+
+log = logging.getLogger(__name__)
 
 TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS arbiter_notes (
@@ -180,8 +184,8 @@ def write_ahead_once(conn, *, failed, llm_factory=None, clock=time.time):
             done.append(wi)
         except Exception as e:                  # noqa: BLE001 — next pass
             failed[wi] = clock()
-            print(f"arbiter notes: {wi} not written yet ({str(e)[:120]})",
-                  flush=True)
+            log.warning("arbiter notes for %s not written yet: %s", wi,
+                        str(e)[:200])
     return done
 
 
@@ -193,7 +197,8 @@ def start_writer_thread(conn, *, interval=30):
             try:
                 write_ahead_once(conn, failed=failed)
             except Exception as e:              # noqa: BLE001 — keep going
-                print(f"arbiter notes writer: {e}", flush=True)
+                swallowed(log, "arbiter-notes writer pass failed", e,
+                          trace=True)
             time.sleep(interval)
     t = threading.Thread(target=loop, daemon=True, name="arbiter-notes")
     t.start()

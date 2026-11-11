@@ -9,6 +9,10 @@ import json
 import time
 
 import httpx
+import logging
+from .logsetup import swallowed
+
+log = logging.getLogger(__name__)
 
 
 # A resume claims the token ('resuming') for as long as the graph runs. A
@@ -175,7 +179,9 @@ def retry_pending(conn, resume_post, *, clock=time.time):
                 "work_item_id": row["id"],
                 "status": "approved" if action == "approve" else "rejected",
                 "token": row["approval_token"], "actor": "human", **detail})
-        except Exception:                   # noqa: BLE001 — api down: next run
+        except Exception as e:              # noqa: BLE001 — api down: next run
+            swallowed(log, "retry of an authorised approval could not reach claire-api",
+                      e)
             continue
         if code == 200:
             done.append(row["id"])

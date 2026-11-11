@@ -13,6 +13,10 @@ from datetime import datetime, timezone
 
 from . import portfolio, price_triggers, sessions
 from .tools.market import yahoo_symbol
+import logging
+from .logsetup import swallowed
+
+log = logging.getLogger(__name__)
 
 
 def _quotes(market, symbols):
@@ -20,7 +24,8 @@ def _quotes(market, symbols):
         return {}
     try:
         return dict(market.spark(symbols))
-    except Exception:                           # noqa: BLE001
+    except Exception as e:                      # noqa: BLE001
+        swallowed(log, "batch quote failed; pricing each symbol on its own", e)
         pass
     out = {}
     for s in symbols:                           # one bad name must not blind

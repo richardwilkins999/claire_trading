@@ -15,6 +15,9 @@ from app.tools import tradingview
 from .test_dashboards import DKEY, FakeMarket
 
 
+DEFERRED_CLOSE_SLACK = 4
+
+
 def _db_fds(path):
     """Descriptors this process holds on desk.db / desk.db-wal."""
     n = 0
@@ -29,11 +32,9 @@ def _db_fds(path):
 
 
 def _settled(path, target, wait=2.0):
-    """The count once request threads have finished. A handler thread
-    releases its connection just AFTER the response is sent, so reading the
-    count the instant a response arrives races the last thread — the test
-    then failed or passed on scheduling alone (seen 2026-11-11). A real leak
-    never settles, so it still fails after the wait."""
+    """The count once request threads have finished: a handler thread
+    releases its connection just AFTER the response is sent, so the count
+    is read with a short wait rather than the instant a response arrives."""
     deadline = time.monotonic() + wait
     n = _db_fds(path)
     while n > target and time.monotonic() < deadline:
@@ -89,7 +90,15 @@ def test_dashboard_requests_do_not_leak_db_connections(tmp_path):
         after = _settled(path, before)
     finally:
         srv.shutdown()
-    assert after <= before, f"{after - before} desk.db descriptors leaked"
+    # A leak is one connection (2-3 descriptors) per request: 80+ here. A
+    # handful is SQLite itself: closing a connection while another one in
+    # the process holds a lock on the same file POSTPONES closing that
+    # descriptor until the lock is gone, so how many are parked at any
+    # instant depends on how the request threads overlapped. Asserting
+    # "not one more" made this test fail on scheduling alone (2026-11-11);
+    # the live dashboards process sat at the same count across 260 requests.
+    assert after - before <= DEFERRED_CLOSE_SLACK, \
+        f"{after - before} desk.db descriptors leaked over 40 requests"
 
 
 def test_tradingview_reuses_one_client():

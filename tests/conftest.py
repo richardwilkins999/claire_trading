@@ -5,6 +5,14 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _fresh_log_throttle():
+    """logsetup.swallowed holds repeats back for minutes; one test's failure
+    must not silence the line another test is looking for."""
+    from app import logsetup
+    logsetup.reset()
+
+
+@pytest.fixture(autouse=True)
 def _no_real_web_search(monkeypatch):
     """web_search with no injected client would ask Tavily or the news
     feeds for real. A test that wants search passes `_client` / `search_fn`."""

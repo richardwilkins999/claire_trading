@@ -22,6 +22,10 @@ from pydantic import BaseModel, Field
 from .graph.nodes_analysis import default_structured_factory
 from .providers import registry
 from .tools import tradingview
+import logging
+from .logsetup import swallowed
+
+log = logging.getLogger(__name__)
 
 RECENT_SESSIONS_DAYS = 5        # don't re-analyse the same name inside a week
 CATALYST_SHORTLIST = 8          # how many names get a news check (phase 2)
@@ -68,7 +72,8 @@ def gather_candidates(market, exchanges, held, *, conn=None, per_scan=10,
             try:
                 for c in factor_scan(ex, preset, count=per_scan):
                     add(c, preset)
-            except Exception:                   # noqa: BLE001 — one scan or
+            except Exception as e:              # noqa: BLE001 — one scan or
+                swallowed(log, "screener scan failed for an exchange", e)
                 continue                        # venue down ≠ no screening
         try:
             for r in recs(ex, count=10)["rows"]:
@@ -78,7 +83,8 @@ def gather_candidates(market, exchanges, held, *, conn=None, per_scan=10,
                      "volume": r.get("volume"), "mcap": r.get("mcap"),
                      "rsi": r.get("rsi"), "tv_rating": r.get("rating_label")},
                     "tv_rated")
-        except Exception:                       # noqa: BLE001
+        except Exception as e:                  # noqa: BLE001
+            swallowed(log, "analyst-rating scan failed", e)
             pass
 
     if conn is not None:                        # your watchlist always counts
@@ -145,7 +151,8 @@ def catalyst_notes(candidates, *, search_fn=None, env=None,
     for c in ranked[:limit]:
         try:
             hits = search(f"{c['ticker']} {c.get('name') or ''} stock news")
-        except Exception:                       # noqa: BLE001
+        except Exception as e:                  # noqa: BLE001
+            swallowed(log, "catalyst news search failed", e)
             continue
         if hits:
             notes[c["ticker"]] = "; ".join(
@@ -263,7 +270,8 @@ def event_scan(conn, exchanges, held, *, threshold=3.0, clock=time.time,
     for ex in exchanges:
         try:
             rows = factor_scan(ex, "unusual_volume", count=10)
-        except Exception:                       # noqa: BLE001
+        except Exception as e:                  # noqa: BLE001
+            swallowed(log, "unusual-volume scan failed for an exchange", e)
             continue
         for c in rows:
             if (c["ticker"] in held or c["ticker"] in recent

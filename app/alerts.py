@@ -10,10 +10,13 @@ delivered is logged to stderr and the desk carries on.
 import json
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 import httpx
+import logging
+from .logsetup import swallowed
+
+log = logging.getLogger(__name__)
 
 TELEGRAM_ENV = Path(os.environ.get("CLAIRE_TELEGRAM_ENV",
                                    Path.home() / "bob" / "telegram.env"))
@@ -140,9 +143,11 @@ def send(text, *, title="Claire", path=TELEGRAM_ENV, client=None):
             if r.status_code == 200:
                 sent.append("telegram")
             else:
-                print(f"alert: telegram HTTP {r.status_code}", file=sys.stderr)
+                log.warning("telegram refused an alert: HTTP %s",
+                            r.status_code)
         except Exception as e:                  # noqa: BLE001 — best effort
-            print(f"alert: telegram failed: {e}", file=sys.stderr)
+            log.warning("telegram alert failed: %s: %s",
+                        type(e).__name__, str(e)[:200])
         finally:
             if client is None:
                 c.close()
@@ -150,6 +155,8 @@ def send(text, *, title="Claire", path=TELEGRAM_ENV, client=None):
         subprocess.run(["notify-send", "-u", "critical", title, text],
                        timeout=5, check=False, capture_output=True)
         sent.append("desktop")
-    except Exception:                           # noqa: BLE001 — headless etc
+    except Exception as e:                      # noqa: BLE001 — headless etc
+        swallowed(log, "desktop notification (notify-send) failed",
+                  e, every=3600)
         pass
     return sent

@@ -11,6 +11,10 @@ from decimal import Decimal
 from . import sessions
 from .accounting.money import from_micro
 from .tools.market import yahoo_symbol
+import logging
+from .logsetup import swallowed
+
+log = logging.getLogger(__name__)
 
 AUTO_DROP_PCT = 8       # default trail: 8% off the best price since entry
 ESCALATE_PCT = 3        # re-fire per further 3% adverse move
@@ -304,6 +308,8 @@ class Watcher:
         ten minutes."""
         report["launch_failed"].append({"instrument": inst["id"],
                                         "rule": rule["rule"], "error": error})
+        log.error("alert breached on %s but the sell review did not start "
+                  "(%s) — retrying next tick", inst["id"], error)
         if self.alert is None or self._launch_alerted.get(rule["id"]) == today:
             return
         self._launch_alerted[rule["id"]] = today
@@ -312,7 +318,8 @@ class Watcher:
                        f"not be started ({error}). Trying again each check; "
                        "look at the position yourself.",
                        title="Claire — sell review NOT started")
-        except Exception:                       # noqa: BLE001 — best effort
+        except Exception as e:                  # noqa: BLE001 — best effort
+            swallowed(log, "launch-failure alert was not sent", e)
             pass
 
     def _trigger_text(self, rule, price_base, peak, count) -> str:

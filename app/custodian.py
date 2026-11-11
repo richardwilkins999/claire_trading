@@ -8,6 +8,10 @@ from datetime import datetime, timezone
 
 from . import approvals, sessions
 from .accounting.money import to_micro
+import logging
+from .logsetup import swallowed
+
+log = logging.getLogger(__name__)
 
 
 class Custodian:
@@ -45,7 +49,11 @@ class Custodian:
                 getattr(self, duty)(report)
             except Exception as e:              # noqa: BLE001 — net must not die silent
                 report["flags"].append(f"custodian {duty.strip('_')} error: {e}")
+                swallowed(log, f"custodian duty {duty.strip('_')} failed", e,
+                          trace=True)
         self._live_alarm(report)
+        for flag in report["flags"]:            # each distinct flag: hourly
+            swallowed(log, f"custodian flag: {flag[:300]}", every=3600)
         ok = "degraded" if report["flags"] else "ok"
         self.conn.execute(
             "INSERT INTO service_health (service, checked_at, ok, detail)"
@@ -107,7 +115,9 @@ class Custodian:
                                    f"{f['side']} {f['qty']} {f['symbol']} at "
                                    f"{f['price']} (paper)",
                                    title=f"Claire — {what.lower()} filled")
-                    except Exception:           # noqa: BLE001 — booked anyway
+                    except Exception as e:      # noqa: BLE001 — booked anyway
+                        swallowed(log, "alert for a sim stop/target fill was not sent",
+                                  e)
                         pass
 
     def _live_alarm(self, report):
@@ -398,7 +408,9 @@ class Custodian:
         agrees); False if it is still working there or cannot be read."""
         try:
             status = adapter.order_status(o["broker_order_id"])
-        except Exception:                       # noqa: BLE001
+        except Exception as e:                  # noqa: BLE001
+            swallowed(log, "venue status read failed while settling an ended order",
+                      e)
             return False
         if status["status"] not in ("cancelled", "rejected", "filled"):
             return False
@@ -578,7 +590,9 @@ class Custodian:
                 try:
                     self.alert(f"⚠ {o['protect_note']} (after desk order "
                                f"{o['id']})", title="Claire — UNPROTECTED")
-                except Exception:               # noqa: BLE001 — flag stands
+                except Exception as e:          # noqa: BLE001 — flag stands
+                    swallowed(log, "UNPROTECTED-position alert was not sent",
+                              e)
                     continue
                 self.conn.execute("UPDATE orders SET protect_alerted_at=?"
                                   " WHERE id=?", (ts, o["id"]))

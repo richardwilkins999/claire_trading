@@ -9,6 +9,10 @@ from .market import yahoo_symbol
 from .sandbox import run_python as _run_python
 from .search import fetch_page as _fetch_page
 from .search import web_search as _web_search
+import logging
+from ..logsetup import swallowed
+
+log = logging.getLogger(__name__)
 
 
 MAX_TOOL_FAILURES = 3
@@ -80,6 +84,7 @@ def _safe(fn, failures=None):
         except Exception as e:              # noqa: BLE001 — deliberate
             seen[name] = seen.get(name, 0) + 1
             left = MAX_TOOL_FAILURES - seen[name]
+            swallowed(log, f"agent tool {name} failed", e)
             return json.dumps({
                 "error": f"{type(e).__name__}: {str(e)[:300]}",
                 "hint": f"this source failed ({left} attempt(s) left before "

@@ -11,10 +11,15 @@ stays in one place.
 
 Network is injectable (`_get`) so unit tests run offline.
 """
+import logging
 import time
 from decimal import Decimal
 
 import httpx
+
+from ..logsetup import swallowed
+
+log = logging.getLogger(__name__)
 
 UA = {"User-Agent": ("Mozilla/5.0 (X11; Linux x86_64; rv:130.0) "
                      "Gecko/20100101 Firefox/130.0")}
@@ -46,7 +51,7 @@ def build_market(env=None) -> "Market":
                                   env.get("IBKR_PORT", 4002),
                                   env.get("IBKR_CLIENT_ID", 17))
         except Exception as e:              # noqa: BLE001 — degrade loudly
-            print(f"IBKR enabled but unusable: {e}")
+            log.warning("IBKR enabled but unusable: %s", e)
     if primary is None and env.get("TWELVEDATA_API_KEY"):
         from . import twelvedata
         primary = twelvedata.Client(
@@ -233,9 +238,11 @@ class Market:
             return hit[1], False
         try:
             val = fn()
-        except Exception:
+        except Exception as e:
             if hit is not None:
                 self._stale_keys.add(key)
+                swallowed(log, f"market data '{key[0]}': source failed, "
+                               "serving the last good value", e)
                 return hit[1], True
             raise
         self._cache[key] = (now, val)
@@ -264,7 +271,9 @@ class Market:
                     out = dict(self._cached(("pq", covered), 60,
                                             lambda: self._primary.quote(
                                                 list(covered))))
-                except Exception:           # noqa: BLE001 — fall through
+                except Exception as e:      # noqa: BLE001 — fall through
+                    swallowed(log, "quotes: keyed provider failed, "
+                                   "using the free chain", e)
                     out = {}
             rest = [s for s in symbols if s not in out]
         if rest:
@@ -282,15 +291,15 @@ class Market:
         try:
             out = dict(self._cached(("tvq", tuple(symbols)), 60,
                                     lambda: tv(symbols)))
-        except Exception:                   # noqa: BLE001 — fall through
-            pass
+        except Exception as e:              # noqa: BLE001 — fall through
+            swallowed(log, "quotes: TradingView failed, trying Yahoo", e)
         missing = [s for s in symbols if s not in out]
         if not missing:
             return out
         try:
             out.update(self._spark_yahoo(missing))
-        except Exception:                   # noqa: BLE001
-            pass
+        except Exception as e:              # noqa: BLE001
+            swallowed(log, "quotes: Yahoo (last resort) failed", e)
         still = [s for s in symbols if s not in out]
         if still:
             raise MarketError(
@@ -342,8 +351,9 @@ class Market:
                 return self._cached(key, 900,
                                     lambda: self._primary.chart(
                                         symbol, range_, interval))
-            except Exception:               # noqa: BLE001 — fall through
-                pass
+            except Exception as e:          # noqa: BLE001 — fall through
+                swallowed(log, "chart: keyed provider failed, trying Yahoo",
+                          e)
         fb = ("fbchart", symbol, range_, interval)
         if self._chart_fallback is not None and \
                 self._fresh(fb, 900 if interval == "1d" else 300):
@@ -392,16 +402,17 @@ class Market:
             try:
                 return self._cached(("search", q), 600,
                                     lambda: self._primary.symbol_search(q))
-            except Exception:                   # noqa: BLE001 — fall through
-                pass
+            except Exception as e:              # noqa: BLE001 — fall through
+                swallowed(log, "symbol search: keyed provider failed", e)
         if self._search_fallback is not None:
             try:
                 hits = self._cached(("searchs", q), 600,
                                     lambda: self._search_fallback(q))
                 if hits:
                     return hits
-            except Exception:                   # noqa: BLE001 — fall through
-                pass
+            except Exception as e:              # noqa: BLE001 — fall through
+                swallowed(log, "symbol search: Saxo/TradingView failed, "
+                               "trying Yahoo", e)
 
         def fetch():
             data = self._get(f"{BASE}/v1/finance/search",
@@ -436,15 +447,18 @@ class Market:
                     out = dict(self._cached(
                         ("m", covered), 300,
                         lambda: self._primary.metrics(list(covered))))
-                except Exception:               # noqa: BLE001
+                except Exception as e:          # noqa: BLE001
+                    swallowed(log, "metrics: keyed provider failed, "
+                                   "using TradingView", e)
                     out = {}
             rest = [s for s in symbols if s not in out]
         if rest:
             try:
                 out.update(self._cached(("tvm", tuple(rest)), 300,
                                         lambda: tradingview.metrics(rest)))
-            except Exception:                   # noqa: BLE001
-                pass
+            except Exception as e:              # noqa: BLE001
+                swallowed(log, "metrics: TradingView failed; some symbols "
+                               "have none", e)
         return out
 
     # ── exchange overview (index + listings), best-effort per §1.7 ───────
@@ -460,8 +474,8 @@ class Market:
             out["index"] = {"error": str(e)[:120]}
         try:
             out["listings"] = self.screener(exchange, count=1)["total"]
-        except Exception:                       # noqa: BLE001
-            pass
+        except Exception as e:                  # noqa: BLE001
+            swallowed(log, "exchange overview: listing count unavailable", e)
         return out
 
     # ── FX ───────────────────────────────────────────────────────────────
@@ -512,6 +526,8 @@ class Market:
                 val = fn()
             except Exception as e:          # noqa: BLE001 — try the next one
                 errors.append(f"{key[0]}: {str(e)[:60]}")
+                swallowed(log, f"FX source '{key[0]}' failed, trying the "
+                               "next", e)
                 continue
             self._cache[key] = (now, val)
             self._stale_keys.discard(("fx", pair))
@@ -523,6 +539,9 @@ class Market:
             ts, val = max(hits, key=lambda h: h[0])
             if now - ts <= self.FX_MAX_AGE:
                 self._stale_keys.add(("fx", pair))      # for the health view
+                swallowed(log, f"FX {pair}: every source failed; reusing a "
+                               f"rate {int((now - ts) // 60)} min old",
+                          every=900)
                 return Decimal(val)
             errors.append(f"last good rate is {int((now - ts) // 60)} min "
                           f"old (limit {self.FX_MAX_AGE // 60})")

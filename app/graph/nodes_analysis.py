@@ -10,6 +10,10 @@ from datetime import datetime, timezone
 
 from ..providers import registry
 from .state import AnalystReport, DebateCase, Thesis
+import logging
+from ..logsetup import swallowed
+
+log = logging.getLogger(__name__)
 
 
 # ── prompt renderers (pure; unit-testable) ───────────────────────────────
@@ -163,7 +167,9 @@ def record_report(conn, work_item_id, agent_id, kind, obj):
             " payload=excluded.payload, created_at=excluded.created_at",
             (work_item_id, agent_id, kind, obj.model_dump_json(),
              int(time.time())))
-    except Exception:                           # noqa: BLE001 — never fail a
+    except Exception as e:                      # noqa: BLE001 — never fail a
+        swallowed(log, "agent report was not recorded in desk.db",
+                  e, trace=True)
         pass                                    # run over bookkeeping
 
 

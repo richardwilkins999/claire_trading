@@ -27,6 +27,10 @@ import tarfile
 import threading
 import time
 from pathlib import Path
+import logging
+from .logsetup import swallowed
+
+log = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parent.parent
 DAY = 86400
@@ -136,7 +140,8 @@ class Maintainer:
                 try:
                     self.alert(f"{headline}\n\n{summary or ''}".strip(),
                                title="Claire maintenance")
-                except Exception:               # noqa: BLE001
+                except Exception as e:          # noqa: BLE001
+                    swallowed(log, "maintenance alert was not sent", e)
                     pass
         return {"id": cur.lastrowid, "status": status, "headline": headline,
                 "checks": checks, "actions": actions, "summary": summary,

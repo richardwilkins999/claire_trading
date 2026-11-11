@@ -18,6 +18,10 @@ from ..tools.market import yahoo_symbol
 # else (another stock, a stale quote, pence vs pounds) — refuse, don't trade.
 # One band for the gate (pipeline.vet_thesis) and the venue.
 from .pipeline import PRICE_BAND
+import logging
+from ..logsetup import swallowed
+
+log = logging.getLogger(__name__)
 
 
 FRACTION_STEP = Decimal("0.1")   # venues that allow fractions: 1/10th share
@@ -537,7 +541,9 @@ def build_record(repo, narratives, *, clock=time.time, prose_fn=None):
             try:
                 lines.append("\n## Recorder note\n" +
                              prose_fn("\n".join(lines)))
-            except Exception:                   # noqa: BLE001 — prose is a
+            except Exception as e:              # noqa: BLE001 — prose is a
+                swallowed(log, "recorder note failed; summary written without it",
+                          e)
                 pass                            # nicety, never a dependency
         narratives.write(state.work_item_id, "summary", "\n".join(lines))
         return {}

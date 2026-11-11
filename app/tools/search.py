@@ -12,6 +12,7 @@ programs, under its own name.
 import functools
 import html
 import ipaddress
+import logging
 import os
 import re
 import socket
@@ -19,6 +20,10 @@ import xml.etree.ElementTree as ET
 from urllib.parse import parse_qs, urlparse
 
 import httpx
+
+from ..logsetup import swallowed
+
+log = logging.getLogger(__name__)
 
 NEWS_UA = {"User-Agent": "claire-desk/1.0 (news search)"}
 MAX_FEED_BYTES = 2_000_000
@@ -137,6 +142,7 @@ def news_search(query: str, *, max_results=8, _client=None,
             hits = fn(client, query, max_results)
         except Exception as e:                  # noqa: BLE001 — try the next
             errors.append(f"{name}: {type(e).__name__}: {str(e)[:80]}")
+            swallowed(log, f"news feed {name} failed", e)
             continue
         answered = True
         if hits:

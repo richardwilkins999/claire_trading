@@ -41,12 +41,14 @@ import secrets
 import socket
 import threading
 import time
-import traceback
 from datetime import datetime
 from html import escape
 from zoneinfo import ZoneInfo
 
 from . import alerts, approvals
+import logging
+
+log = logging.getLogger(__name__)
 
 SGT = ZoneInfo("Asia/Singapore")
 CB_PREFIX = "cl"
@@ -742,7 +744,7 @@ def _close(conn, tg, n, outcome_html, clock, *, status="closed"):
         tg.edit(n["chat_id"], n["message_id"],
                 _fit((n["base_html"] or "") + "\n\n" + outcome_html), None)
     except Exception as e:                     # noqa: BLE001 — best effort
-        print(f"telegram: edit failed for notice {n['id']}: {e}", flush=True)
+        log.warning("telegram: edit failed for notice %s: %s", n["id"], e)
 
 
 STATE_WORDS = {"approved": "approved", "executing": "approved — executing",
@@ -839,8 +841,7 @@ def send_notice(conn, market, tg, wi_row, key, chat_id, env, *, clock,
                       else "awaiting your approval, details below"))
             photo_id = tg.photo(chat_id, png, cap)["message_id"]
         except Exception as e:                 # noqa: BLE001 — text still goes
-            print(f"telegram: chart for {wi_row['id']} failed: {e}",
-                  flush=True)
+            log.warning("telegram: chart for %s failed: %s", wi_row["id"], e)
     kb = build_keyboard(nid, f, opts, base_url)
     try:
         msg = tg.message(chat_id, html_msg, kb)
@@ -919,7 +920,7 @@ def push_once(conn, market, tg, chat_id, env, *, clock=time.time,
                          " AND state_key=? AND status='sending'",
                          (r["id"], key))
         except Exception as e:                 # noqa: BLE001
-            print(f"telegram: notice for {r['id']} failed: {e}", flush=True)
+            log.warning("telegram: notice for %s failed: %s", r["id"], e)
             conn.execute("UPDATE telegram_notices SET status='error',"
                          " attempts=attempts+1, updated_at=? WHERE"
                          " work_item_id=? AND state_key=?",
@@ -952,11 +953,11 @@ def run_pusher(conn, market, env, *, interval=20, clock=time.time):
                           st["approver_id"], env, clock=clock)
                 warned = False
             elif not warned:
-                print("telegram approvals: no bot token / approver id in "
-                      f"{alerts.TELEGRAM_ENV} — not pushing", flush=True)
+                log.warning("telegram approvals: no bot token / approver id "
+                            "in %s — not pushing", alerts.TELEGRAM_ENV)
                 warned = True
         except Exception:                      # noqa: BLE001 — keep looping
-            traceback.print_exc()
+            log.exception("telegram approvals pass failed")
         time.sleep(interval)
 
 

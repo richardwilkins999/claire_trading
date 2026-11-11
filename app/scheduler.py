@@ -27,6 +27,10 @@ import threading
 import time
 from datetime import date, datetime, time as dtime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+import logging
+from .logsetup import swallowed
+
+log = logging.getLogger(__name__)
 
 # how late a daily slot may still fire (restart / tick jitter); beyond this a
 # missed slot is skipped. The scheduler polls every 20 s, so 10 min is ample.
@@ -234,6 +238,9 @@ def update(conn, job: str, *, enabled=None, spec_patch=None):
                  (json.dumps(spec), 1 if enabled else 0, job))
 
 
+SLOW_JOB_S = 60
+
+
 class Scheduler:
     """Runs inside claire-api. `runners`: job -> fn(spec) -> result dict.
     Jobs whose `runs_in` isn't this process (watcher) are displayed by the UI
@@ -261,12 +268,21 @@ class Scheduler:
             try:
                 if now < next_run_ts(spec, r["last_run_at"], now):
                     continue
-            except Exception:                   # noqa: BLE001 — bad spec: skip
+            except Exception as e:              # noqa: BLE001 — bad spec: skip
+                swallowed(log, f"schedule {job!r} has a spec that cannot be "
+                               "read; it is not running", e, every=3600)
                 continue
+            started = time.monotonic()
             try:
                 result = self.runners[job](spec)
             except Exception as e:              # noqa: BLE001 — job errors are
                 result = {"error": str(e)[:300]}  # data, never crashes
+                log.exception("scheduled job %r failed", job)
+            took = time.monotonic() - started
+            if took > SLOW_JOB_S:
+                # jobs run inline: a slow one holds up every other schedule
+                log.warning("scheduled job %r took %.0f s; the other "
+                            "schedules waited for it", job, took)
             self.conn.execute(
                 "UPDATE schedules SET last_run_at=?, last_result=? WHERE job=?",
                 (now, json.dumps(result, default=str), job))
@@ -279,6 +295,6 @@ class Scheduler:
                 time.sleep(self.poll)
                 try:
                     self.tick()
-                except Exception:               # noqa: BLE001
-                    pass
+                except Exception as e:          # noqa: BLE001
+                    swallowed(log, "scheduler tick failed", e, trace=True)
         threading.Thread(target=loop, daemon=True, name="scheduler").start()
