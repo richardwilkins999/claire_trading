@@ -84,6 +84,10 @@ input[type=checkbox].unsaved, input[type=radio].unsaved {
   outline:2px solid var(--warn); outline-offset:1px; box-shadow:none; }
 /* rows and cards you can open with the keyboard (data-kbd + tabindex) */
 tr[data-kbd]:focus-visible { outline-offset:-2px; }
+/* a long web address wraps instead of widening its card (nav.js linkify) */
+a.ext { overflow-wrap:anywhere; }
+/* a word with an explanation on hover or focus */
+.term { border-bottom:1px dotted var(--dim); cursor:help; }
 /* text for screen readers only */
 .sr { position:absolute; width:1px; height:1px; overflow:hidden;
   clip-path:inset(50%); white-space:nowrap; }
@@ -162,6 +166,8 @@ pre { background:var(--bg); border:1px solid var(--line); border-radius:8px;
 .mnode .ns { fill:var(--dim); font-size:9px; font-family:var(--mono); }
 .mnode .nm { font-size:9px; font-family:var(--mono); }
 .mnode .dot { fill:#33455c; }
+.mnode .dotx { fill:var(--bad); font-size:10px; }      /* error: a cross */
+.mnode .dotw { fill:var(--warn); font-size:9px; }      /* degraded: a triangle */
 .mnode.det rect.body { fill:#0a1220; stroke-dasharray:3 3; }
 .mnode.entry rect.body { fill:var(--panel); stroke:#243b56; }
 /* ── status vocabulary: one meaning per colour, everywhere ────────── */

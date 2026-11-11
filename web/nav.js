@@ -41,7 +41,11 @@ function nav(active) {
   document.addEventListener('keydown', e => {
     const t = e.target;
     if ((e.key === 'Enter' || e.key === ' ') && t && t.matches &&
-        t.matches('[data-kbd]')) { e.preventDefault(); t.click(); }
+        t.matches('[data-kbd]')) {
+      e.preventDefault();
+      /* not t.click(): the boxes of the system map are SVG, which has none */
+      t.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true}));
+    }
   });
   /* a refresh that waited because you were in a field runs once you leave
      it (not at once: the click that took the focus away must land first) */
@@ -69,7 +73,11 @@ async function navState() {
   }
   NAV_DOWN = false;
   const n = document.getElementById('nav-pending');
-  if (n) { n.hidden = !s.pending; n.textContent = s.pending || ''; }
+  if (n) {
+    n.hidden = !s.pending; n.textContent = s.pending || '';
+    n.title = s.pending ? s.pending + ' waiting for your decision' : '';
+    n.setAttribute('aria-label', n.title);
+  }
   const strip = document.getElementById('live-strip');
   if (s.live_armed) {
     mode.className = 'mode live'; mode.textContent = '● LIVE ARMED';
@@ -187,12 +195,11 @@ function tracked(fn, opts = {}) {
 function ctlValue(c) {
   return c.type === 'checkbox' || c.type === 'radio' ? String(c.checked) : c.value;
 }
-function formDirty(root) {
-  return !!root && [...root.querySelectorAll('[data-orig]')]
-    .some(c => ctlValue(c) !== c.dataset.orig);
-}
 function swapHtml(el, html) {
-  if (!el || el._swapHtml === html) return false;
+  if (!el) return false;
+  /* unchanged — and still what this function put there: something that set
+     innerHTML itself in between ("loading…") has replaced the first node */
+  if (el._swapHtml === html && el._swapNode === el.firstChild) return false;
   const FIELDS = 'input[id], select[id], textarea[id]';
   const edits = {}, open = {};
   let focus = null;
@@ -203,12 +210,17 @@ function swapHtml(el, html) {
     el.querySelectorAll('details[data-keep]').forEach(d => {
       open[d.dataset.keep] = d.open; });
     const a = document.activeElement;
-    if (a && el.contains(a) && (a.id || a.dataset.kbd)) focus = {id: a.id,
-      kbd: a.dataset.kbd, at: typeof a.selectionStart === 'number'
-        ? [a.selectionStart, a.selectionEnd] : null};
+    if (a && el.contains(a) && (a.id || a.dataset.kbd)) {
+      focus = {id: a.id, kbd: a.dataset.kbd, at: null};
+      try {                              // a number field has no caret to read
+        if (typeof a.selectionStart === 'number')
+          focus.at = [a.selectionStart, a.selectionEnd];
+      } catch {}
+    }
   }
   el.innerHTML = html;
   el._swapHtml = html;
+  el._swapNode = el.firstChild;
   el.querySelectorAll(FIELDS).forEach(c => {
     c.dataset.orig = ctlValue(c);
     const old = edits[c.id];
@@ -492,6 +504,26 @@ function deskExchange(r) {
   const ex = DESK_EX_ALIAS[raw];
   return ex ? [ex, sym] : [null, sym];
 }
+/* A trade you have just sent waits on its approval card: go straight to
+   it. Sending used to leave you on the form with a link to go and find the
+   card (REVIEW-2026-11-11 §6.1.4). /approvals scrolls to #c-<run id>. */
+function toApprovalCard(id) {
+  location.href = '/approvals#c-' + encodeURIComponent(id);
+}
+/* The unrealised P/L of a broker's positions (/api/saxo-account) and how
+   complete it is. A position Saxo sent no price for has price_missing and
+   no pnl_base: the sum of the rest is not the account's P/L, and is never
+   shown as if it were. → {value, unpriced, note}; value is null when
+   nothing is priced; `fallback` (the broker's own figure) only when no
+   position carries a P/L and none is unpriced. */
+function unrealisedOf(pos, fallback) {
+  const unpriced = pos.filter(p => p.price_missing).length;
+  const priced = pos.filter(p => !p.price_missing && p.pnl_base != null);
+  const value = priced.length ? priced.reduce((s, p) => s + p.pnl_base, 0)
+    : unpriced ? null : fallback;
+  return {value, unpriced, note: unpriced ? `${unpriced} of ${pos.length} position${
+    pos.length === 1 ? '' : 's'} unpriced` : ''};
+}
 /* one word for one thing in page text (REVIEW-2026-11-11 §6.3.13): the
    data says leg "stop" / "target", the pages say stop-loss / take-profit */
 const LEG_NAME = {stop: 'stop-loss', target: 'take-profit'};
@@ -500,6 +532,33 @@ const LEG_NAME = {stop: 'stop-loss', target: 'take-profit'};
 const KIND_NAME = {pipeline: 'research run', sell_review: 'exit review',
   override: 'your override', manual: 'your trade'};
 function kindName(k) { return KIND_NAME[k] || String(k || 'run').replace(/_/g, ' '); }
+/* "medium conviction (0.62)": the number alone means nothing to a reader.
+   The same bands as the Telegram card (app/telegram_approvals.py). */
+const CONVICTION_TIP = 'How sure the desk is, from 0 (not at all) to 1 ' +
+  '(certain): below 0.4 is low, 0.4 to 0.7 is medium, 0.7 and above is high.';
+function convictionText(v) {
+  if (v == null || isNaN(v)) return 'conviction not stated';
+  return `${v < 0.4 ? 'low' : v < 0.7 ? 'medium' : 'high'} conviction (${fmt(v, 2)})`;
+}
+/* Text with its web addresses made into links. Everything is escaped, and
+   only http:// and https:// addresses become links — the text comes from an
+   agent that read the open web, so it is never trusted as markup. */
+function linkify(s) {
+  return String(s ?? '').split(/(https?:\/\/[^\s<>"'`]+)/).map((part, i) => {
+    if (i % 2 === 0) return esc(part);
+    /* "(see https://x.org/a_(b))." — the sentence keeps its own ")." : a
+       closing bracket is part of the address only while it has a partner */
+    const n = (s, ch) => s.split(ch).length - 1;
+    let url = part, tail = '';
+    while (/[.,;:!?]$/.test(url) ||
+           (url.endsWith(')') && n(url, ')') > n(url, '(')) ||
+           (url.endsWith(']') && n(url, ']') > n(url, '['))) {
+      tail = url.slice(-1) + tail; url = url.slice(0, -1);
+    }
+    return `<a class="ext" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${
+      esc(url)}</a>${esc(tail)}`;
+  }).join('');
+}
 function fmtBig(n) {
   if (n == null) return '—';
   const a = Math.abs(n);
