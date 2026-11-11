@@ -16,7 +16,7 @@
   .act.sell { color:var(--bad, #ef5350); }
 </style>
 <main>
-  <h1>Trades <span class="muted" id="stamp" style="font-size:.8rem"></span></h1>
+  <h1>Trades</h1>
   <p class="muted">Every buy and sell that filled — including the ones a stop-loss
     or target made at the broker on its own — with the profit or loss and why
     it happened. Click a row for the detail.</p>
@@ -28,7 +28,7 @@
       <option value="">buys and sells</option><option value="buy">buys</option>
       <option value="sell">sells</option></select></label>
     <label class="small">account <select id="f-acct" onchange="render()"><option value="">all</option></select></label>
-    <input id="f-q" placeholder="filter by stock" style="width:140px" oninput="render()">
+    <input id="f-q" placeholder="filter by stock" style="width:140px" aria-label="filter by stock" oninput="render()">
   </div>
   <div class="statstrip" id="strip"></div>
   <div id="list">loading…</div>
@@ -45,13 +45,11 @@ function money(n, ccy) {
   if (n == null) return '—';
   return `<b class="${n >= 0 ? 'ok' : 'bad'}">${n >= 0 ? '+' : ''}${fmt(n, 2)}</b>${ccy ? ' <span class="muted small">' + esc(ccy) + '</span>' : ''}`;
 }
-function when(t) {
-  return t ? new Date(t * 1000).toLocaleString([], {day: 'numeric', month: 'short',
-    year: '2-digit', hour: '2-digit', minute: '2-digit'}) : '—';
-}
+/* "11 Nov 2026 14:02 SGT" — your own time, with its zone (nav.js) */
+function when(t) { return esc(fmtWhen(t, {weekday: false, year: true})); }
 function action(t) {
   if (t.leg === 'stop') return `<span class="act sell">SELL</span><br><span class="small">🛑 stop-loss</span>`;
-  if (t.leg === 'target') return `<span class="act sell">SELL</span><br><span class="small">🎯 target</span>`;
+  if (t.leg === 'target') return `<span class="act sell">SELL</span><br><span class="small">🎯 take-profit</span>`;
   return `<span class="act ${t.side}">${esc(t.side.toUpperCase())}</span>`;
 }
 function plCell(t) {
@@ -87,12 +85,14 @@ function render() {
     pill('closed trades won / lost', `${s.wins || 0} / ${s.losses || 0}`) +
     pill('buys / sells', `${s.buys || 0} / ${s.sells || 0}`);
   const el = document.getElementById('list');
-  if (!rows.length) { el.innerHTML = '<p class="muted">No trades in this period.</p>'; return; }
-  el.innerHTML = `<table class="tt"><tr><th>When</th><th>Stock</th><th>Action</th>
+  if (!rows.length) { swapHtml(el, '<p class="muted">No trades in this period.</p>'); return; }
+  /* swapHtml (nav.js): the row you opened with the keyboard keeps the focus */
+  swapHtml(el, `<table class="tt"><tr><th>When</th><th>Stock</th><th>Action</th>
     <th class="num">Shares</th><th class="num">Price</th><th class="num">Value</th>
     <th class="num">Fees</th><th class="num">Profit / loss</th><th>Why</th><th>Account</th></tr>${rows.map(t => {
     const open = OPEN.has(t.id), a = jsArg(t.id);
-    return `<tr class="trow" onclick="toggle(${a})">
+    return `<tr class="trow" onclick="toggle(${a})" tabindex="0" data-kbd="${esc(t.id)}"
+        aria-expanded="${open}" title="${open ? 'hide' : 'show'} the detail of this trade">
       <td class="small">${when(t.executed_at)}</td>
       <td><b>${esc(t.ticker)}</b><br><span class="muted small">${esc(t.exchange)}</span></td>
       <td>${action(t)}</td>
@@ -104,7 +104,7 @@ function render() {
       <td class="why small">${esc(t.reason)} <span class="muted">${open ? '▴' : '▾'}</span></td>
       <td class="small">${esc(t.account)}</td></tr>
       ${open ? `<tr class="more"><td></td><td colspan="9">${detail(t)}</td></tr>` : ''}`;
-  }).join('')}</table>`;
+  }).join('')}</table>`);
 }
 function detail(t) {
   const out = [];
@@ -116,20 +116,30 @@ function detail(t) {
     the ${fmt(t.lot.remaining, 0)} shares still held are ${t.lot.unrealized >= 0 ? 'up' : 'down'} ${fmt(Math.abs(t.lot.unrealized), 2)}.`);
   const det = (t.details || []).map(d => `<li>${esc(d)}</li>`).join('');
   return `${out.join(' ')}${det ? `<ul style="margin:.3rem 0 .3rem 1.1rem;padding:0">${det}</ul>` : ''}
-    ${t.work_item_id ? `<a href="/trading#${esc(t.work_item_id)}" onclick="event.stopPropagation()">the full run on Trading →</a>` : ''}`;
+    ${t.work_item_id ? `<a href="/trading#${esc(t.work_item_id)}" title="run ${esc(t.work_item_id)}" onclick="event.stopPropagation()">the full run, on Runs →</a>` : ''}`;
 }
 function toggle(id) { OPEN.has(id) ? OPEN.delete(id) : OPEN.add(id); render(); }
-async function load() {
-  try {
-    DATA = await api('/api/trades?days=' + document.getElementById('f-days').value);
-    const sel = document.getElementById('f-acct'), cur = sel.value;
-    const accts = [...new Set((DATA.trades || []).map(t => t.account))].sort();
+let LOADED = false;
+async function loadTrades() {
+  try { DATA = await api('/api/trades?days=' + document.getElementById('f-days').value); }
+  catch (e) {
+    /* the first load: say why there is nothing. Later: keep what was
+       loaded on screen — the menu bar says it is no longer current */
+    if (!LOADED) document.getElementById('list').innerHTML =
+      `<p class="bad">Could not load your trades: ${esc(e.message)}</p>`;
+    throw e;
+  }
+  LOADED = true;
+  const sel = document.getElementById('f-acct'), cur = sel.value;
+  const accts = [...new Set((DATA.trades || []).map(t => t.account))].sort();
+  /* not while the list is open under your pointer */
+  if (document.activeElement !== sel)
     sel.innerHTML = '<option value="">all</option>' + accts.map(a =>
       `<option ${a === cur ? 'selected' : ''}>${esc(a)}</option>`).join('');
-    render();
-    document.getElementById('stamp').textContent = 'updated ' + new Date().toLocaleTimeString();
-  } catch (e) { document.getElementById('list').innerHTML = `<p class="bad">${esc(e.message)}</p>`; }
+  render();
 }
+/* reports "updated 12:03" / "cannot reach Claire" in the menu bar */
+const load = tracked(loadTrades);
 load();
 poll(load, 60000);
 </script>
