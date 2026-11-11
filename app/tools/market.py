@@ -17,6 +17,8 @@ from decimal import Decimal
 
 import httpx
 
+from ..exchanges import CCY as EXCHANGE_CCY
+from ..exchanges import SUFFIX as EXCHANGE_SUFFIX
 from ..logsetup import swallowed
 
 log = logging.getLogger(__name__)
@@ -26,11 +28,11 @@ UA = {"User-Agent": ("Mozilla/5.0 (X11; Linux x86_64; rv:130.0) "
 BASE = "https://query1.finance.yahoo.com"
 
 # exchange → yahoo suffix (DESIGN.md §14); NASDAQ/NYSE have none
-SUFFIX = {"SGX": ".SI", "HKEX": ".HK", "TSE": ".T", "ASX": ".AX",
-          "XETRA": ".DE", "PARIS": ".PA", "NSE": ".NS", "LSE": ".L"}
-# suffix → native currency; .L is GBp — PENCE, divide by 100 before FX
-SUFFIX_CCY = {".SI": "SGD", ".HK": "HKD", ".T": "JPY", ".AX": "AUD",
-              ".DE": "EUR", ".PA": "EUR", ".NS": "INR", ".L": "GBp"}
+SUFFIX = EXCHANGE_SUFFIX
+# suffix → the currency a QUOTE arrives in. Same as the exchange's currency
+# except London: .L quotes are GBp — PENCE, divide by 100 before FX
+SUFFIX_CCY = {suf: ("GBp" if ex == "LSE" else EXCHANGE_CCY[ex])
+              for ex, suf in EXCHANGE_SUFFIX.items()}
 
 
 class MarketError(Exception):

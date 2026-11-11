@@ -29,6 +29,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 
 from . import approvals, scheduler, sessions
+from . import exchanges as desk_exchanges
 from .tools.files import JailError
 from .providers import health as provider_health
 from .providers import registry
@@ -1482,6 +1483,10 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                         and nxt.time().isoformat()[:5] == \
                         s.lunch_break.split("-")[1]
                 out.append({"exchange": ex, "tz": s.tz, "is_open": is_open,
+                            # what the exchange IS (app/exchanges.py)
+                            "currency": desk_exchanges.currency(ex),
+                            "suffix": desk_exchanges.SUFFIX.get(ex, ""),
+                            "lot": desk_exchanges.lot_size(ex),
                             "at_lunch": lunch,
                             "open_time": s.open_time,
                             "close_time": s.close_time,
@@ -2608,7 +2613,7 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
                    "currency": r["currency"], "exchange": r["exchange"],
                    # board lot (mirrors wiring.prepare): a buy smaller than
                    # one lot is refused after approval, so the card warns
-                   "lot": 100 if r["exchange"] == "SGX" else 1}
+                   "lot": desk_exchanges.lot_size(r["exchange"])}
             fx = {}
             for (ccy,) in conn.execute(
                     "SELECT DISTINCT base_currency FROM broker_accounts"):

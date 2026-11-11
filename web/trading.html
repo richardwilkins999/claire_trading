@@ -74,8 +74,7 @@
     <pre id="rawfeed" style="max-height:280px;overflow:auto"></pre></details>
 </main>
 <script>
-const CCY = {NASDAQ:'USD',NYSE:'USD',LSE:'GBP',SGX:'SGD',HKEX:'HKD',TSE:'JPY',
-             ASX:'AUD',XETRA:'EUR',PARIS:'EUR',NSE:'INR'};
+const CCY = DESK_CCY;                               // nav.js
 let openId = null;
 async function launch() {
   const ex = document.getElementById('exchange').value;
@@ -83,7 +82,7 @@ async function launch() {
   if (!t) return toast('ticker?', false);
   try {
     await api('/api/run', {ticker: t, exchange: ex,
-      currency: CCY[ex], lot_size: ex === 'SGX' ? 100 : 1,
+      currency: CCY[ex], lot_size: deskLot(ex),
       trigger: 'launched from the Trading page'});
     toast(`Started researching ${t} — it will appear below`);
     lastSig = null; refresh();

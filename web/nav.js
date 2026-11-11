@@ -71,8 +71,31 @@ function sumByCcy(rows, key, ccyKey = 'ccy') {
    trades. It never guesses: Markets used to fall back to whichever exchange
    chip was selected, and sent runs and buys out with the wrong exchange and
    currency (REVIEW-2026-11-11 B12). */
-const DESK_SUFFIX = {SGX: '.SI', HKEX: '.HK', TSE: '.T', ASX: '.AX',
-  XETRA: '.DE', PARIS: '.PA', NSE: '.NS', LSE: '.L'};
+/* The desk's ten exchanges: currency, Yahoo suffix, board lot, time zone.
+   The pages' ONE copy — the same table as app/exchanges.py, and
+   tests/test_exchanges.py fails if the two differ. Each page used to carry
+   its own SUFFIX / CCY / TZ tables and "SGX ? 100 : 1". */
+const DESK = {
+  NASDAQ: {ccy: 'USD', suffix: '', lot: 1, tz: 'America/New_York'},
+  NYSE: {ccy: 'USD', suffix: '', lot: 1, tz: 'America/New_York'},
+  LSE: {ccy: 'GBP', suffix: '.L', lot: 1, tz: 'Europe/London'},
+  XETRA: {ccy: 'EUR', suffix: '.DE', lot: 1, tz: 'Europe/Berlin'},
+  PARIS: {ccy: 'EUR', suffix: '.PA', lot: 1, tz: 'Europe/Paris'},
+  SGX: {ccy: 'SGD', suffix: '.SI', lot: 100, tz: 'Asia/Singapore'},
+  HKEX: {ccy: 'HKD', suffix: '.HK', lot: 1, tz: 'Asia/Hong_Kong'},
+  TSE: {ccy: 'JPY', suffix: '.T', lot: 1, tz: 'Asia/Tokyo'},
+  ASX: {ccy: 'AUD', suffix: '.AX', lot: 1, tz: 'Australia/Sydney'},
+  NSE: {ccy: 'INR', suffix: '.NS', lot: 1, tz: 'Asia/Kolkata'}
+};
+const DESK_EX = Object.keys(DESK);
+const deskMap = k => Object.fromEntries(
+  DESK_EX.filter(x => DESK[x][k]).map(x => [x, DESK[x][k]]));
+/* NASDAQ and NYSE have no suffix and are absent, so a loop over the
+   suffixes never matches the empty string */
+const DESK_SUFFIX = deskMap('suffix');
+const DESK_CCY = deskMap('ccy');
+const DESK_TZ = deskMap('tz');
+const deskLot = ex => (DESK[ex] || {}).lot || 1;
 const DESK_EX_ALIAS = {NASDAQ: 'NASDAQ', NMS: 'NASDAQ', NGM: 'NASDAQ',
   NCM: 'NASDAQ', NASDAQGS: 'NASDAQ', NASDAQGM: 'NASDAQ', NASDAQCM: 'NASDAQ',
   NYSE: 'NYSE', NYQ: 'NYSE', SGX: 'SGX', SES: 'SGX', SINGAPORE: 'SGX',

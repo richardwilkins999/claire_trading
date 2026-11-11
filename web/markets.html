@@ -38,10 +38,7 @@
   </div>
 </main>
 <script>
-const SUFFIX = {SGX: '.SI', HKEX: '.HK', TSE: '.T', ASX: '.AX', XETRA: '.DE',
-  PARIS: '.PA', NSE: '.NS', LSE: '.L'};
-const CCY = {NASDAQ: 'USD', NYSE: 'USD', LSE: 'GBP', SGX: 'SGD', HKEX: 'HKD',
-  TSE: 'JPY', ASX: 'AUD', XETRA: 'EUR', PARIS: 'EUR', NSE: 'INR'};
+const SUFFIX = DESK_SUFFIX, CCY = DESK_CCY;        // nav.js: the one table
 let exchange = 'NASDAQ', tab = 'all', rows = [], page = 0, total = null;
 let sortKey = 'mcap', sortDir = -1, sel = null, chartData = null;
 let EXCHANGES = [], sparks = {}, clockTimer = null;
@@ -317,7 +314,7 @@ async function sendToPipeline(ex) {
   try {
     const r = await api('/api/run', {ticker: sel.ticker || sel.symbol,
       exchange: ex, currency: CCY[ex],
-      lot_size: ex === 'SGX' ? 100 : 1,
+      lot_size: deskLot(ex),
       trigger: 'launched from the Markets page'});
     toast('launched ' + r.work_item_id + ' — watch it on Trading');
   } catch (e) { toast(e.message, false); }

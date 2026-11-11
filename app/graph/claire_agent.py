@@ -9,6 +9,7 @@ from langchain_core.tools import tool
 
 from ..providers import registry
 from ..tools.market import currency_for, yahoo_symbol
+from ..exchanges import lot_size as board_lot
 
 MAX_TURNS_PER_THREAD = 50      # context hygiene (§17): auto-reset, desk.db is
                                # the durable record so nothing of note is lost
@@ -41,7 +42,7 @@ def build_tools(conn, repo, desk, market):
         inst = Instrument(id=f"{exchange}:{ticker}", ticker=ticker,
                           exchange=exchange,
                           currency="GBP" if ccy == "GBp" else ccy,
-                          lot_size=100 if exchange == "SGX" else 1)
+                          lot_size=board_lot(exchange))
         return desk.start_run(inst,
                               trigger=f"chat: {CURRENT_ASKER['who']}")
 

@@ -5,18 +5,11 @@ never installed and is gone.
 """
 import logging
 
+from .exchanges import CCY, REGIONS  # noqa: F401 — re-exported
 from .logsetup import swallowed
 
 log = logging.getLogger(__name__)
 
-REGIONS = {
-    "asia": ["SGX", "HKEX", "TSE", "ASX"],
-    "eu": ["LSE", "XETRA", "PARIS"],
-    "us": ["NASDAQ", "NYSE"],
-}
-CCY = {"NASDAQ": "USD", "NYSE": "USD", "LSE": "GBP", "SGX": "SGD",
-       "HKEX": "HKD", "TSE": "JPY", "ASX": "AUD", "XETRA": "EUR",
-       "PARIS": "EUR", "NSE": "INR"}
 
 
 def pick_candidates(market, exchanges, held, limit=2):

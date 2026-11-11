@@ -6,6 +6,7 @@ import sys
 import time
 from pathlib import Path
 import logging
+from ..exchanges import lot_size as board_lot
 
 log = logging.getLogger(__name__)
 
@@ -165,7 +166,7 @@ def start_runs(desk, jobs):
         try:
             inst = Instrument(id=f"{ex}:{ticker}", ticker=ticker, exchange=ex,
                               currency=CCY[ex],
-                              lot_size=100 if ex == "SGX" else 1)
+                              lot_size=board_lot(ex))
             wi = desk.start_run(inst, trigger=trigger)
         except (ValueError, KeyError) as e:
             log.warning("skipped run for %r on %r: %s", ticker, ex, e)

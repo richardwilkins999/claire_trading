@@ -515,10 +515,7 @@ function startClocks() {
   };
   tick(); clockTimer = setInterval(tick, 30000);
 }
-const TZ = {NASDAQ: 'America/New_York', NYSE: 'America/New_York',
-  LSE: 'Europe/London', SGX: 'Asia/Singapore', HKEX: 'Asia/Hong_Kong',
-  TSE: 'Asia/Tokyo', ASX: 'Australia/Sydney', XETRA: 'Europe/Berlin',
-  PARIS: 'Europe/Paris', NSE: 'Asia/Kolkata'};
+const TZ = DESK_TZ;                                 // nav.js
 
 function renderRest() {
   const d = DATA;

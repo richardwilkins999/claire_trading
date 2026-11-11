@@ -58,10 +58,7 @@
   <div id="triggers"></div>
 </main>
 <script>
-const DESK_EX = ['NASDAQ', 'NYSE', 'LSE', 'SGX', 'HKEX', 'TSE', 'ASX', 'XETRA',
-  'PARIS', 'NSE'];
-const SUFFIX = {SGX: '.SI', HKEX: '.HK', TSE: '.T', ASX: '.AX', XETRA: '.DE',
-  PARIS: '.PA', NSE: '.NS', LSE: '.L'};
+const SUFFIX = DESK_SUFFIX;       // DESK_EX and the table itself: nav.js
 /* which of the desk's ten exchanges a search hit belongs to: deskExchange()
    in nav.js, shared with the Markets page */
 
@@ -348,7 +345,7 @@ async function loadR2y(r) {
   if (SEL === keyOf(r)) { updBuy(); updTrig(); }
 }
 const qccy = r => esc(((r || {}).quote || {}).currency || '');
-const lotOf = r => (r && r.exchange === 'SGX') ? 100 : 1;
+const lotOf = r => deskLot(r && r.exchange);     // nav.js
 let B_LEAD = 'amount', B_TOUCHED = false;   // which size you typed; did you edit stop/target
 function buyForm(r) {
   const c = qccy(r);

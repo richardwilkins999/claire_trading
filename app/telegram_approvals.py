@@ -48,6 +48,7 @@ from zoneinfo import ZoneInfo
 from . import alerts, approvals
 import logging
 from .accounting import db
+from .exchanges import lot_size as board_lot
 
 log = logging.getLogger(__name__)
 
@@ -374,7 +375,7 @@ def gather(conn, market, wi_row, env, *, clock=time.time, phase="approval",
          "origin": origin(wi_row["kind"], wi_row["trigger"]),
          "thesis": th, "side": th.get("direction") or "?", "ccy": ccy,
          "phase": phase, "expires_at": wi_row["expires_at"],
-         "now": int(clock()), "lot": 100 if exchange == "SGX" else 1,
+         "now": int(clock()), "lot": board_lot(exchange),
          "suggestion": suggestion(wi_row), "failed": failed}
     f["suggested"] = f["suggestion"].get("size_base")
     f["price_trigger"] = trigger_rule(conn, wi_row["id"])

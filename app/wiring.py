@@ -11,6 +11,7 @@ from .graph.nodes_execution import build_execute, build_record
 from .graph.pipeline import Deps
 from .tools.brokers import PaperSimBroker
 from .tools.lc_tools import build_tool_registry
+from .exchanges import lot_size as board_lot
 
 
 def account_for_broker(conn):
@@ -107,8 +108,8 @@ def make_prepare(repo):
         ccy = currency_for(yahoo_symbol(inst.ticker, inst.exchange))
         resolved = inst.model_copy(update={
             "currency": "GBP" if ccy == "GBp" else ccy,
-            "lot_size": max(inst.lot_size, 100 if inst.exchange == "SGX"
-                            else 1)})
+            "lot_size": max(inst.lot_size,
+                            board_lot(inst.exchange))})
         repo.add_instrument(resolved.id, resolved.ticker, resolved.exchange,
                             resolved.currency, resolved.name)
         return {"instrument": resolved}
