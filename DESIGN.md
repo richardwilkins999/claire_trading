@@ -1258,7 +1258,8 @@ runnable offline in under a second.
   account uses OAuth + PKCE with automatic refresh (§22), but Saxo's refresh
   window is ~40 min: if claire-api is down longer than that, `bin/saxo login`
   must be run again before live orders (or the live view) work. The
-  keepalive alerts Richard on Telegram (Bob's bot) and the desktop when the
+  keepalive alerts Richard on Telegram (Bob's bot, or Claire's own —
+  README) and the desktop when the
   refresh starts failing with <15 min left, when the sign-in lapses
   (re-reminding every 12 h), and when it is restored (`SignInWatch`,
   `app/alerts.py`; `bin/saxo test-alert` checks delivery). An alert cannot

@@ -80,6 +80,37 @@ bin/claire status                # what's running, what's in flight
 Resetting the book (`bin/claire-reset`) is a separate, deliberately harder
 to reach command — not part of the daily-use script.
 
+### Telegram
+
+Claire sends approval cards and alerts through a Telegram bot and takes your
+decisions back from it. Two set-ups:
+
+- **Bob's shared bot (the default).** With `CLAIRE_TELEGRAM_ENV` empty Claire
+  reads `~/bob/telegram.env`. Bob is the only reader of that bot's updates
+  and relays button taps and a typed LIVE to Claire.
+- **Claire's own bot.** `etc/claire.env` sets `CLAIRE_TELEGRAM_ENV` to the
+  full path of `etc/telegram.env` (gitignored, mode 600), which holds
+  `TELEGRAM_BOT_TOKEN` from @BotFather, `TELEGRAM_CHAT_ID` = your own user id
+  (message the bot `/id`), and `TELEGRAM_POLL=1`, so the dashboards process
+  reads taps itself (`app/telegram_bot.py`). One bot, one reader: never set
+  `TELEGRAM_POLL=1` on a token another program also reads. Restart after
+  changing `etc/claire.env`; `etc/telegram.env` is re-read on every pass.
+  `bin/saxo test-alert` checks delivery, and the Maintenance page shows
+  whether the bot is polling.
+
+With her own bot Claire also takes commands (owner only, private chat —
+`app/telegram_commands.py`): `/analyze TICKER [EXCHANGE]`,
+`/buy TICKER [EXCHANGE] [SIZE] [trail=PCT]`, `/sell TICKER [all|half|QTY]`,
+`/positions`, `/orders`, `/floor [TICKER] [PCT]`, `/id`. Every one ends at
+the approval card; none places an order by itself.
+
+The card offers share counts (sized at the price the order really fills at)
+and approves exactly those shares, as the dashboard card does, with buttons
+for the trailing % (5/8/12/15 and the suggestion). On an account whose stops
+rest at Saxo that % is a **trailing stop** that sells by itself, and the card
+says so; elsewhere it is the watcher's **trailing alert**, which only asks.
+`/floor` changes the alert, never a trailing stop already at Saxo.
+
 ## Deploy
 
 This machine runs Claire via one systemd **wrapper** unit that calls

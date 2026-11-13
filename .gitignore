@@ -13,3 +13,5 @@ etc/saxo_*_token*
 
 # Claude Code agent worktrees and local launch configs
 .claude/
+# Claire's own Telegram bot token — never committed
+etc/telegram.env

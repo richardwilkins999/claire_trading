@@ -2,13 +2,13 @@
 
 Daily (and on demand from the Maintenance page) it:
   1. CHECKS — services, the custodian and broker sync, schedules, disk,
-     backups, Saxo sign-ins, the
+     backups, Saxo sign-ins, the Telegram bot and its approval cards, the
      arbiter's plain-English notes, the stop-losses Claire's built-in sim
      holds, and what is growing on disk;
   2. HOUSEKEEPS with fixed retention — rotates logs, keeps 7 daily backups,
      prunes finished runs' LangGraph checkpoints and old health rows, archives
      old narratives, deletes old Claude SDK transcripts, and drops the
-     built-in sim's long-finished orders;
+     built-in sim's long-finished orders and old closed Telegram cards;
   3. asks the `maintainer` agent for a short plain-English status note.
 
 Plain code does every check and every deletion. The AI only reads the
@@ -46,6 +46,7 @@ NARRATIVE_DAYS = 30                     # archived runs' write-ups → tar.gz
 SDK_TRANSCRIPT_DAYS = 30                # Claude SDK session transcripts
 RUNS_KEEP = 90                          # maintenance_runs rows
 SIM_ORDERS_DAYS = 30                    # the built-in sim's finished orders
+TELEGRAM_NOTICES_DAYS = 90              # closed Telegram approval cards
 
 TERMINAL = states.RUN_TERMINAL
 STATUS_RANK = {"ok": 0, "info": 0, "warn": 1, "bad": 2}
@@ -103,7 +104,7 @@ class Maintainer:
         for step in (self.rotate_logs, self.backup, self.prune_checkpoints,
                      self.prune_health, self.archive_narratives,
                      self.prune_sdk_transcripts, self.prune_runs,
-                     self.prune_sim_orders):
+                     self.prune_sim_orders, self.prune_telegram_notices):
             try:
                 actions.append(step())
             except Exception as e:              # noqa: BLE001 — one failing
@@ -169,7 +170,7 @@ class Maintainer:
         for fn in (self._check_services, self._check_custodian,
                    self._check_brokers, self._check_schedules,
                    self._check_disk, self._check_backups,
-                   self._check_signins,
+                   self._check_signins, self._check_telegram,
                    self._check_arbiter_notes, self._check_sim_stops,
                    self._check_growth, self._check_calendars):
             try:
@@ -314,6 +315,75 @@ class Maintainer:
             out.append(_check(f"saxo_{env}", f"Saxo {env.upper()} sign-in",
                               "ok" if state == "ok" else "warn",
                               "signed in" if state == "ok" else state))
+        return out
+
+    def _check_telegram(self, now):
+        """The bot (approval cards, buttons, /buy …): configured, polling,
+        and every card actually delivered."""
+        from . import alerts
+        out = []
+        cfg = alerts.telegram_settings()
+        if not cfg.get("token"):
+            return [_check("telegram", "Telegram bot", "warn",
+                           "not configured",
+                           f"no TELEGRAM_BOT_TOKEN in {alerts.TELEGRAM_ENV}"
+                           " — approvals work on the dashboard only")]
+        if not cfg.get("approver_id"):
+            out.append(_check("telegram", "Telegram bot", "warn",
+                              "no approver", "set TELEGRAM_CHAT_ID to your "
+                              "user id (message the bot /id): until then "
+                              "every button tap is refused"))
+        try:
+            mode = alerts.TELEGRAM_ENV.stat().st_mode & 0o777
+            if mode & 0o077:
+                out.append(_check("telegram_env", "Telegram token file",
+                                  "warn", f"permissions {mode:o}",
+                                  f"chmod 600 {alerts.TELEGRAM_ENV} — it "
+                                  "holds the bot token"))
+        except OSError:
+            pass
+        if cfg.get("poll"):
+            h = self._health("telegram_bot")
+            if h is None:
+                out.append(_check("telegram_bot", "Telegram bot", "warn",
+                                  "no heartbeat yet",
+                                  "restart the dashboards to start polling"))
+            else:
+                age = now - h["checked_at"]
+                try:
+                    state = json.loads(h["detail"] or "{}").get("state", "")
+                except (TypeError, ValueError, AttributeError):
+                    state = ""
+                if age > 30 * 60:
+                    out.append(_check("telegram_bot", "Telegram bot", "bad",
+                                      f"silent for {age // 60} min",
+                                      "the dashboards' bot thread is not "
+                                      "polling — button taps go unanswered;"
+                                      " restart the dashboards"))
+                elif h["ok"] != "ok":
+                    out.append(_check("telegram_bot", "Telegram bot", "warn",
+                                      "polling fails", state[:300]))
+                else:
+                    out.append(_check("telegram_bot", "Telegram bot", "ok",
+                                      "polling for taps and commands"))
+        else:
+            out.append(_check("telegram_bot", "Telegram bot", "info",
+                              "sends only", "TELEGRAM_POLL is off: taps are "
+                              "relayed by Bob's bot"))
+        try:
+            bad = self.conn.execute(
+                "SELECT n.work_item_id, n.attempts FROM telegram_notices n"
+                " JOIN work_items w ON w.id=n.work_item_id WHERE"
+                " w.state IN ('awaiting_approval','approved') AND"
+                " (n.status='error' OR (n.status='sending' AND"
+                " n.updated_at < ?))", (now - 600,)).fetchall()
+        except sqlite3.OperationalError:
+            bad = []                            # no card sent yet
+        if bad:
+            out.append(_check("telegram_cards", "Telegram approval cards",
+                              "warn", f"{len(bad)} not delivered",
+                              "approve on the dashboard instead: " +
+                              ", ".join(r["work_item_id"] for r in bad[:5])))
         return out
 
     def _check_arbiter_notes(self, now):
@@ -523,6 +593,18 @@ class Maintainer:
         return {"action": "prune_sim_orders", "ok": True, "freed": 0,
                 "detail": f"{len(gone)} built-in sim orders finished over "
                           f"{SIM_ORDERS_DAYS} days ago"}
+
+    def prune_telegram_notices(self) -> dict:
+        cutoff = int(self.clock()) - TELEGRAM_NOTICES_DAYS * DAY
+        try:
+            n = self.conn.execute(
+                "DELETE FROM telegram_notices WHERE status IN"
+                " ('closed','error') AND updated_at < ?", (cutoff,)).rowcount
+        except sqlite3.OperationalError:
+            n = 0
+        return {"action": "prune_telegram_notices", "ok": True, "freed": 0,
+                "detail": f"{n} Telegram cards closed over "
+                          f"{TELEGRAM_NOTICES_DAYS} days ago"}
 
     def archive_narratives(self) -> dict:
         """Write-ups of runs archived over 30 days ago → one tar.gz each in

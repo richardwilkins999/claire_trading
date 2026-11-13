@@ -299,6 +299,17 @@ def main():
     # arrives so the Approvals page never waits on the LLM
     from . import arbiter_notes
     arbiter_notes.start_writer_thread(conn)
+    # a dedicated Claire bot (TELEGRAM_POLL=1) reads its own taps instead
+    # of relying on Bob's relay; idle otherwise
+    from . import telegram_bot, telegram_commands
+    telegram_bot.start_poller_thread(
+        conn, market, os.environ,
+        approvals.default_resume_post("http://127.0.0.1:7788", secret),
+        var / "telegram_offset",
+        commands=telegram_commands.Commands(
+            conn, market, os.environ,
+            telegram_commands.DeskApi("http://127.0.0.1:7788", secret),
+            nudge=telegram_approvals.nudge))
     bind =os.environ.get("CLAIRE_DASHBOARD_BIND", "127.0.0.1")
     # optional extra Host names (e.g. a DNS alias for this box); the
     # loopback + hostname + LAN-IP set is always derived from `bind`

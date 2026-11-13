@@ -37,6 +37,19 @@ def ordered_accounts(conn, env):
                   key=lambda a: (account_rank(a, env or {}), a["id"]))
 
 
+def venue_stop_facts(a, sim_on):
+    """Where this account's stops rest. `venue_stops`: AT Saxo (so a buy's
+    trailing % is sent there as a trailing stop that sells by itself);
+    `local_exchanges`: the markets saxo-paper simulates itself (Saxo SIM
+    trades CFDs only), where the desk holds the stop and the trailing % is
+    the watcher's alert. One rule for the Approvals page and the Telegram
+    card (web/orderform.js trailIsStop, telegram_approvals.trail_is_stop)."""
+    live = a["environment"] == "live"
+    saxo_sim = a["broker"] == "saxo" and sim_on
+    return {"venue_stops": live or saxo_sim,
+            "local_exchanges": ["SGX"] if saxo_sim and not live else []}
+
+
 def _approval_account(a, repo, env, live):
     """One broker choice on the approval card, labelled by the REAL account
     it reaches. A live account is listed always but selectable only while
@@ -66,7 +79,4 @@ def _approval_account(a, repo, env, live):
                 a["broker"] == "saxo" and sim_on),
             # stops (and the trailing floor) rest AT Saxo, except on the
             # markets saxo-paper simulates itself (Saxo SIM: CFDs only)
-            "venue_stops": a["environment"] == "live" or (
-                a["broker"] == "saxo" and sim_on),
-            "local_exchanges": ["SGX"] if a["broker"] == "saxo" and sim_on
-            and a["environment"] != "live" else []}
+            **venue_stop_facts(a, sim_on)}

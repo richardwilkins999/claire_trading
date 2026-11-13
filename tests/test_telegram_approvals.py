@@ -88,10 +88,10 @@ def conn():
 
 
 def awaiting(conn, wi="wi_1", direction="buy", kind="pipeline", trigger=None,
-             conditions=None):
+             conditions=None, entry=103.15, stop=96.4):
     Repo(conn).create_work_item(wi, kind, "CSCO", ts=T0)
     th = {"ticker": "CSCO", "direction": direction, "conviction": 0.72,
-          "entry_low": 102.5, "entry_high": 103.15, "stop_loss": 96.4,
+          "entry_low": min(102.5, entry), "entry_high": entry, "stop_loss": stop,
           "take_profit": 116.1, "currency": "USD",
           "conditions": conditions or ["Hold above SMA50 & <b>volume</b>",
                                        "Earnings on 12 Nov"]}
@@ -191,8 +191,13 @@ def test_message_carries_the_decision_and_escapes_everything(conn):
     assert "Volume scan — relative volume 5.2x &lt;avg&gt;" in html
     assert "conviction high (0.72)" in html
     assert "103.67" in html and "+2.0% today" in html
-    assert "Stop:</b> 96.40 (-6.5%)" in html and "Target:</b> 116.10 (+12.6%)" in html
-    assert "Reward:risk</b> 1.9 : 1" in html
+    assert "Stop-loss:</b> 96.40 (-6.5%)" in html and "Take-profit:</b> 116.10 (+12.6%)" in html
+    assert "Reward : risk</b> 1.9 : 1" in html
+    # the purchase price is below the market: it waits for it
+    assert "Purchase price:</b> 103.15 (-0.5% vs now — waits for that price or better)" in html
+    # sized in shares, with what those shares could lose / make
+    assert "9 shares ≈ 928.35 USD (whole shares)" in html
+    assert "most you can lose <b>−60.75 USD</b>" in html
     assert "&lt;b&gt;volume&lt;/b&gt;" in html          # condition escaped
     assert "Cisco &lt;Systems&gt;" in html
     assert "technical</b> bullish 0.60 — Reclaimed SMA20 &lt;fast&gt;" in html
@@ -221,9 +226,10 @@ def test_keyboard_has_sizes_accounts_reject_link_and_no_token(conn):
     kb = tg.messages[0][2]
     bs = buttons(kb)
     texts = [b["text"] for b in bs]
-    assert any(t.startswith("500 USD") for t in texts)
-    assert any(t.startswith("1,000 USD ≈9 sh") for t in texts)   # whole shares
-    assert "✓ Saxo SIM" in texts and "alpaca sim" in texts       # default first
+    # shares first, at the price the order fills at
+    assert any(t.startswith("4 sh ≈") for t in texts)
+    assert "9 sh ≈ 928 USD" in texts                              # whole shares
+    assert "✓ Saxo SIM" in texts and "Claire sim (alpaca)" in texts       # default first
     assert "✖ Reject" in texts
     assert {"text": "Open Approvals ↗", "url": BASE + "/approvals"} in bs
     for b in bs:
@@ -264,7 +270,7 @@ def test_suggested_size_drives_the_buttons(conn):
     tg = FakeTg()
     push(conn, tg)
     texts = [b["text"] for b in buttons(tg.messages[0][2])]
-    assert texts[0].startswith("1,500 USD") and "Suggested size" in tg.messages[0][1]
+    assert texts[0] == "14 sh ≈ 1,444 USD" and "Suggested:</b> 14 shares" in tg.messages[0][1]
 
 
 def test_sell_offers_all_and_half_of_what_the_account_holds(conn, monkeypatch):
@@ -274,7 +280,7 @@ def test_sell_offers_all_and_half_of_what_the_account_holds(conn, monkeypatch):
     tg = FakeTg()
     push(conn, tg)
     texts = [b["text"] for b in buttons(tg.messages[0][2])]
-    assert "All (13 sh ≈ 1,341 USD)" in texts and "Half (6 sh ≈ 619 USD)" in texts   # whole shares
+    assert "All (13 sh ≈ 1,348 USD)" in texts and "Half (6 sh ≈ 622 USD)" in texts   # whole shares
     decide(conn, tg, ta.cb(nid(conn), "s", 1))
     sent = []
     p = json.loads(conn.execute("SELECT options_json FROM telegram_notices"
@@ -296,10 +302,13 @@ def test_suggestion_preselects_account_qty_and_trailing_floor(
     push(conn, tg)
     html, kb = tg.messages[0][1], tg.messages[0][2]
     texts = [b["text"] for b in buttons(kb)]
-    assert "✓ alpaca sim" in texts and "Suggested (4 sh ≈ 413 USD)" in texts
-    assert "Trailing floor 5.0%" in html
+    assert "✓ Claire sim (alpaca)" in texts and "Suggested (4 sh ≈ 415 USD)" in texts
+    # an exit closes the position: no alert to trail (as on the dashboard)
+    assert "Trailing alert" not in html
+    assert not any(t.endswith("%") for t in texts)
     decide(conn, tg, ta.cb(nid(conn), "s", 0))
-    assert "SELL 4 CSCO" in tg.edits[-1][2] and "5.0%" in tg.edits[-1][2]
+    assert "SELL 4 CSCO" in tg.edits[-1][2]
+    assert "Trailing alert" not in tg.edits[-1][2]
 
 
 # ── push bookkeeping ──────────────────────────────────────────────────────
@@ -393,7 +402,8 @@ def test_size_tap_only_confirms_then_tick_approves(conn):
     code, out = decide(conn, tg, ta.cb(nid(conn), "s", 1), resume=resume)
     assert code == 200 and sent == []                    # nothing submitted
     html, kb = tg.edits[-1][2], tg.edits[-1][3]
-    assert "Confirm:</b> BUY 9 CSCO ≈ 928.35 USD at limit 103.15" in html
+    assert ("Confirm:</b> BUY 9 CSCO ≈ 928.35 USD, purchase price 103.15 USD,"
+            " stop-loss 96.40, take-profit 116.10") in html
     assert "Saxo SIM 11111111" in html and "paper" in html
     ok = kb[0][0]
     assert ok["text"] == "✔ Place it" and kb[0][1]["text"] == "✖ Back"
@@ -401,7 +411,9 @@ def test_size_tap_only_confirms_then_tick_approves(conn):
     code, out = decide(conn, tg, ok["callback_data"], resume=resume)
     assert code == 200 and out["ok"]
     [b] = sent
-    assert b["token"] == TOKEN and b["size_base"] == 1000
+    # the exact shares are bought; the cash check holds them at the worse
+    # of the purchase price and the live price (9 × 103.67)
+    assert b["token"] == TOKEN and b["qty"] == 9 and b["size_base"] == 933.03
     assert b["broker"] == "saxo" and b["trail_pct"] == 8
     rows = [dict(r) for r in conn.execute(
         "SELECT actor, to_state, payload FROM events WHERE item_id='wi_1'"
@@ -448,8 +460,8 @@ def test_switching_account_changes_the_order(conn):
     tg = FakeTg()
     push(conn, tg)
     decide(conn, tg, ta.cb(nid(conn), "a", 1))          # alpaca built-in sim
-    assert "alpaca built-in sim" in tg.edits[-1][2]
-    assert any(b["text"] == "✓ alpaca sim" for b in buttons(tg.edits[-1][3]))
+    assert "Claire sim · alpaca (simulated, not a broker)" in tg.edits[-1][2]
+    assert any(b["text"] == "✓ Claire sim (alpaca)" for b in buttons(tg.edits[-1][3]))
     decide(conn, tg, ta.cb(nid(conn), "s", 1))
     assert "BUY 9.6 CSCO" in tg.edits[-1][2]             # 0.1-share fractions
 
@@ -733,3 +745,143 @@ def test_a_card_approved_elsewhere_after_the_push_is_stale(conn):
     conn.execute("UPDATE work_items SET token_state='pending_resume'")
     code, out = decide(conn, tg, ta.cb(nid(conn), "rj"))
     assert "being placed" in out["answer"] and tg.edits[-1][3] is None
+
+
+# ── trailing floor on the card ────────────────────────────────────────────
+def floor_buttons(kb, word="trail"):
+    """The trailing-% buttons. Claire: on an account whose stops rest at
+    Saxo (the fixtures' default, Saxo SIM) they read "trail …" because the %
+    becomes a trailing STOP there; elsewhere "alert …"."""
+    return [b for b in buttons(kb)
+            if b["text"].lstrip("✓ ").startswith(word + " ")]
+
+
+def test_buy_card_offers_floors_and_the_choice_is_what_gets_approved(conn):
+    awaiting(conn)
+    tg = FakeTg()
+    push(conn, tg)
+    html, kb = tg.messages[0][1], tg.messages[0][2]
+    assert "Trailing stop 8%" in html and "sells by itself" in html
+    assert "never sells" not in html
+    assert [b["text"] for b in floor_buttons(kb)] == [
+        "trail 5%", "✓ trail 8%", "trail 12%", "trail 15%"]
+    code, out = decide(conn, tg, ta.cb(nid(conn), "tf", "12"))
+    assert code == 200 and out["answer"] == "Trailing stop: 12%"
+    assert "✓ trail 12%" in [b["text"] for b in floor_buttons(tg.edits[-1][3])]
+    decide(conn, tg, ta.cb(nid(conn), "s", 1))
+    assert "Trailing stop <b>12%</b> — it sells by itself" in tg.edits[-1][2]
+    sent = []
+    decide(conn, tg, tg.edits[-1][3][0][0]["callback_data"],
+           resume=lambda b: sent.append(b) or (200, {"ok": True}))
+    assert sent[0]["trail_pct"] == 12
+
+
+def test_the_trailing_words_follow_where_the_stop_rests(conn):
+    """Claire only (Saxo trailing stops): the same % is an ORDER that sells
+    by itself on a Saxo account and only an alert on the built-in sim, and
+    the card must not promise "never sells" where Saxo will sell."""
+    awaiting(conn)
+    tg = FakeTg()
+    push(conn, tg)
+    assert "Trailing stop 8% on Saxo SIM" in tg.messages[0][1]
+    assert "never sells" not in tg.messages[0][1]
+    decide(conn, tg, ta.cb(nid(conn), "a", 1))          # alpaca built-in sim
+    html, kb = tg.edits[-1][2], tg.edits[-1][3]
+    note = html[html.rindex("<b>Account:</b>"):]        # under the card
+    assert "<b>Trailing alert:</b> 8%" in note and "it never sells" in note
+    assert "sells by itself" not in note
+    assert [b["text"] for b in floor_buttons(kb, "alert")] == [
+        "alert 5%", "✓ alert 8%", "alert 12%", "alert 15%"]
+    assert floor_buttons(kb) == []
+    code, out = decide(conn, tg, ta.cb(nid(conn), "tf", "12"))
+    assert out["answer"] == "Trailing alert: 12%"
+    decide(conn, tg, ta.cb(nid(conn), "s", 1))
+    assert "Trailing alert <b>12%</b>." in tg.edits[-1][2]
+
+
+def test_no_stop_loss_means_an_alert_even_at_saxo():
+    """Saxo's trailing stop starts from the stop-loss; without one nothing
+    is sent there, so the % is the watcher's alert."""
+    acct = {"venue_stops": True, "local_exchanges": ["SGX"]}
+    f = {"exchange": "NASDAQ", "thesis": {"stop_loss": 96.4}}
+    assert ta.trail_is_stop(f, acct) and ta.trail_word(f, acct) == "trailing stop"
+    assert not ta.trail_is_stop({**f, "thesis": {}}, acct)
+    assert not ta.trail_is_stop({**f, "exchange": "SGX"}, acct)   # desk-held
+    assert not ta.trail_is_stop(f, {"venue_stops": False})
+    assert not ta.trail_is_stop(f, None)
+    assert ta.trail_word(f, None) == "trailing alert"
+
+
+def test_a_floor_that_is_not_offered_is_refused(conn):
+    awaiting(conn)
+    tg = FakeTg()
+    push(conn, tg)
+    assert decide(conn, tg, ta.cb(nid(conn), "tf", "33"))[0] == 400
+    assert decide(conn, tg, ta.cb(nid(conn), "tf", "x"))[0] == 400
+
+
+def test_suggested_floor_is_preselected_and_offered(conn):
+    awaiting(conn, kind="manual")
+    ensure_suggested_column(conn)
+    conn.execute("UPDATE work_items SET suggested_json=?",
+                 (json.dumps({"trail_pct": 10}),))
+    tg = FakeTg()
+    push(conn, tg)
+    texts = [b["text"] for b in floor_buttons(tg.messages[0][2])]
+    assert "✓ trail 10%" in texts and "trail 8%" in texts
+
+
+def test_picking_a_floor_drops_a_pending_confirmation(conn):
+    awaiting(conn)
+    tg = FakeTg()
+    push(conn, tg)
+    decide(conn, tg, ta.cb(nid(conn), "s", 1))
+    old_ok = tg.edits[-1][3][0][0]["callback_data"]
+    decide(conn, tg, ta.cb(nid(conn), "tf", "5"))
+    assert decide(conn, tg, old_ok)[0] == 409      # must confirm again
+
+
+def test_retry_can_change_the_floor(conn):
+    failed(conn)
+    tg = FakeTg()
+    push(conn, tg)
+    kb = tg.messages[0][2]
+    assert "✓ trail 8%" in [b["text"] for b in floor_buttons(kb)]
+    decide(conn, tg, ta.cb(nid(conn), "tf", "15"))
+    decide(conn, tg, ta.cb(nid(conn), "rt"))
+    assert "trailing stop <b>15%</b>" in tg.edits[-1][2]
+    sent = []
+    decide(conn, tg, tg.edits[-1][3][0][0]["callback_data"],
+           resume=lambda b: sent.append(b) or (200, {"ok": True}))
+    assert sent[0]["trail_pct"] == 15 and sent[0]["size_base"] == 1000
+
+
+# ── a purchase price above the market; levels on the wrong side ───────────
+def test_a_purchase_price_above_the_market_is_sized_at_the_market(conn):
+    """A buy limit above the market fills at once at about the market: the
+    shares and cost are counted there (as on the dashboard card), the cash
+    check holds them at the purchase price."""
+    awaiting(conn, entry=110.0)
+    tg = FakeTg()
+    push(conn, tg)
+    html = tg.messages[0][1]
+    assert ("Purchase price:</b> 110.00 — above the current price, so it"
+            " fills straight away at about 103.67") in html
+    decide(conn, tg, ta.cb(nid(conn), "s", 1))                 # ~1,000 USD
+    assert "BUY 9 CSCO ≈ 933.03 USD, purchase price 110.00 USD (fills now" \
+        " at about 103.67)" in tg.edits[-1][2]
+    sent = []
+    decide(conn, tg, tg.edits[-1][3][0][0]["callback_data"],
+           resume=lambda b: sent.append(b) or (200, {"ok": True}))
+    assert sent[0]["qty"] == 9 and sent[0]["size_base"] == 990.0
+
+
+def test_a_stop_loss_above_where_it_fills_is_flagged_and_not_offered(conn):
+    awaiting(conn, entry=110.0, stop=105.0)
+    tg = FakeTg()
+    push(conn, tg)
+    html = tg.messages[0][1]
+    assert "stop-loss 105.00 is not below the current price, where it fills" \
+        " (103.67)" in html.replace("The stop-loss", "stop-loss")
+    code, out = decide(conn, tg, ta.cb(nid(conn), "s", 0))
+    assert code == 400 and "straight away" in out["answer"]

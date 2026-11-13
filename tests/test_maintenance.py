@@ -279,9 +279,56 @@ def test_internal_run_endpoint_needs_the_secret(world):
             "x-claire-secret": "sec"}).status_code == 409
 
 
-# ── the parts added 2026-11-11: arbiter notes, sim stops ─────────────────
+# ── the parts added 2026-11-11: Telegram, arbiter notes, sim stops ────────
 def by_key(checks):
     return {c["key"]: c for c in checks}
+
+
+def tg_env(tmp_path, monkeypatch, text, mode=0o600):
+    from app import alerts
+    p = tmp_path / "etc" / "telegram.env"
+    p.write_text(text)
+    os.chmod(p, mode)
+    monkeypatch.setattr(alerts, "TELEGRAM_ENV", p)
+    monkeypatch.setattr(alerts.telegram_settings, "__defaults__", (p,))
+    return p
+
+
+def test_telegram_check_reports_config_heartbeat_and_undelivered_cards(
+        world, monkeypatch):
+    root, conn, m, _ = world
+    tg_env(root, monkeypatch, "TELEGRAM_BOT_TOKEN=x\n", mode=0o644)
+    c = by_key(m.checks())
+    assert c["telegram"]["status"] == "warn" and "approver" in c["telegram"]["value"]
+    assert c["telegram_env"]["status"] == "warn"            # not 600
+    assert c["telegram_bot"]["value"] == "sends only"       # TELEGRAM_POLL off
+    tg_env(root, monkeypatch, "TELEGRAM_BOT_TOKEN=x\nTELEGRAM_CHAT_ID=42\n"
+           "TELEGRAM_POLL=1\n")
+    c = by_key(m.checks())
+    assert "telegram" not in c and "telegram_env" not in c
+    assert c["telegram_bot"]["value"] == "no heartbeat yet"
+    from app.telegram_bot import _beat
+    _beat(conn, {}, True, "polling", clock=lambda: NOW - 60)
+    assert by_key(m.checks())["telegram_bot"]["status"] == "ok"
+    _beat(conn, {}, True, "polling", clock=lambda: NOW - 3600)
+    conn.execute("DELETE FROM service_health WHERE checked_at=?", (NOW - 60,))
+    assert by_key(m.checks())["telegram_bot"]["status"] == "bad"   # silent
+    # a card that failed to send, for a trade still waiting
+    from app import telegram_approvals
+    telegram_approvals.ensure_table(conn)
+    item(conn, "wi_t", "awaiting_approval", NOW - 100)
+    conn.execute("INSERT INTO telegram_notices (work_item_id, state_key,"
+                 " status, attempts, created_at, updated_at) VALUES"
+                 " ('wi_t','approval','error',3,?,?)", (NOW - 90, NOW - 90))
+    c = by_key(m.checks())["telegram_cards"]
+    assert c["status"] == "warn" and "wi_t" in c["detail"]
+
+
+def test_no_telegram_at_all_is_a_warning_not_a_failure(world, monkeypatch):
+    root, conn, m, _ = world
+    tg_env(root, monkeypatch, "")
+    c = by_key(m.checks())["telegram"]
+    assert c["status"] == "warn" and c["value"] == "not configured"
 
 
 def test_arbiter_notes_check_flags_cards_left_without_them(world):
@@ -321,8 +368,10 @@ def test_sim_stops_check_says_whether_anything_is_checking_them(world):
     assert c["status"] == "ok" and c["value"].startswith("1 working")
 
 
-def test_housekeeping_drops_only_finished_sim_orders(world):
+def test_housekeeping_drops_only_finished_sim_orders_and_old_closed_cards(
+        world):
     root, conn, m, _ = world
+    from app import telegram_approvals
     from app.tools.brokers import SIM_TABLE
     conn.execute(SIM_TABLE)
     old = NOW - 40 * DAY
@@ -333,3 +382,12 @@ def test_housekeeping_drops_only_finished_sim_orders(world):
     a = m.prune_sim_orders()
     left = {r[0] for r in conn.execute("SELECT id FROM sim_orders")}
     assert left == {"sim-rest", "sim-new"} and a["ok"]      # a resting stop stays
+    telegram_approvals.ensure_table(conn)
+    for wi, st, t in (("a", "closed", NOW - 100 * DAY), ("b", "sent", NOW - 100 * DAY),
+                      ("c", "closed", NOW)):
+        conn.execute("INSERT INTO telegram_notices (work_item_id, state_key,"
+                     " status, created_at, updated_at) VALUES (?,?,?,?,?)",
+                     (wi, "approval", st, t, t))
+    m.prune_telegram_notices()
+    assert {r[0] for r in conn.execute(
+        "SELECT work_item_id FROM telegram_notices")} == {"b", "c"}

@@ -3,7 +3,8 @@ notification. Used for things that need a human BEFORE they bite — e.g. the
 Saxo sign-in about to lapse (app/tools/saxo_live.py).
 
 Reuses Bob's bot (~/bob/telegram.env: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
-rather than a second bot; the message goes to the first allowed chat, the
+by default, or a dedicated Claire bot (CLAIRE_TELEGRAM_ENV pointing at
+its own file with TELEGRAM_POLL=1 — see app/telegram_bot.py); the message goes to the first allowed chat, the
 same one Bob's own notifications use. Never raises: an alert that cannot be
 delivered is logged to stderr and the desk carries on.
 """
@@ -49,7 +50,7 @@ def telegram_settings(path=TELEGRAM_ENV):
             if sep and not k.strip().startswith("#"):
                 cfg[k.strip()] = v.strip().strip('"').strip("'")
     except OSError:
-        return {"token": None, "approver_id": None}
+        return {"token": None, "approver_id": None, "poll": False}
     approver = (cfg.get("TELEGRAM_APPROVER_ID") or "").strip()
     if not approver:
         approver = next((c.strip() for c in
@@ -57,8 +58,13 @@ def telegram_settings(path=TELEGRAM_ENV):
                          if c.strip().isdigit()), "")
     if not approver.isdigit():
         approver = None
+    # TELEGRAM_POLL=1: this token belongs to Claire alone, so Claire reads
+    # its updates itself (app/telegram_bot.py). Off by default — a token shared
+    # with Bob must have exactly one getUpdates poller, and that is Bob.
+    poll = (cfg.get("TELEGRAM_POLL") or "").strip().lower() in (
+        "1", "true", "yes", "on")
     return {"token": cfg.get("TELEGRAM_BOT_TOKEN") or None,
-            "approver_id": approver}
+            "approver_id": approver, "poll": poll}
 
 
 class TelegramError(Exception):
