@@ -226,9 +226,26 @@ def test_b2_unreadable_final_status_keeps_the_order_open():
 
 def test_b2_venue_still_working_after_the_cancel_is_left_open():
     conn, repo, venue, c = _ttl_world(WORKING, WORKING)
+    venue.cancel = lambda oid: setattr(venue, "cancelled", True)  # no 404
+    r = c.run_once()
+    assert repo.order("o1")["status"] == "placed"
+    # the venue's status can lag the cancel it has just accepted: the first
+    # sighting is not a flag (a flag naming a LIVE order disarms live
+    # trading, and this is a routine expiry) …
+    assert not r["flags"]
+    # … still working on the next run is
     r = c.run_once()
     assert repo.order("o1")["status"] == "placed"
     assert any("still reports it placed" in f for f in r["flags"])
+
+
+def test_b2_a_venue_that_catches_up_is_never_flagged():
+    conn, repo, venue, c = _ttl_world(WORKING, WORKING)
+    assert not c.run_once()["flags"]
+    venue.after = {"status": "cancelled", "ended": "Cancelled", "fills": []}
+    r = c.run_once()
+    assert not r["flags"]
+    assert repo.order("o1")["status"] in ("expired", "cancelled")
 
 
 # ── B3: FX rates ────────────────────────────────────────────────────────────

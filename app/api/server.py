@@ -42,6 +42,11 @@ def build_world():
     db.init(conn)
     seeds.seed(conn)
     sessions.seed_db(conn)
+    # the live caps reach each live account's own risk_limits (which is what
+    # the ledger enforces) here as well as when a cap is edited: an account
+    # set up before the two were kept in step would otherwise keep its old cap
+    from .. import live_trading
+    live_trading.sync_account_caps(conn)
     repo = Repo(conn)
     ts = int(time.time())
     for broker, fee in (("alpaca", {"type": "flat", "per_trade": "0"}),

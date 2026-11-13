@@ -119,7 +119,11 @@ class PaperSimBroker:
         self.store.execute(
             "INSERT INTO sim_orders (id, venue, client_id, book_json,"
             " updated_at) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET"
-            " book_json=excluded.book_json, updated_at=excluded.updated_at",
+            " book_json=excluded.book_json, updated_at=excluded.updated_at,"
+            # place_oco learns the client id after the leg's row exists; it
+            # was never written, so a replay after a restart placed a second
+            # pair
+            " client_id=COALESCE(excluded.client_id, sim_orders.client_id)",
             (oid, self.venue, client, json.dumps(d), int(self.clock())))
 
     def place_bracket(self, *, symbol, side, qty, limit=None, stop_loss=None,
@@ -186,8 +190,17 @@ class PaperSimBroker:
             return PlacedOrder("", "rejected", "this sim keeps no resting "
                                "stop/target")
         if client_order_id and client_order_id in self._by_client:
-            return PlacedOrder(self._by_client[client_order_id], "accepted",
-                               "duplicate client_order_id")
+            # the SAME pair, legs included: a caller that died before it
+            # booked them must be able to book them on the replay — an
+            # unbooked sim stop can fire with nothing on the book to match
+            first = self._by_client[client_order_id]
+            group = self.orders[first].oco if first in self.orders else None
+            legs = [{"leg": b.kind, "order_id": k, "price": str(b.trigger),
+                     "verified": True}
+                    for k, b in self.orders.items()
+                    if group and b.oco == group and b.kind != "entry"]
+            return PlacedOrder(first, "accepted", "duplicate client_order_id",
+                               legs=legs)
         if not (stop_loss or take_profit) or Decimal(str(qty)) <= 0:
             return PlacedOrder("", "rejected", "nothing to protect")
         group = f"oco-{uuid.uuid4().hex[:8]}"

@@ -32,6 +32,7 @@ class Custodian:
         self.fx_rate_for = fx_rate_for          # (instrument_id, account_id) -> micro rate
         self.clock, self.cal = clock, cal
         self._drift_seen = {}       # (account, symbol) -> last mismatch seen
+        self._cancel_lag = set()    # orders cancelled, venue not caught up
 
     # each duty runs on its own: one failing duty (or one bad order inside
     # it) used to abort run_once, so expiry, retries, orphan checks and drift
@@ -402,11 +403,22 @@ class Custodian:
             self._maybe_complete(o["id"], report)
             return False
         if status["status"] not in ("cancelled", "rejected"):
-            report["flags"].append(
-                f"order {o['id']}: cancelled at the venue at its TTL, but "
-                f"the venue still reports it {status['status']} — left "
-                "open, checked again next run")
+            # The venue accepted the cancel a moment ago and its status can
+            # lag behind. Say nothing the first time: a flag naming a live
+            # order disarms live trading, and that happened on a routine
+            # expiry. Still working on the NEXT run is worth a flag.
+            if o["id"] in self._cancel_lag:
+                report["flags"].append(
+                    f"order {o['id']}: cancelled at the venue at its TTL, but "
+                    f"the venue still reports it {status['status']} — left "
+                    "open, checked again next run")
+            else:
+                self._cancel_lag.add(o["id"])
+                log.info("order %s: cancelled at its TTL; the venue still "
+                         "reports it %s — looking again next run",
+                         o["id"], status["status"])
             return False
+        self._cancel_lag.discard(o["id"])
         return True
 
     def _settle_ended(self, o, adapter, report) -> bool:

@@ -247,8 +247,71 @@ def init(conn) -> None:
                 raise
     _widen_provider_kinds(conn)
     _widen_account_environments(conn)
+    _hk_four_digits(conn)
     if have < len(MIGRATIONS):
         conn.execute(f"PRAGMA user_version = {len(MIGRATIONS)}")
+
+
+def _hk_four_digits(conn) -> None:
+    """Hong Kong codes in the desk's one form: four digits (861 → 0861).
+
+    The code that names a stock pads them (tools/market.hk_code, 2026-11-11)
+    but rows stored before that kept the short form — so a Sell of a held
+    HKEX:861 asked for "0861", found no such instrument, and was refused as
+    a short (or opened one beside the long). This renames what is stored:
+    the instrument, everything that points at it, the watchlist and price
+    triggers. It changes nothing once done, so it runs on every start."""
+    def four(t):
+        return (t.lstrip("0") or "0").zfill(4)
+
+    rows = [(r[0], r[1]) for r in conn.execute(
+        "SELECT id, ticker FROM instruments WHERE exchange='HKEX'")
+        if str(r[1]).isdigit() and four(str(r[1])) != r[1]]
+    tables = [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")]
+    refs = [t for t in tables if t != "instruments" and any(
+        c[1] == "instrument_id" for c in conn.execute(
+            f"PRAGMA table_info({t})"))]
+    keyed = [t for t in ("watchlist", "price_triggers") if t in tables]
+    short = {}                      # table -> [ticker] still in a short form
+    for t in keyed:
+        short[t] = [r[0] for r in conn.execute(
+            f"SELECT DISTINCT ticker FROM {t} WHERE exchange='HKEX'")
+            if str(r[0]).isdigit() and four(str(r[0])) != r[0]]
+    if not rows and not any(short.values()):
+        return
+    import logging
+    log = logging.getLogger(__name__)
+    for old, ticker in rows:
+        new = f"HKEX:{four(ticker)}"
+        try:
+            with tx(conn):
+                # the new row first, then its children, then the old row:
+                # the foreign keys hold at every step
+                conn.execute(
+                    "INSERT OR IGNORE INTO instruments (id, ticker, exchange,"
+                    " currency, name) SELECT ?, ?, exchange, currency, name"
+                    " FROM instruments WHERE id=?", (new, four(ticker), old))
+                for t in refs:
+                    conn.execute(f"UPDATE {t} SET instrument_id=? WHERE"
+                                 " instrument_id=?", (new, old))
+                conn.execute("DELETE FROM instruments WHERE id=?", (old,))
+        except sqlite3.IntegrityError as e:
+            # both forms hold rows that cannot be merged (one alert per
+            # position, say): leave this one as it is rather than stop the
+            # desk from starting
+            log.warning("HKEX %s was not renamed to %s: %s", old, new, e)
+    with tx(conn):
+        for t, tickers in short.items():
+            for ticker in tickers:
+                # OR IGNORE: the padded form may already be there (watchlist
+                # is keyed on it); what is left over is the duplicate
+                conn.execute(f"UPDATE OR IGNORE {t} SET ticker=? WHERE"
+                             " exchange='HKEX' AND ticker=?",
+                             (four(ticker), ticker))
+                if t == "watchlist":
+                    conn.execute("DELETE FROM watchlist WHERE exchange='HKEX'"
+                                 " AND ticker=?", (ticker,))
 
 
 def _widen_provider_kinds(conn) -> None:

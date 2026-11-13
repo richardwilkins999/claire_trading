@@ -590,9 +590,9 @@ class Market:
             ts, val = max(hits, key=lambda h: h[0])
             if now - ts <= self.FX_MAX_AGE:
                 self._stale_keys.add(("fx", pair))      # for the health view
-                swallowed(log, f"FX {pair}: every source failed; reusing a "
-                               f"rate {int((now - ts) // 60)} min old",
-                          every=900)
+                swallowed(log, f"FX {pair}: every source failed; reusing "
+                               "the last good rate", every=900,
+                          note=f"{int((now - ts) // 60)} min old")
                 return Decimal(val)
             errors.append(f"last good rate is {int((now - ts) // 60)} min "
                           f"old (limit {self.FX_MAX_AGE // 60})")

@@ -434,10 +434,17 @@ def _levels_vs_live(th, ref_native, inst, held):
             f" the live price {px} — the order fills at about the live price,"
             f" so the stop would sell straight away. Set the stop-loss"
             f" {'below' if buy else 'above'} {px} and retry")
-    if tgt is not None and (tgt <= ref if buy else tgt >= ref):
+    # The take-profit is judged against where the order can FILL. A limit
+    # resting on the far side of the price (a buy at 30 with the stock at 31)
+    # fills at its limit or better, never at the live price — its target of
+    # 30.80 is sound, and was refused as "would sell straight away".
+    lim = Decimal(str(th.entry_high)) if th.entry_high else None
+    fill = ref if lim is None else (min(lim, ref) if buy else max(lim, ref))
+    if tgt is not None and (tgt <= fill if buy else tgt >= fill):
+        px = f"{fill:.4f}".rstrip("0").rstrip(".")
         raise ValueError(
             f"the take-profit {th.take_profit} {ccy} is {'at or below' if buy else 'at or above'}"
-            f" the live price {px} — it would sell straight away. Set it"
+            f" the price it would fill at ({px}) — it would sell straight away. Set it"
             f" {'above' if buy else 'below'} {px} and retry")
 
 

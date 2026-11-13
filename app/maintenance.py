@@ -574,6 +574,20 @@ class Maintainer:
         except sqlite3.OperationalError:
             return {"action": "prune_sim_orders", "ok": True, "freed": 0,
                     "detail": "no built-in sim orders yet"}
+        # An entry is the PARENT of its stop-loss / take-profit: the sim arms
+        # a leg from its parent's filled quantity, so deleting a filled entry
+        # whose legs still rest left them unable to fire after the next
+        # restart — on any position held longer than SIM_ORDERS_DAYS.
+        needed = set()
+        for (bj,) in self.conn.execute(
+                "SELECT book_json FROM sim_orders").fetchall():
+            try:
+                b = json.loads(bj)
+            except (TypeError, ValueError):
+                continue
+            if b.get("status") in ("placed", "partially_filled") and \
+                    b.get("parent"):
+                needed.add(b["parent"])
         gone = []
         for r in rows:
             try:
@@ -582,6 +596,8 @@ class Maintainer:
                 continue
             if st not in ("filled", "cancelled"):
                 continue                        # still resting: never
+            if r["id"] in needed:
+                continue                        # its legs still rest on it
             live = self.conn.execute(
                 "SELECT 1 FROM orders WHERE broker_order_id=? AND status IN"
                 " ('pending_session','placed','partially_filled')",

@@ -110,12 +110,17 @@ _seen = {}                      # (logger, what) -> [last logged at, held back]
 EVERY = 300
 
 
+MAX_SEEN = 2000                 # throttle keys kept; the oldest go first
+
+
 def swallowed(log, what, exc=None, *, every=EVERY, trace=False,
-              level=logging.WARNING, clock=time.monotonic) -> bool:
+              level=logging.WARNING, clock=time.monotonic,
+              note=None) -> bool:
     """Record a failure the caller has chosen to survive.
 
     `what` names the KIND of failure and should not vary from call to call
-    (put the variable part in the exception): it is the throttle key. The
+    (put the variable part in the exception, or in `note`, which is logged
+    but is not part of the key): it is the throttle key. The
     first one is logged at once; repeats within `every` seconds are counted
     and reported with the next line. trace=True adds the traceback — for a
     failure that should not happen, not for a network hiccup.
@@ -129,8 +134,15 @@ def swallowed(log, what, exc=None, *, every=EVERY, trace=False,
             return False
         held = last[1] if last else 0
         _seen[key] = [now, 0]
+        if len(_seen) > MAX_SEEN:
+            # a key that embeds a changing number is new every time and was
+            # kept for the life of the process
+            for k in sorted(_seen, key=lambda k: _seen[k][0])[:MAX_SEEN // 2]:
+                del _seen[k]
     detail = f": {type(exc).__name__}: {str(exc)[:300]}" if exc is not None \
         else ""
+    if note:
+        detail += f" ({note})"
     more = f" ({held} more like this since the last line)" if held else ""
     log.log(level, "%s%s%s", what, detail, more,
             exc_info=exc if (trace and exc is not None) else None)
