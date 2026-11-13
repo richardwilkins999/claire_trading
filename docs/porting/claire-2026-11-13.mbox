@@ -1,0 +1,738 @@
+From 095ecbb980b0089535163e0f5cb9eb2f2b416fdd Mon Sep 17 00:00:00 2001
+From: Richard Wilkins <157890680+richardwilkins999@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 10:57:20 +0800
+Subject: [PATCH] Home and Portfolio: profit and loss first, compact Today
+ rows, System map first
+
+Mission Control
+- System map is the first tab and the one the page opens on; Today is
+  second and opens directly at /#today.
+- Today's "What you hold" is one compact line per holding: what the
+  stop-loss would cost and what the take-profit would make (the price
+  under each), with a slim bar between marking what you paid, the
+  trailing alert and the price now. Who acts at each level is the
+  tooltip; "no stop-loss" and "plan only" stay written out.
+- Resting on a ticker pops up its one-week chart with your cost and
+  levels drawn in.
+
+Portfolio
+- Each protection tile shows the money first (large, coloured by sign)
+  and the price it happens at beneath. The distance chip, the separate
+  orders and who acts moved to the tile's tooltip; three tiles now fit
+  across a card.
+
+Shared
+- orderform.js: protectionFacts, protectionHolder, protectionMoney and
+  protectionLine give both pages one reading of a position.
+- charts.js: drawPositionChart draws the Portfolio chart and the popup.
+
+Tests: the home-page overlay check now allows the Today bar only.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ tests/test_dashboards.py     |   7 +-
+ tests/test_ui_review_1111.py |  89 ++++++++++++++-
+ web/charts.js                |  30 ++++++
+ web/index.html               | 204 +++++++++++++++++++++++++++++------
+ web/orderform.js             |  52 +++++++++
+ web/portfolio.html           | 144 +++++++++----------------
+ 6 files changed, 399 insertions(+), 127 deletions(-)
+
+diff --git a/tests/test_dashboards.py b/tests/test_dashboards.py
+index 6c0ba98..442ce3a 100644
+--- a/tests/test_dashboards.py
++++ b/tests/test_dashboards.py
+@@ -385,7 +385,12 @@ def test_mission_control_map_is_one_svg(web):
+         page = c.get("/").text
+         assert 'id="map"' in page and 'viewBox="0 0 1240 530"' in page
+         assert "class=\"mapwrap\"" in page
+-        assert "position:absolute" not in page      # no overlay layer
++        # no overlay layer: nothing on the page is positioned over the map.
++        # (The Today tab's small price bar, .pbar, is the one positioned
++        # thing here, and it sits in a table cell of the other tab.)
++        placed = [ln.strip() for ln in page.splitlines()
++                  if "position:absolute" in ln]
++        assert all(ln.startswith(".pbar ") for ln in placed), placed
+         for piece in ("renderMap", "SCREEN · scans only",
+                       "OTHER SYSTEMS", "BACK OFFICE", "claire_chat",
+                       "VENUES", "mcp:", "id === 'book'"):
+diff --git a/tests/test_ui_review_1111.py b/tests/test_ui_review_1111.py
+index 36aaa5d..0ebee0f 100644
+--- a/tests/test_ui_review_1111.py
++++ b/tests/test_ui_review_1111.py
+@@ -80,14 +80,99 @@ def test_base_styles():
+ 
+ def test_home_page_answers_the_daily_question():
+     src = (WEB / "index.html").read_text()
+-    for needle in ('id="view-desk"', 'id="view-system" hidden',
++    for needle in ('id="view-desk" hidden', 'id="view-system"',
+                    "What you hold", "Orders waiting to fill",
+                    "function protectionOf(p)", "plan only", "no stop",
+                    "perCcy(t, 'equity'"):
+         assert needle in src, needle
+ 
+ 
+-def test_nav_state_endpoint(web):                           # noqa: F811
++def test_mission_control_opens_on_the_system_map():
++    """System map is the first tab and the one the page opens on; Today is
++    the second, reachable (and linkable) as /#today."""
++    src = (WEB / "index.html").read_text()
++    assert src.index('id="tab-system"') < src.index('id="tab-desk"')
++    assert '<section id="view-system">' in src
++    assert "showTab(location.hash === '#today' ? 'desk' : 'system');" in src
++    assert "addEventListener('hashchange'" in src
++    assert "homeTab" not in src and "'#system'" not in src
++
++
++def test_today_and_portfolio_read_a_position_the_same_way():
++    """Which stop-loss and take-profit act, who holds them and what they mean
++    in money come from orderform.js for both pages, so the Today row and the
++    Portfolio card cannot disagree. Portfolio draws the full price line;
++    Today its own compact bar."""
++    shared = (WEB / "orderform.js").read_text()
++    for fn in ("function protectionFacts(p)", "function protectionHolder(l)",
++               "function protectionMoney(p, f)",
++               "function protectionLine(f, opt = {})"):
++        assert fn in shared, fn
++    home = (WEB / "index.html").read_text()
++    pf = (WEB / "portfolio.html").read_text()
++    for name, src in (("index.html", home), ("portfolio.html", pf)):
++        assert '<script src="/orderform.js">' in src, name
++        assert "protectionFacts(p)" in src and "protectionMoney(p, f)" in src, name
++        # neither page picks the acting order or works out the money itself
++        assert "l.leg === kind" not in src and "plTotal" not in src, name
++    assert "protectionLine(f)" in pf and "ladder(" not in pf
++
++
++def test_today_row_is_one_compact_line_led_by_the_money():
++    """A holding's protection is one line: what the stop-loss would cost and
++    what the take-profit would make (the price under each), with a bar
++    between. Who acts is the tooltip; only what needs the owner is written
++    out, inside the same line."""
++    home = (WEB / "index.html").read_text()
++    for gone in ("prot-who", "deskprot", "protectionGaps", "protectionLine(",
++                 'class="ladder'):
++        assert gone not in home, gone
++    for needle in ('<div class="pcell" title="${esc(tip)}">', 'class="pbar"',
++                   "side('l', f.sl, f.stop, m.stop, stopWord,",
++                   "side('r', f.tp, f.tgt, m.target, 'take-profit'",
++                   "no stop-loss", "plan only", 'class="plegend"'):
++        assert needle in home, needle
++    # the money comes before the price in each end of the line
++    side = home[home.index("const side = ("):home.index("/* the bar:")]
++    assert side.index("amt(money$)") < side.index("' ' + px(price)")
++
++
++def test_portfolio_protection_tiles_show_the_figures_only():
++    """A tile is its label, the price and the money outcome. How far from the
++    price, the separate orders and who acts are its tooltip; a level with no
++    order behind it and a missing stop-loss are still written out."""
++    pf = (WEB / "portfolio.html").read_text()
++    assert '<div class="ptile ${kind}" title="${esc(tip)}">' in pf
++    for gone in ("pt-dist", "pt-note", "pt-foot", "pt-orders", "pt-dot"):
++        assert gone not in pf, gone
++    for kept in ("pt-price", "pt-out", "⚠ plan only", "warnNone: 'no stop-loss'",
++                 "callout: alertFired(lv, ccy)", "floorOpen("):
++        assert kept in pf, kept
++    assert "pt-dot" not in (WEB / "orderform.css").read_text()
++    # the money is the large first figure; the price it happens at is under it
++    tile = pf[pf.index("function ptile(o)"):pf.index("function posCard(p)")]
++    big = tile.index('<div class="pt-price ${out >= 0')
++    assert "money(Math.abs(out), '')" in tile[big:tile.index("</div>", big)]
++    assert big < tile.index("<b>${money(price, ccy)}</b>")
++
++
++def test_ticker_on_today_pops_up_its_chart():
++    """Resting on a ticker shows the chart of its Portfolio card — one
++    drawing routine in charts.js for both."""
++    charts = (WEB / "charts.js").read_text()
++    assert "function drawPositionChart(el, d, opts)" in charts
++    home = (WEB / "index.html").read_text()
++    pf = (WEB / "portfolio.html").read_text()
++    assert '<script src="/charts.js">' in home
++    assert 'data-chart="${esc(p.instrument_id)}"' in home
++    assert "drawPositionChart(" in home and "drawPositionChart(" in pf
++    assert "label: 'your avg cost'" not in pf          # not drawn twice
++    for needle in ("chartPopWire();", "'/api/position-chart?instrument='",
++                   "pointer-events:none", "e.key === 'Escape'"):
++        assert needle in home, needle
++
++
++def test_nav_state_endpoint(web):                         # noqa: F811
+     base, conn = web
+     with paired(base) as c:
+         s = c.get("/api/nav-state").json()
+diff --git a/web/charts.js b/web/charts.js
+index 3d8b3fd..5f59755 100644
+--- a/web/charts.js
++++ b/web/charts.js
+@@ -140,3 +140,33 @@ function drawChart(el, data, opts) {
+     cx.setAttribute('visibility', 'hidden'); info.textContent = '';
+   });
+ }
++
++/* A position's chart: the candles with what you paid, the stop-loss, the
++   take-profit and the trailing alert drawn across them, and your fills.
++   `d` is /api/position-chart. Used by the Portfolio card and by the chart
++   that pops up over a ticker on the home page. Returns false when there is
++   no chart to draw (the element then says why). */
++function drawPositionChart(el, d, opts) {
++  if (!el || !d) return false;
++  if (!d.chart) {
++    el.innerHTML = `<p class="muted" style="font-size:.75rem">chart
++      unavailable${d.chart_error ? ' — ' + esc(d.chart_error) : ''}</p>`;
++    return false;
++  }
++  const lv = d.levels || {};
++  const levels = [];
++  if (lv.avg_cost_native != null) levels.push({value: lv.avg_cost_native,
++    color: 'var(--accent)', label: 'your avg cost', dash: '5 3'});
++  if (lv.stop_loss != null) levels.push({value: lv.stop_loss,
++    color: 'var(--bad)', label: 'stop-loss', dash: '7 4'});
++  if (lv.take_profit != null) levels.push({value: lv.take_profit,
++    color: 'var(--good)', label: 'take-profit', dash: '7 4'});
++  if (lv.alert != null) levels.push({value: lv.alert,
++    color: 'var(--warn)', dash: '2 3',      // "trailing alert · −8% of 101.20"
++    label: esc('trailing alert' + (lv.alert_rule
++      ? ' · ' + String(lv.alert_rule).replace(/^trailing\s*/, '') : ''))});
++  drawChart(el, d.chart, {height: 210, volume: true, sma20: false, ...(opts || {}),
++    levels, fills: (d.fills || []).map(f => ({ts: f.ts, price: f.price_native,
++      side: f.side, qty: f.qty}))});
++  return true;
++}
+diff --git a/web/index.html b/web/index.html
+index 2a84de6..2f5553b 100644
+--- a/web/index.html
++++ b/web/index.html
+@@ -3,6 +3,43 @@
+ <meta charset="utf-8">
+ <meta name="viewport" content="width=device-width, initial-scale=1"><title>Claire — Mission Control</title>
+ <link rel="stylesheet" href="/style.css"><script src="/nav.js"></script>
++<script src="/orderform.js"></script><script src="/charts.js"></script>
++<style>
++  /* the Today table: one compact line per holding — what the stop-loss
++     would cost · a bar · what the take-profit would make */
++  #desk-positions td { vertical-align:middle; padding-top:.35rem; padding-bottom:.35rem; }
++  #desk-positions td.num { text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums; }
++  .pcell { display:grid; grid-template-columns:8.2rem minmax(100px, 1fr) 8.2rem;
++    gap:.6rem; align-items:center; min-width:375px; }
++  .pside { display:flex; flex-direction:column; line-height:1.25; white-space:nowrap;
++    font-variant-numeric:tabular-nums; }
++  .pside.l { align-items:flex-end; }
++  .pside b { font-size:.92rem; } .pside b.ok { color:var(--good); } .pside b.bad { color:var(--bad); }
++  .pside b small { font-size:.66rem; font-weight:500; color:var(--dim); }
++  .pside span { font-size:.68rem; color:var(--muted); }
++  .pside span .warn { color:var(--warn); }
++  .pbar { position:relative; height:18px; }
++  .pbar i { position:absolute; display:block; }
++  .pbar .trk { left:0; right:0; top:6px; height:6px; border-radius:3px; background:var(--line); }
++  .pbar .z { top:6px; height:6px; }
++  .pbar .z.loss { background:rgba(239,83,80,.55); } .pbar .z.gain { background:rgba(38,166,154,.55); }
++  .pbar .t { top:1px; height:16px; width:6px; margin-left:-3px;
++    background:linear-gradient(var(--accent), var(--accent)) center / 2px 100% no-repeat; }
++  .pbar .t.trail { background:repeating-linear-gradient(var(--warn) 0 3px, transparent 3px 5px) center / 2px 100% no-repeat; }
++  .pbar .now { top:3px; width:12px; height:12px; margin-left:-6px; border-radius:50%;
++    background:var(--text); border:2px solid var(--bg); box-shadow:0 0 0 1px var(--text); }
++  .plegend { margin:.35rem 0 0; font-size:.7rem; color:var(--muted); display:flex; flex-wrap:wrap; gap:.2rem 1rem; }
++  .plegend i { display:inline-block; vertical-align:-2px; margin-right:.3rem; }
++  .plegend .k-paid { width:2px; height:12px; background:var(--accent); }
++  .plegend .k-trail { width:2px; height:12px; background:repeating-linear-gradient(var(--warn) 0 3px, transparent 3px 5px); }
++  .plegend .k-now { width:8px; height:8px; border-radius:50%; background:var(--text); vertical-align:0; }
++  /* the chart over a ticker: fixed to the window, never under the pointer */
++  #chartpop { position:fixed; z-index:30; width:min(540px, calc(100vw - 16px));
++    background:var(--panel2); border:1px solid var(--line); border-radius:10px;
++    padding:.5rem .6rem .3rem; box-shadow:0 14px 40px rgba(0,0,0,.6); pointer-events:none; }
++  #chartpop .cp-head { display:flex; justify-content:space-between; align-items:baseline;
++    margin-bottom:.3rem; }
++</style>
+ <script>nav('/')</script>
+ <main>
+   <h1>Mission Control <span id="conn" class="pill">connecting…</span></h1>
+@@ -12,13 +49,13 @@
+   <div id="pending"></div>
+ 
+   <div class="tabs" role="tablist">
+-    <button class="tab" id="tab-desk" role="tab" onclick="showTab('desk')">Today</button>
+     <button class="tab" id="tab-system" role="tab" onclick="showTab('system')">System map</button>
++    <button class="tab" id="tab-desk" role="tab" onclick="showTab('desk')">Today</button>
+   </div>
+ 
+   <!-- the daily question: what do I hold, what protects it, what is
+        waiting. This page used to be a health strip and a wiring diagram. -->
+-  <section id="view-desk">
++  <section id="view-desk" hidden>
+     <div class="statstrip" id="desk-totals"></div>
+     <h2>What you hold <span class="muted" id="desk-asof"></span></h2>
+     <div id="desk-positions"><p class="muted">loading…</p></div>
+@@ -28,7 +65,7 @@
+     <div id="desk-triggers"></div>
+   </section>
+ 
+-  <section id="view-system" hidden>
++  <section id="view-system">
+   <h2>System map</h2>
+   <div class="mapwrap"><svg id="map" viewBox="0 0 1240 530"
+     preserveAspectRatio="xMidYMin meet"></svg></div>
+@@ -762,30 +799,125 @@ function showTab(t) {
+     document.getElementById('tab-' + k).classList.toggle('on', k === t);
+     document.getElementById('tab-' + k).setAttribute('aria-selected', k === t);
+   }
+-  try { localStorage.setItem('homeTab', t); } catch {}
+-  if (location.hash !== (t === 'system' ? '#system' : ''))
+-    history.replaceState(null, '', t === 'system' ? '#system' : location.pathname);
++  /* the page opens on the System map; /#today opens (and links to) Today */
++  if (location.hash !== (t === 'desk' ? '#today' : ''))
++    history.replaceState(null, '', t === 'desk' ? '#today' : location.pathname);
+ }
+-/* who would sell these shares if the price fell: an order at the broker,
+-   Claire's own simulation, only a level in the plan, or nothing */
++/* what protects a holding, in one line of the table: what the stop-loss
++   would cost you and what the take-profit would make (the money matters more
++   than the price, which sits under it), with a bar between them marking what
++   you paid, the trailing alert and the price now. The same reading of the
++   position as its Portfolio card (protectionFacts / protectionMoney in
++   orderform.js). Who acts at each level is the tooltip; only what needs you
++   is written out: a level with no order behind it, or no stop-loss at all. */
+ function protectionOf(p) {
+-  const legs = p.legs || [], lv = p.levels || {}, ccy = p.currency || '';
+-  const one = (kind, planned, word) => {
+-    const l = legs.filter(x => x.leg === kind);
+-    if (l.length) {
+-      const sim = l.every(x => String(x.venue_order || '').startsWith('sim-'));
+-      const px = l.map(x => fmt(x.price, x.price < 10 ? 3 : 2)).join(', ');
+-      return `<span class="pill ok" title="${sim ? "held by Claire's simulation — sells at the live price"
+-        : 'an order resting at the broker — sells by itself'}">${word} ${px}${sim ? ' · sim' : ' · at broker'}</span>`;
+-    }
+-    if (planned != null)
+-      return `<span class="pill warn" title="only a level in the plan: no order exists, nothing sells here">${word} ${fmt(planned, planned < 10 ? 3 : 2)} · plan only</span>`;
+-    return kind === 'stop' ? '<span class="pill bad" title="nothing sells on the way down">⚠ no stop-loss</span>' : '';
++  const f = protectionFacts(p), m = protectionMoney(p, f), lv = f.lv;
++  const stopWord = f.trails ? 'trailing stop' : 'stop-loss';
++  const amt = v => `${v >= 0 ? '+' : '−'}${fmt(Math.abs(v), 0)}`;
++  const px = v => money(v, '');
++  /* one end of the bar: the money, then the level it comes from */
++  const side = (cls, leg, price, money$, word, none) => {
++    if (price == null) return `<div class="pside ${cls}">${none}</div>`;
++    const plan = !leg ? ` <span class="warn" title="only a level in the plan: no order exists, nothing sells here">· plan only</span>` : '';
++    return `<div class="pside ${cls}">${money$ == null ? `<b>${px(price)}</b>`
++      : `<b class="${money$ >= 0 ? 'ok' : 'bad'}">${amt(money$)} <small>${f.ccy}</small></b>`}
++      <span>${word}${money$ == null ? '' : ' ' + px(price)}${plan}</span></div>`;
++  };
++  /* the bar: red from the stop to what you paid, green from there to the
++     target; a short position is mirrored so the stop is still on the left */
++  const vals = [f.stop, lv.alert, f.avg, f.cur, f.tgt].filter(v => v != null);
++  let bar = '';
++  if (vals.length >= 2) {
++    let lo = Math.min(...vals), hi = Math.max(...vals);
++    const pad = (hi - lo) * 0.04 || hi * 0.02; lo -= pad; hi += pad;
++    const at = v => { const x = (v - lo) / (hi - lo) * 100; return f.short ? 100 - x : x; };
++    const zone = (x, y, cls) => x == null || y == null ? ''
++      : `<i class="z ${cls}" style="left:${Math.min(at(x), at(y)).toFixed(2)}%;width:${Math.abs(at(x) - at(y)).toFixed(2)}%"></i>`;
++    const tick = (v, cls, tip) => v == null ? ''
++      : `<i class="${cls}" style="left:${at(v).toFixed(2)}%" title="${esc(tip)}"></i>`;
++    bar = zone(f.stop, f.avg, 'loss') + zone(f.avg, f.tgt, 'gain') +
++      tick(f.avg, 't', `you paid ${px(f.avg)} ${f.ccy}`) +
++      tick(lv.alert, 't trail', `trailing alert ${px(lv.alert)} ${f.ccy}` +
++        (m.alert == null ? '' : ` (${amt(m.alert)} against what you paid)`) + ' — Claire asks you before selling') +
++      tick(f.cur, 'now', `price now ${px(f.cur)} ${f.ccy}`);
++  }
++  const who = (leg, price, word) => price == null ? ''
++    : `${word} ${px(price)}: ${protectionHolder(leg).text}`;
++  const tip = [
++    f.stop == null ? 'No stop-loss: nothing sells on the way down' : who(f.sl, f.stop, stopWord),
++    who(f.tp, f.tgt, 'take-profit'),
++    lv.alert != null ? `trailing alert ${px(lv.alert)}: not an order — Claire asks you before selling` : '',
++    f.avg != null ? `you paid ${px(f.avg)}` : '', f.cur != null ? `price now ${px(f.cur)}` : '',
++    f.ccy ? `Prices and amounts in ${f.ccy}` : ''].filter(Boolean).join('\n');
++  return `<div class="pcell" title="${esc(tip)}">
++    ${side('l', f.sl, f.stop, m.stop, stopWord,
++           '<span class="pill bad" title="nothing sells on the way down">⚠ no stop-loss</span>')}
++    <div class="pbar"><i class="trk"></i>${bar}</div>
++    ${side('r', f.tp, f.tgt, m.target, 'take-profit', '<span>no take-profit</span>')}
++  </div>`;
++}
++
++/* ── the chart that pops up over a ticker ────────────────────────────
++   Rest the pointer on a ticker in "What you hold" (or reach it with the
++   keyboard) and its one-week chart appears beside it, with your cost and
++   levels drawn in — the chart of its Portfolio card. It is fetched once you
++   have paused there, kept for five minutes, and never takes the pointer. */
++const POP = {id: null, timer: null, cache: {}};
++function chartPop() {
++  let el = document.getElementById('chartpop');
++  if (!el) {
++    el = document.createElement('div');
++    el.id = 'chartpop'; el.hidden = true; el.setAttribute('role', 'tooltip');
++    document.body.appendChild(el);
++  }
++  return el;
++}
++function chartPopHide() {
++  clearTimeout(POP.timer); POP.id = null;
++  const el = document.getElementById('chartpop');
++  if (el) el.hidden = true;
++}
++function chartPopPlace(el, a) {
++  const r = a.getBoundingClientRect(), w = el.offsetWidth, h = el.offsetHeight;
++  const left = Math.max(8, Math.min(r.left, innerWidth - w - 8));
++  /* below the ticker when there is room, else above it */
++  const top = r.bottom + 8 + h <= innerHeight ? r.bottom + 8 : Math.max(8, r.top - h - 8);
++  el.style.left = left + 'px'; el.style.top = top + 'px';
++}
++async function chartPopShow(a) {
++  const id = a.dataset.chart, el = chartPop();
++  POP.id = id;
++  el.innerHTML = `<div class="cp-head"><b>${esc(a.dataset.tk || '')}</b>
++    <span class="muted small">1 week · hourly</span></div>
++    <div id="cp-chart"><p class="muted small">loading chart…</p></div>`;
++  el.hidden = false; chartPopPlace(el, a);
++  let c = POP.cache[id];
++  if (!c || Date.now() - c.at > 300000) {
++    try {
++      c = POP.cache[id] = {at: Date.now(), d: await api('/api/position-chart?instrument=' +
++        encodeURIComponent(id) + '&range=5d&interval=60m')};
++    } catch (e) { c = {d: {chart: null, chart_error: e.message}}; }
++  }
++  if (POP.id !== id) return;                 // the pointer has moved on
++  drawPositionChart(document.getElementById('cp-chart'), c.d, {height: 230});
++  if (document.contains(a)) chartPopPlace(el, a);
++}
++function chartPopWire() {
++  const box = document.getElementById('desk-positions');
++  const over = e => {
++    const a = e.target.closest && e.target.closest('a[data-chart]');
++    if (!a || POP.id === a.dataset.chart) return;
++    clearTimeout(POP.timer);
++    POP.timer = setTimeout(() => chartPopShow(a), e.type === 'focusin' ? 0 : 250);
++  };
++  const out = e => {
++    const a = e.target.closest && e.target.closest('a[data-chart]');
++    if (a && !(e.relatedTarget && a.contains(e.relatedTarget))) chartPopHide();
+   };
+-  const alert = lv.alert != null
+-    ? `<span class="pill" title="not an order: Claire asks you before selling if the price falls to this">trailing alert ${fmt(lv.alert, lv.alert < 10 ? 3 : 2)}</span>` : '';
+-  return [one('stop', lv.stop_loss, 'stop-loss'), one('target', lv.take_profit, 'take-profit'), alert]
+-    .filter(Boolean).join(' ') + ` <span class="muted small">${esc(ccy)}</span>`;
++  box.addEventListener('mouseover', over); box.addEventListener('focusin', over);
++  box.addEventListener('mouseout', out); box.addEventListener('focusout', out);
++  addEventListener('scroll', chartPopHide, true);
++  addEventListener('keydown', e => { if (e.key === 'Escape') chartPopHide(); });
+ }
+ function renderDesk() {
+   const d = TODAY;
+@@ -803,18 +935,24 @@ function renderDesk() {
+   document.getElementById('desk-positions').innerHTML = pos.length
+     ? `<table><tr><th>Stock</th><th style="text-align:right">Shares</th>
+         <th style="text-align:right">Value</th><th style="text-align:right">Profit / loss</th>
+-        <th>What protects it</th><th>Account</th></tr>${pos.map(p => {
++        <th title="what the stop-loss would cost you, and what the take-profit would make, against what you paid">If stop-loss hit · if take-profit reached</th>
++        <th>Account</th></tr>${pos.map(p => {
+         const u = p.unrealized_base, c = esc(p.base_currency || '');
+-        return `<tr><td><a href="/portfolio"><b>${esc(p.ticker)}</b></a>
++        return `<tr><td style="white-space:nowrap"><a href="/portfolio" data-chart="${esc(p.instrument_id)}" data-tk="${esc(p.ticker)}"
++              aria-label="${esc(p.ticker)} — open Portfolio; its chart shows while you rest here"><b>${esc(p.ticker)}</b></a>
+             <span class="muted small">${esc(p.exchange)}${p.is_open === false ? ' · closed' : ''}</span></td>
+-          <td style="text-align:right">${fmt(p.qty, p.qty % 1 ? 4 : 0)}</td>
+-          <td style="text-align:right">${p.value_base == null ? '<span class="warn">no price</span>' : fmt(p.value_base, 0) + ' ' + c}</td>
+-          <td style="text-align:right" class="${u == null ? '' : u >= 0 ? 'ok' : 'bad'}">${u == null ? '—'
++          <td class="num">${fmt(p.qty, p.qty % 1 ? 4 : 0)}</td>
++          <td class="num">${p.value_base == null ? '<span class="warn">no price</span>' : fmt(p.value_base, 0) + ' ' + c}</td>
++          <td class="num ${u == null ? '' : u >= 0 ? 'ok' : 'bad'}">${u == null ? '—'
+             : (u >= 0 ? '+' : '') + fmt(u, 0) + ' ' + c}${p.unrealized_pct == null ? ''
+             : ` <span class="small">(${p.unrealized_pct >= 0 ? '+' : ''}${fmt(p.unrealized_pct, 1)}%)</span>`}</td>
+           <td>${protectionOf(p)}</td>
+-          <td class="muted small">${esc(p.account_id)}</td></tr>`;
+-      }).join('')}</table>`
++          <td class="muted small" style="white-space:nowrap">${esc(p.account_id)}</td></tr>`;
++      }).join('')}</table>
++      <p class="plegend"><span><i class="k-paid"></i>what you paid</span>
++        <span><i class="k-trail"></i>trailing alert</span>
++        <span><i class="k-now"></i>price now</span>
++        <span>hover a row's bar for the prices and who acts</span></p>`
+     : '<p class="muted">No open positions.</p>';
+   const o = d.orders || {};
+   const open = (o.entries || []).filter(x =>
+@@ -910,6 +1048,8 @@ refresh().then(loaded => {
+   if (want) { localStorage.removeItem('openDrawer'); openDrawer(want); }
+ });
+ connectSSE(); poll(refresh, 20000);
+-showTab(location.hash === '#system' ? 'system' : 'desk');
++showTab(location.hash === '#today' ? 'desk' : 'system');
++addEventListener('hashchange', () => showTab(location.hash === '#today' ? 'desk' : 'system'));
+ refreshDesk(); poll(refreshDesk, 60000);
++chartPopWire();
+ </script>
+diff --git a/web/orderform.js b/web/orderform.js
+index c6b41f7..820ce87 100644
+--- a/web/orderform.js
++++ b/web/orderform.js
+@@ -368,3 +368,55 @@ function sellSummary(o) {
+     <div class="osum-line">${status}</div>
+     <div class="osum-line muted">${acct.label ? `On <b>${esc(acct.label)}</b> · ` : ''}${foot}</div>`;
+ }
++
++/* ── what protects a position you hold ───────────────────────────────
++   One reading of a position from /api/portfolio, used by Portfolio's cards
++   and by the Today table on the home page, so the two cannot disagree:
++   which stop-loss and take-profit act (the order nearest the price when
++   several rest at the broker, else the plan's level), who holds each, and
++   the price line that draws them against what you paid and the price now. */
++function protectionFacts(p) {
++  const m = p.market || {}, lv = p.levels || {}, cur = m.price, avg = lv.avg_cost_native;
++  const short = p.side === 'short', legs = p.legs || [];
++  /* several entries → several orders; the one nearest the price acts first */
++  const pick = kind => {
++    const ls = legs.filter(l => l.leg === kind);
++    if (!ls.length) return null;
++    const near = ls.slice().sort((x, y) => kind === 'stop' ? (short ? x.price - y.price : y.price - x.price)
++                                                        : (short ? y.price - x.price : x.price - y.price))[0];
++    return {...near, all: ls, plTotal: avg != null
++      ? ls.reduce((t, l) => t + (short ? avg - l.price : l.price - avg) * l.qty, 0) : null};
++  };
++  const sl = pick('stop'), tp = pick('target');
++  return {lv, cur, avg, short, sl, tp, ccy: esc(p.currency || ''),
++          stop: sl ? sl.price : lv.stop_loss, tgt: tp ? tp.price : lv.take_profit,
++          trails: sl && sl.trails};
++}
++/* who would act at a level: an order at the broker, Claire's simulation, or
++   nobody — only a level in the plan. `l` is the leg protectionFacts picked. */
++function protectionHolder(l) {
++  return !l ? {kind: 'plan', short: 'plan only', text: 'Plan only — no order, nothing sells here'}
++    : String(l.venue_order || '').startsWith('sim-')
++      ? {kind: 'sim', short: "Claire's sim", text: "Claire's sim — sells at the live price"}
++      : {kind: 'auto', short: 'at the broker', text: 'At the broker — sells by itself'};
++}
++/* what each level means in money for these shares, against what you paid:
++   {stop, target, alert} in the share's own currency — null where there is
++   no level or no cost. Several orders at one level are added up. */
++function protectionMoney(p, f) {
++  const qty = Math.abs(p.qty || 0), {avg, short, sl, tp, lv} = f;
++  const pl = v => avg != null && v != null ? (short ? avg - v : v - avg) * qty : null;
++  return {stop: sl ? sl.plTotal : pl(f.stop), target: tp ? tp.plTotal : pl(f.tgt), alert: pl(lv.alert)};
++}
++/* the price line: stop-loss · trailing alert · you paid · now · take-profit,
++   red from the stop to what you paid and green from there to the target */
++function protectionLine(f, opt = {}) {
++  const {lv, cur, avg, stop, tgt, trails, ccy} = f;
++  return ladder([
++    {k: 'stop', v: stop, label: trails ? 'trailing stop' : 'stop-loss'},
++    ...(lv.alert != null ? [{k: 'trail', v: lv.alert, label: 'trailing alert'}] : []),
++    ...(avg != null ? [{k: 'paid', v: avg, label: 'you paid'}] : []),
++    ...(cur != null ? [{k: 'now', v: cur, label: 'now'}] : []),
++    {k: 'target', v: tgt, label: 'take-profit'}], ccy, [],
++    {...opt, zones: avg != null ? [[stop, avg, 'loss'], [avg, tgt, 'gain']] : []});
++}
+diff --git a/web/portfolio.html b/web/portfolio.html
+index 1d7115a..2b7e84f 100644
+--- a/web/portfolio.html
++++ b/web/portfolio.html
+@@ -10,44 +10,32 @@
+   .pprot { padding:.5rem .6rem; margin:.4rem 0 .5rem; container-type:inline-size; }
+   .ptiles { display:grid; grid-template-columns:1fr 1fr; gap:.5rem; }
+   .ptile.trail { grid-column:1 / -1; }
+-  @container (min-width: 620px) {
++  @container (min-width: 460px) {
+     .ptiles { grid-template-columns:repeat(3, minmax(0, 1fr)); }
+     .ptile.trail { grid-column:auto; }
+   }
+-  @container (max-width: 330px) { .ptiles { grid-template-columns:1fr; } }
+-  .ptile { display:flex; flex-direction:column; gap:.2rem; background:var(--bg);
++  @container (max-width: 300px) { .ptiles { grid-template-columns:1fr; } }
++  .ptile { display:flex; flex-direction:column; gap:.15rem; background:var(--bg);
+     border:1px solid var(--line); border-left:3px solid var(--line); border-radius:8px;
+-    padding:.5rem .65rem .45rem; min-width:0; }
++    padding:.45rem .6rem .4rem; min-width:0; }
+   .ptile.loss { border-left-color:var(--bad); }
+   .ptile.gain { border-left-color:var(--good); }
+   .ptile.trail { border-left-color:var(--warn); }
+-  .pt-head { display:flex; justify-content:space-between; align-items:center; gap:.4rem; }
++  .pt-head { display:flex; justify-content:space-between; align-items:center; gap:.4rem; min-height:1.3rem; }
+   .pt-label { color:var(--muted); font-size:.68rem; text-transform:uppercase; letter-spacing:.09em; font-weight:600; }
+-  .pt-dist { font-size:.7rem; color:var(--dim); border:1px solid var(--line); border-radius:999px;
+-    padding:0 .45rem; white-space:nowrap; font-variant-numeric:tabular-nums; }
+   .pt-price { font-size:1.3rem; font-weight:700; line-height:1.2; font-variant-numeric:tabular-nums; }
+   .pt-price small { font-size:.72rem; font-weight:500; color:var(--dim); }
+   .ptile.loss .pt-price { color:var(--bad); } .ptile.gain .pt-price { color:var(--good); }
+   .ptile.trail .pt-price { color:var(--warn); }
+   .pt-none { font-size:1.1rem; font-weight:600; color:var(--dim); }
+-  .pt-out { display:flex; justify-content:space-between; align-items:baseline; gap:.5rem;
+-    font-size:.8rem; padding:.15rem 0; }
++  .pt-out { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:baseline;
++    gap:0 .5rem; font-size:.8rem; }
+   .pt-out span { color:var(--muted); }
+-  .pt-out b { font-variant-numeric:tabular-nums; }
+-  .pt-out b.ok { color:var(--good); } .pt-out b.bad { color:var(--bad); }
+-  .pt-note { font-size:.74rem; color:var(--dim); line-height:1.4; }
+-  .pt-orders { display:block; color:var(--muted); }
+-  .pt-ord { display:flex; justify-content:space-between; font-variant-numeric:tabular-nums; }
++  .pt-out b { font-variant-numeric:tabular-nums; white-space:nowrap; }
++  .ptile .pt-price.ok { color:var(--good); } .ptile .pt-price.bad { color:var(--bad); }
+   .pt-callout { font-size:.74rem; line-height:1.4; margin-top:.15rem; padding:.3rem .45rem;
+     border-radius:6px; background:rgba(255,183,77,.08); border:1px solid rgba(255,183,77,.25); }
+   .pt-callout a { color:inherit; }
+-  .pt-foot { margin-top:auto; padding-top:.35rem; border-top:1px solid var(--line);
+-    display:flex; justify-content:space-between; align-items:center; gap:.5rem;
+-    font-size:.72rem; color:var(--muted); }
+-  .pt-dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:.4rem;
+-    vertical-align:1px; background:var(--dim); }
+-  .pt-dot.auto { background:var(--good); } .pt-dot.ask { background:var(--warn); }
+-  .pt-dot.sim { background:var(--accent); } .pt-dot.plan { background:var(--bad); }
+   .pt-btn { font-size:.7rem; padding:.05rem .55rem; }
+   .pfloor { border:1px dashed var(--line); border-radius:8px; padding:.35rem .55rem; margin:.45rem 0 0; }
+   .pprot .ladder { margin-left:.9rem; margin-right:.9rem; }
+@@ -302,57 +290,41 @@ function alertFired(lv, ccy, short) {
+       : `It alerts again only if the price falls a further 3%, to the level shown.`) + '</div>';
+ }
+ function protection(p) {
+-  const m = p.market || {}, lv = p.levels || {}, cur = m.price, avg = lv.avg_cost_native;
+-  const ccy = esc(p.currency || ''), short = p.side === 'short', qty = Math.abs(p.qty || 0);
+-  const k = floorKey(p), a = jsArg(k), legs = p.legs || [];
+-  const pl = v => avg != null && v != null ? (short ? avg - v : v - avg) * qty : null;
++  /* which price acts, and who holds it: protectionFacts (orderform.js),
++     shared with the Today table on the home page */
++  const f = protectionFacts(p);
++  const {lv, cur, avg, ccy, short, sl, tp, stop, tgt, trails} = f;
++  const k = floorKey(p), a = jsArg(k);
++  const worth = protectionMoney(p, f);
+   const sh = q => fmt(q, q % 1 ? 4 : 0);
+-  /* several entries → several orders; the one nearest the price acts first */
+-  const pick = kind => {
+-    const ls = legs.filter(l => l.leg === kind);
+-    if (!ls.length) return null;
+-    const near = ls.slice().sort((x, y) => kind === 'stop' ? (short ? x.price - y.price : y.price - x.price)
+-                                                        : (short ? y.price - x.price : x.price - y.price))[0];
+-    return {...near, all: ls, plTotal: avg != null
+-      ? ls.reduce((t, l) => t + (short ? avg - l.price : l.price - avg) * l.qty, 0) : null};
+-  };
+-  const status = l => !l ? ['plan', 'Plan only — no order, nothing sells here']
+-    : String(l.venue_order || '').startsWith('sim-') ? ['sim', "Claire's sim — sells at the live price"]
+-    : ['auto', 'At the broker — sells by itself'];
++  /* a tile shows the figures only; who acts, the separate orders and the
++     distance from the price are its tooltip (plain text, one fact a line) */
++  const holder = l => protectionHolder(l);
+   const orders = l => l && l.all.length > 1
+-    ? `<span class="pt-orders">${l.all.length} orders</span>${l.all.map(x =>
+-        `<span class="pt-ord"><span>${sh(x.qty)} shares</span><span>${money(x.price, '')}</span></span>`).join('')}` : '';
++    ? `${l.all.length} orders: ` + l.all.map(x => `${sh(x.qty)} shares at ${money(x.price, '')}`).join(', ') : '';
+ 
+-  const sl = pick('stop'), stop = sl ? sl.price : lv.stop_loss, trails = sl && sl.trails;
+-  const tp = pick('target'), tgt = tp ? tp.price : lv.take_profit;
+   const stopTile = ptile({
+     kind: 'loss', label: trails ? 'Trailing stop' : 'Stop-loss', price: stop, ccy, cur,
+     none: 'Nothing sells on the way down — only the trailing alert warns you.',
+-    outLabel: 'If hit', out: sl ? sl.plTotal : pl(stop),
+-    notes: [trails ? `Follows the best price ${money(trails, ccy)} below it — never moves back.` : '', orders(sl)],
+-    status: stop == null ? null : status(sl)});
++    warnNone: 'no stop-loss',
++    outLabel: 'if hit at', out: worth.stop,
++    tips: [trails ? `Follows the best price ${money(trails, ccy)} below it — never moves back.` : '', orders(sl)],
++    holder: stop == null ? null : holder(sl)});
+   const tgtTile = ptile({
+     kind: 'gain', label: 'Take-profit', price: tgt, ccy, cur,
+     none: 'Nothing sells automatically on the way up.',
+-    outLabel: 'If reached', out: tp ? tp.plTotal : pl(tgt),
+-    notes: [orders(tp)], status: tgt == null ? null : status(tp)});
++    outLabel: 'if reached at', out: worth.target,
++    tips: [orders(tp)], holder: tgt == null ? null : holder(tp)});
+   const edit = FLOOR_ED[k] ? '' : `<button class="ghost pt-btn" onclick="floorOpen(${a})">${lv.alert != null ? 'Edit' : 'Set…'}</button>`;
+   const alertTile = ptile({
+     kind: 'trail', label: 'Trailing alert', price: lv.alert, ccy, cur,
+     none: 'Not set yet — the watcher sets one on its next check.',
+-    outLabel: 'At that price', out: pl(lv.alert),
+-    notes: [lv.alert != null ? `${fmt(lv.alert_live_pct ?? lv.alert_pct, 1)}% ${short ? 'above' : 'below'} the best price since you bought
+-      (${money(lv.alert_ref ?? avg, ccy)}) — it rises with it.` : '', alertFired(lv, ccy)],
+-    status: ['ask', `Asks you before selling${trails ? ' · backup to the trailing stop' : ''}`],
+-    action: edit});
++    outLabel: 'at', out: worth.alert,
++    tips: [lv.alert != null ? `${fmt(lv.alert_live_pct ?? lv.alert_pct, 1)}% ${short ? 'above' : 'below'} the best price since you bought (${money(lv.alert_ref ?? avg, ccy)}) — it rises with it.` : '',
++           `Asks you before selling${trails ? ' · backup to the trailing stop' : ''}`],
++    callout: alertFired(lv, ccy), action: edit});
+ 
+-  const pts = [
+-    {k: 'stop', v: stop, label: trails ? 'trailing stop' : 'stop-loss'},
+-    ...(lv.alert != null ? [{k: 'trail', v: lv.alert, label: 'trailing alert'}] : []),
+-    ...(avg != null ? [{k: 'paid', v: avg, label: 'you paid'}] : []),
+-    ...(cur != null ? [{k: 'now', v: cur, label: 'now'}] : []),
+-    {k: 'target', v: tgt, label: 'take-profit'}];
+-  const lad = ladder(pts, ccy, [], {zones: avg != null ? [[stop, avg, 'loss'], [avg, tgt, 'gain']] : []});
++  const lad = protectionLine(f);
+   return `<div class="osum pprot">
+     <div class="osum-title">What protects it</div>
+     <div class="ptiles">${stopTile}${tgtTile}${alertTile}</div>
+@@ -360,23 +332,31 @@ function protection(p) {
+     ${lad}
+   </div>`;
+ }
+-/* one protection tile: label + distance chip, the price, what it means for
+-   these shares, notes, and a footer saying who acts on it */
++/* one protection tile: the label, what the level means for these shares in
++   money (large, first) and the price it happens at — nothing else. The rest (how far from the price now, the
++   separate orders, who acts on it) is the tile's tooltip. Two things are
++   still written out, because they need you: a level with no order behind
++   it, and the alert having fired today. */
+ function ptile(o) {
+-  const {kind, label, price, ccy, cur, none, outLabel, out, notes = [], status, action = ''} = o;
++  const {kind, label, price, ccy, cur, none, warnNone, outLabel, out, tips = [], holder, callout = '', action = ''} = o;
+   const dist = price != null && cur ? (price - cur) / cur * 100 : null;
+-  const chip = dist == null ? '' : `<span class="pt-dist" title="from the current price">${dist >= 0 ? '+' : '−'}${fmt(Math.abs(dist), 1)}%</span>`;
++  const tip = (price == null ? [none] : [
++    dist == null ? '' : `${dist >= 0 ? '+' : '−'}${fmt(Math.abs(dist), 1)}% from the current price`,
++    ...tips, holder && holder.kind !== 'plan' ? holder.text : '']).filter(Boolean).join('\n');
++  const plan = holder && holder.kind === 'plan';
+   const body = price == null
+-    ? `<div class="pt-none">none</div><div class="pt-note">${none}</div>`
+-    : `<div class="pt-price">${money(price, '')} <small>${ccy}</small></div>
+-       ${out != null ? `<div class="pt-out"><span>${outLabel}</span><b class="${out >= 0 ? 'ok' : 'bad'}">${out >= 0 ? '+' : '−'}${money(Math.abs(out), ccy)}</b></div>` : ''}
+-       ${notes.filter(Boolean).map(n => `<div class="pt-note">${n}</div>`).join('')}`;
+-  return `<div class="ptile ${kind}">
+-    <div class="pt-head"><span class="pt-label">${label}</span>${chip}</div>
++    ? `<div class="pt-none">none</div>${warnNone ? `<div><span class="pill bad" title="${esc(none)}">⚠ ${warnNone}</span></div>` : ''}`
++    : (out != null
++        /* the money first — what this level means for these shares against
++           what you paid — then the price it happens at */
++        ? `<div class="pt-price ${out >= 0 ? 'ok' : 'bad'}">${out >= 0 ? '+' : '−'}${money(Math.abs(out), '')} <small>${ccy}</small></div>
++           <div class="pt-out"><span>${outLabel}</span><b>${money(price, ccy)}</b></div>`
++        : `<div class="pt-price">${money(price, '')} <small>${ccy}</small></div>`) + `
++       ${plan ? `<div><span class="pill warn" title="No order exists for this level. If the price gets there, nothing happens unless you act.">⚠ plan only</span></div>` : ''}
++       ${callout}`;
++  return `<div class="ptile ${kind}" title="${esc(tip)}">
++    <div class="pt-head"><span class="pt-label">${label}</span>${action}</div>
+     ${body}
+-    ${status || action ? `<div class="pt-foot">${status ? (status[0] === 'plan'
+-        ? `<span class="pill warn" title="No order exists for this level. If the price gets there, nothing happens unless you act.">⚠ ${status[1]}</span>`
+-        : `<span><i class="pt-dot ${status[0]}" aria-hidden="true"></i>${status[1]}</span>`) : '<span></span>'}${action}</div>` : ''}
+   </div>`;
+ }
+ 
+@@ -481,27 +461,7 @@ async function loadChart(id, force) {
+ }
+ function drawPosChart(id, d) {
+   const el = document.getElementById('ch-' + id);
+-  if (!el || !d) return;
+-  if (!d.chart) {
+-    el.innerHTML = `<p class="muted" style="font-size:.75rem">chart
+-      unavailable${d.chart_error ? ' — ' + esc(d.chart_error) : ''}</p>`;
+-    return;
+-  }
+-  const lv = d.levels || {};
+-  const levels = [];
+-  if (lv.avg_cost_native != null) levels.push({value: lv.avg_cost_native,
+-    color: 'var(--accent)', label: 'your avg cost', dash: '5 3'});
+-  if (lv.stop_loss != null) levels.push({value: lv.stop_loss,
+-    color: 'var(--bad)', label: 'stop-loss', dash: '7 4'});
+-  if (lv.take_profit != null) levels.push({value: lv.take_profit,
+-    color: 'var(--good)', label: 'take-profit', dash: '7 4'});
+-  if (lv.alert != null) levels.push({value: lv.alert,
+-    color: 'var(--warn)', dash: '2 3',      // "trailing alert · −8% of 101.20"
+-    label: esc('trailing alert' + (lv.alert_rule
+-      ? ' · ' + String(lv.alert_rule).replace(/^trailing\s*/, '') : ''))});
+-  drawChart(el, d.chart, {height: 210, volume: true, sma20: false,
+-    levels, fills: (d.fills || []).map(f => ({ts: f.ts, price: f.price_native,
+-      side: f.side, qty: f.qty}))});
++  if (!drawPositionChart(el, d)) return;     // charts.js — shared with the home page
+   const s = document.getElementById('src-' + id);
+   if (s) s.textContent = 'source: ' + (d.chart.src || 'yahoo');
+ }
+-- 
+2.53.0
+
