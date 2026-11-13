@@ -140,3 +140,33 @@ function drawChart(el, data, opts) {
     cx.setAttribute('visibility', 'hidden'); info.textContent = '';
   });
 }
+
+/* A position's chart: the candles with what you paid, the stop-loss, the
+   take-profit and the trailing alert drawn across them, and your fills.
+   `d` is /api/position-chart. Used by the Portfolio card and by the chart
+   that pops up over a ticker on the home page. Returns false when there is
+   no chart to draw (the element then says why). */
+function drawPositionChart(el, d, opts) {
+  if (!el || !d) return false;
+  if (!d.chart) {
+    el.innerHTML = `<p class="muted" style="font-size:.75rem">chart
+      unavailable${d.chart_error ? ' — ' + esc(d.chart_error) : ''}</p>`;
+    return false;
+  }
+  const lv = d.levels || {};
+  const levels = [];
+  if (lv.avg_cost_native != null) levels.push({value: lv.avg_cost_native,
+    color: 'var(--accent)', label: 'your avg cost', dash: '5 3'});
+  if (lv.stop_loss != null) levels.push({value: lv.stop_loss,
+    color: 'var(--bad)', label: 'stop-loss', dash: '7 4'});
+  if (lv.take_profit != null) levels.push({value: lv.take_profit,
+    color: 'var(--good)', label: 'take-profit', dash: '7 4'});
+  if (lv.alert != null) levels.push({value: lv.alert,
+    color: 'var(--warn)', dash: '2 3',      // "trailing alert · −8% of 101.20"
+    label: esc('trailing alert' + (lv.alert_rule
+      ? ' · ' + String(lv.alert_rule).replace(/^trailing\s*/, '') : ''))});
+  drawChart(el, d.chart, {height: 210, volume: true, sma20: false, ...(opts || {}),
+    levels, fills: (d.fills || []).map(f => ({ts: f.ts, price: f.price_native,
+      side: f.side, qty: f.qty}))});
+  return true;
+}

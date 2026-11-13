@@ -80,14 +80,99 @@ def test_base_styles():
 
 def test_home_page_answers_the_daily_question():
     src = (WEB / "index.html").read_text()
-    for needle in ('id="view-desk"', 'id="view-system" hidden',
+    for needle in ('id="view-desk" hidden', 'id="view-system"',
                    "What you hold", "Orders waiting to fill",
                    "function protectionOf(p)", "plan only", "no stop",
                    "perCcy(t, 'equity'"):
         assert needle in src, needle
 
 
-def test_nav_state_endpoint(web):                           # noqa: F811
+def test_mission_control_opens_on_the_system_map():
+    """System map is the first tab and the one the page opens on; Today is
+    the second, reachable (and linkable) as /#today."""
+    src = (WEB / "index.html").read_text()
+    assert src.index('id="tab-system"') < src.index('id="tab-desk"')
+    assert '<section id="view-system">' in src
+    assert "showTab(location.hash === '#today' ? 'desk' : 'system');" in src
+    assert "addEventListener('hashchange'" in src
+    assert "homeTab" not in src and "'#system'" not in src
+
+
+def test_today_and_portfolio_read_a_position_the_same_way():
+    """Which stop-loss and take-profit act, who holds them and what they mean
+    in money come from orderform.js for both pages, so the Today row and the
+    Portfolio card cannot disagree. Portfolio draws the full price line;
+    Today its own compact bar."""
+    shared = (WEB / "orderform.js").read_text()
+    for fn in ("function protectionFacts(p)", "function protectionHolder(l)",
+               "function protectionMoney(p, f)",
+               "function protectionLine(f, opt = {})"):
+        assert fn in shared, fn
+    home = (WEB / "index.html").read_text()
+    pf = (WEB / "portfolio.html").read_text()
+    for name, src in (("index.html", home), ("portfolio.html", pf)):
+        assert '<script src="/orderform.js">' in src, name
+        assert "protectionFacts(p)" in src and "protectionMoney(p, f)" in src, name
+        # neither page picks the acting order or works out the money itself
+        assert "l.leg === kind" not in src and "plTotal" not in src, name
+    assert "protectionLine(f)" in pf and "ladder(" not in pf
+
+
+def test_today_row_is_one_compact_line_led_by_the_money():
+    """A holding's protection is one line: what the stop-loss would cost and
+    what the take-profit would make (the price under each), with a bar
+    between. Who acts is the tooltip; only what needs the owner is written
+    out, inside the same line."""
+    home = (WEB / "index.html").read_text()
+    for gone in ("prot-who", "deskprot", "protectionGaps", "protectionLine(",
+                 'class="ladder'):
+        assert gone not in home, gone
+    for needle in ('<div class="pcell" title="${esc(tip)}">', 'class="pbar"',
+                   "side('l', f.sl, f.stop, m.stop, stopWord,",
+                   "side('r', f.tp, f.tgt, m.target, 'take-profit'",
+                   "no stop-loss", "plan only", 'class="plegend"'):
+        assert needle in home, needle
+    # the money comes before the price in each end of the line
+    side = home[home.index("const side = ("):home.index("/* the bar:")]
+    assert side.index("amt(money$)") < side.index("' ' + px(price)")
+
+
+def test_portfolio_protection_tiles_show_the_figures_only():
+    """A tile is its label, the price and the money outcome. How far from the
+    price, the separate orders and who acts are its tooltip; a level with no
+    order behind it and a missing stop-loss are still written out."""
+    pf = (WEB / "portfolio.html").read_text()
+    assert '<div class="ptile ${kind}" title="${esc(tip)}">' in pf
+    for gone in ("pt-dist", "pt-note", "pt-foot", "pt-orders", "pt-dot"):
+        assert gone not in pf, gone
+    for kept in ("pt-price", "pt-out", "⚠ plan only", "warnNone: 'no stop-loss'",
+                 "callout: alertFired(lv, ccy)", "floorOpen("):
+        assert kept in pf, kept
+    assert "pt-dot" not in (WEB / "orderform.css").read_text()
+    # the money is the large first figure; the price it happens at is under it
+    tile = pf[pf.index("function ptile(o)"):pf.index("function posCard(p)")]
+    big = tile.index('<div class="pt-price ${out >= 0')
+    assert "money(Math.abs(out), '')" in tile[big:tile.index("</div>", big)]
+    assert big < tile.index("<b>${money(price, ccy)}</b>")
+
+
+def test_ticker_on_today_pops_up_its_chart():
+    """Resting on a ticker shows the chart of its Portfolio card — one
+    drawing routine in charts.js for both."""
+    charts = (WEB / "charts.js").read_text()
+    assert "function drawPositionChart(el, d, opts)" in charts
+    home = (WEB / "index.html").read_text()
+    pf = (WEB / "portfolio.html").read_text()
+    assert '<script src="/charts.js">' in home
+    assert 'data-chart="${esc(p.instrument_id)}"' in home
+    assert "drawPositionChart(" in home and "drawPositionChart(" in pf
+    assert "label: 'your avg cost'" not in pf          # not drawn twice
+    for needle in ("chartPopWire();", "'/api/position-chart?instrument='",
+                   "pointer-events:none", "e.key === 'Escape'"):
+        assert needle in home, needle
+
+
+def test_nav_state_endpoint(web):                         # noqa: F811
     base, conn = web
     with paired(base) as c:
         s = c.get("/api/nav-state").json()

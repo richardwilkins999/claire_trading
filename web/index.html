@@ -3,6 +3,43 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Claire — Mission Control</title>
 <link rel="stylesheet" href="/style.css"><script src="/nav.js"></script>
+<script src="/orderform.js"></script><script src="/charts.js"></script>
+<style>
+  /* the Today table: one compact line per holding — what the stop-loss
+     would cost · a bar · what the take-profit would make */
+  #desk-positions td { vertical-align:middle; padding-top:.35rem; padding-bottom:.35rem; }
+  #desk-positions td.num { text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .pcell { display:grid; grid-template-columns:8.2rem minmax(100px, 1fr) 8.2rem;
+    gap:.6rem; align-items:center; min-width:375px; }
+  .pside { display:flex; flex-direction:column; line-height:1.25; white-space:nowrap;
+    font-variant-numeric:tabular-nums; }
+  .pside.l { align-items:flex-end; }
+  .pside b { font-size:.92rem; } .pside b.ok { color:var(--good); } .pside b.bad { color:var(--bad); }
+  .pside b small { font-size:.66rem; font-weight:500; color:var(--dim); }
+  .pside span { font-size:.68rem; color:var(--muted); }
+  .pside span .warn { color:var(--warn); }
+  .pbar { position:relative; height:18px; }
+  .pbar i { position:absolute; display:block; }
+  .pbar .trk { left:0; right:0; top:6px; height:6px; border-radius:3px; background:var(--line); }
+  .pbar .z { top:6px; height:6px; }
+  .pbar .z.loss { background:rgba(239,83,80,.55); } .pbar .z.gain { background:rgba(38,166,154,.55); }
+  .pbar .t { top:1px; height:16px; width:6px; margin-left:-3px;
+    background:linear-gradient(var(--accent), var(--accent)) center / 2px 100% no-repeat; }
+  .pbar .t.trail { background:repeating-linear-gradient(var(--warn) 0 3px, transparent 3px 5px) center / 2px 100% no-repeat; }
+  .pbar .now { top:3px; width:12px; height:12px; margin-left:-6px; border-radius:50%;
+    background:var(--text); border:2px solid var(--bg); box-shadow:0 0 0 1px var(--text); }
+  .plegend { margin:.35rem 0 0; font-size:.7rem; color:var(--muted); display:flex; flex-wrap:wrap; gap:.2rem 1rem; }
+  .plegend i { display:inline-block; vertical-align:-2px; margin-right:.3rem; }
+  .plegend .k-paid { width:2px; height:12px; background:var(--accent); }
+  .plegend .k-trail { width:2px; height:12px; background:repeating-linear-gradient(var(--warn) 0 3px, transparent 3px 5px); }
+  .plegend .k-now { width:8px; height:8px; border-radius:50%; background:var(--text); vertical-align:0; }
+  /* the chart over a ticker: fixed to the window, never under the pointer */
+  #chartpop { position:fixed; z-index:30; width:min(540px, calc(100vw - 16px));
+    background:var(--panel2); border:1px solid var(--line); border-radius:10px;
+    padding:.5rem .6rem .3rem; box-shadow:0 14px 40px rgba(0,0,0,.6); pointer-events:none; }
+  #chartpop .cp-head { display:flex; justify-content:space-between; align-items:baseline;
+    margin-bottom:.3rem; }
+</style>
 <script>nav('/')</script>
 <main>
   <h1>Mission Control <span id="conn" class="pill">connecting…</span></h1>
@@ -12,13 +49,13 @@
   <div id="pending"></div>
 
   <div class="tabs" role="tablist">
-    <button class="tab" id="tab-desk" role="tab" onclick="showTab('desk')">Today</button>
     <button class="tab" id="tab-system" role="tab" onclick="showTab('system')">System map</button>
+    <button class="tab" id="tab-desk" role="tab" onclick="showTab('desk')">Today</button>
   </div>
 
   <!-- the daily question: what do I hold, what protects it, what is
        waiting. This page used to be a health strip and a wiring diagram. -->
-  <section id="view-desk">
+  <section id="view-desk" hidden>
     <div class="statstrip" id="desk-totals"></div>
     <h2>What you hold <span class="muted" id="desk-asof"></span></h2>
     <div id="desk-positions"><p class="muted">loading…</p></div>
@@ -28,7 +65,7 @@
     <div id="desk-triggers"></div>
   </section>
 
-  <section id="view-system" hidden>
+  <section id="view-system">
   <h2>System map</h2>
   <div class="mapwrap"><svg id="map" viewBox="0 0 1240 530"
     preserveAspectRatio="xMidYMin meet"></svg></div>
@@ -762,30 +799,125 @@ function showTab(t) {
     document.getElementById('tab-' + k).classList.toggle('on', k === t);
     document.getElementById('tab-' + k).setAttribute('aria-selected', k === t);
   }
-  try { localStorage.setItem('homeTab', t); } catch {}
-  if (location.hash !== (t === 'system' ? '#system' : ''))
-    history.replaceState(null, '', t === 'system' ? '#system' : location.pathname);
+  /* the page opens on the System map; /#today opens (and links to) Today */
+  if (location.hash !== (t === 'desk' ? '#today' : ''))
+    history.replaceState(null, '', t === 'desk' ? '#today' : location.pathname);
 }
-/* who would sell these shares if the price fell: an order at the broker,
-   Claire's own simulation, only a level in the plan, or nothing */
+/* what protects a holding, in one line of the table: what the stop-loss
+   would cost you and what the take-profit would make (the money matters more
+   than the price, which sits under it), with a bar between them marking what
+   you paid, the trailing alert and the price now. The same reading of the
+   position as its Portfolio card (protectionFacts / protectionMoney in
+   orderform.js). Who acts at each level is the tooltip; only what needs you
+   is written out: a level with no order behind it, or no stop-loss at all. */
 function protectionOf(p) {
-  const legs = p.legs || [], lv = p.levels || {}, ccy = p.currency || '';
-  const one = (kind, planned, word) => {
-    const l = legs.filter(x => x.leg === kind);
-    if (l.length) {
-      const sim = l.every(x => String(x.venue_order || '').startsWith('sim-'));
-      const px = l.map(x => fmt(x.price, x.price < 10 ? 3 : 2)).join(', ');
-      return `<span class="pill ok" title="${sim ? "held by Claire's simulation — sells at the live price"
-        : 'an order resting at the broker — sells by itself'}">${word} ${px}${sim ? ' · sim' : ' · at broker'}</span>`;
-    }
-    if (planned != null)
-      return `<span class="pill warn" title="only a level in the plan: no order exists, nothing sells here">${word} ${fmt(planned, planned < 10 ? 3 : 2)} · plan only</span>`;
-    return kind === 'stop' ? '<span class="pill bad" title="nothing sells on the way down">⚠ no stop-loss</span>' : '';
+  const f = protectionFacts(p), m = protectionMoney(p, f), lv = f.lv;
+  const stopWord = f.trails ? 'trailing stop' : 'stop-loss';
+  const amt = v => `${v >= 0 ? '+' : '−'}${fmt(Math.abs(v), 0)}`;
+  const px = v => money(v, '');
+  /* one end of the bar: the money, then the level it comes from */
+  const side = (cls, leg, price, money$, word, none) => {
+    if (price == null) return `<div class="pside ${cls}">${none}</div>`;
+    const plan = !leg ? ` <span class="warn" title="only a level in the plan: no order exists, nothing sells here">· plan only</span>` : '';
+    return `<div class="pside ${cls}">${money$ == null ? `<b>${px(price)}</b>`
+      : `<b class="${money$ >= 0 ? 'ok' : 'bad'}">${amt(money$)} <small>${f.ccy}</small></b>`}
+      <span>${word}${money$ == null ? '' : ' ' + px(price)}${plan}</span></div>`;
   };
-  const alert = lv.alert != null
-    ? `<span class="pill" title="not an order: Claire asks you before selling if the price falls to this">trailing alert ${fmt(lv.alert, lv.alert < 10 ? 3 : 2)}</span>` : '';
-  return [one('stop', lv.stop_loss, 'stop-loss'), one('target', lv.take_profit, 'take-profit'), alert]
-    .filter(Boolean).join(' ') + ` <span class="muted small">${esc(ccy)}</span>`;
+  /* the bar: red from the stop to what you paid, green from there to the
+     target; a short position is mirrored so the stop is still on the left */
+  const vals = [f.stop, lv.alert, f.avg, f.cur, f.tgt].filter(v => v != null);
+  let bar = '';
+  if (vals.length >= 2) {
+    let lo = Math.min(...vals), hi = Math.max(...vals);
+    const pad = (hi - lo) * 0.04 || hi * 0.02; lo -= pad; hi += pad;
+    const at = v => { const x = (v - lo) / (hi - lo) * 100; return f.short ? 100 - x : x; };
+    const zone = (x, y, cls) => x == null || y == null ? ''
+      : `<i class="z ${cls}" style="left:${Math.min(at(x), at(y)).toFixed(2)}%;width:${Math.abs(at(x) - at(y)).toFixed(2)}%"></i>`;
+    const tick = (v, cls, tip) => v == null ? ''
+      : `<i class="${cls}" style="left:${at(v).toFixed(2)}%" title="${esc(tip)}"></i>`;
+    bar = zone(f.stop, f.avg, 'loss') + zone(f.avg, f.tgt, 'gain') +
+      tick(f.avg, 't', `you paid ${px(f.avg)} ${f.ccy}`) +
+      tick(lv.alert, 't trail', `trailing alert ${px(lv.alert)} ${f.ccy}` +
+        (m.alert == null ? '' : ` (${amt(m.alert)} against what you paid)`) + ' — Claire asks you before selling') +
+      tick(f.cur, 'now', `price now ${px(f.cur)} ${f.ccy}`);
+  }
+  const who = (leg, price, word) => price == null ? ''
+    : `${word} ${px(price)}: ${protectionHolder(leg).text}`;
+  const tip = [
+    f.stop == null ? 'No stop-loss: nothing sells on the way down' : who(f.sl, f.stop, stopWord),
+    who(f.tp, f.tgt, 'take-profit'),
+    lv.alert != null ? `trailing alert ${px(lv.alert)}: not an order — Claire asks you before selling` : '',
+    f.avg != null ? `you paid ${px(f.avg)}` : '', f.cur != null ? `price now ${px(f.cur)}` : '',
+    f.ccy ? `Prices and amounts in ${f.ccy}` : ''].filter(Boolean).join('\n');
+  return `<div class="pcell" title="${esc(tip)}">
+    ${side('l', f.sl, f.stop, m.stop, stopWord,
+           '<span class="pill bad" title="nothing sells on the way down">⚠ no stop-loss</span>')}
+    <div class="pbar"><i class="trk"></i>${bar}</div>
+    ${side('r', f.tp, f.tgt, m.target, 'take-profit', '<span>no take-profit</span>')}
+  </div>`;
+}
+
+/* ── the chart that pops up over a ticker ────────────────────────────
+   Rest the pointer on a ticker in "What you hold" (or reach it with the
+   keyboard) and its one-week chart appears beside it, with your cost and
+   levels drawn in — the chart of its Portfolio card. It is fetched once you
+   have paused there, kept for five minutes, and never takes the pointer. */
+const POP = {id: null, timer: null, cache: {}};
+function chartPop() {
+  let el = document.getElementById('chartpop');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'chartpop'; el.hidden = true; el.setAttribute('role', 'tooltip');
+    document.body.appendChild(el);
+  }
+  return el;
+}
+function chartPopHide() {
+  clearTimeout(POP.timer); POP.id = null;
+  const el = document.getElementById('chartpop');
+  if (el) el.hidden = true;
+}
+function chartPopPlace(el, a) {
+  const r = a.getBoundingClientRect(), w = el.offsetWidth, h = el.offsetHeight;
+  const left = Math.max(8, Math.min(r.left, innerWidth - w - 8));
+  /* below the ticker when there is room, else above it */
+  const top = r.bottom + 8 + h <= innerHeight ? r.bottom + 8 : Math.max(8, r.top - h - 8);
+  el.style.left = left + 'px'; el.style.top = top + 'px';
+}
+async function chartPopShow(a) {
+  const id = a.dataset.chart, el = chartPop();
+  POP.id = id;
+  el.innerHTML = `<div class="cp-head"><b>${esc(a.dataset.tk || '')}</b>
+    <span class="muted small">1 week · hourly</span></div>
+    <div id="cp-chart"><p class="muted small">loading chart…</p></div>`;
+  el.hidden = false; chartPopPlace(el, a);
+  let c = POP.cache[id];
+  if (!c || Date.now() - c.at > 300000) {
+    try {
+      c = POP.cache[id] = {at: Date.now(), d: await api('/api/position-chart?instrument=' +
+        encodeURIComponent(id) + '&range=5d&interval=60m')};
+    } catch (e) { c = {d: {chart: null, chart_error: e.message}}; }
+  }
+  if (POP.id !== id) return;                 // the pointer has moved on
+  drawPositionChart(document.getElementById('cp-chart'), c.d, {height: 230});
+  if (document.contains(a)) chartPopPlace(el, a);
+}
+function chartPopWire() {
+  const box = document.getElementById('desk-positions');
+  const over = e => {
+    const a = e.target.closest && e.target.closest('a[data-chart]');
+    if (!a || POP.id === a.dataset.chart) return;
+    clearTimeout(POP.timer);
+    POP.timer = setTimeout(() => chartPopShow(a), e.type === 'focusin' ? 0 : 250);
+  };
+  const out = e => {
+    const a = e.target.closest && e.target.closest('a[data-chart]');
+    if (a && !(e.relatedTarget && a.contains(e.relatedTarget))) chartPopHide();
+  };
+  box.addEventListener('mouseover', over); box.addEventListener('focusin', over);
+  box.addEventListener('mouseout', out); box.addEventListener('focusout', out);
+  addEventListener('scroll', chartPopHide, true);
+  addEventListener('keydown', e => { if (e.key === 'Escape') chartPopHide(); });
 }
 function renderDesk() {
   const d = TODAY;
@@ -803,18 +935,24 @@ function renderDesk() {
   document.getElementById('desk-positions').innerHTML = pos.length
     ? `<table><tr><th>Stock</th><th style="text-align:right">Shares</th>
         <th style="text-align:right">Value</th><th style="text-align:right">Profit / loss</th>
-        <th>What protects it</th><th>Account</th></tr>${pos.map(p => {
+        <th title="what the stop-loss would cost you, and what the take-profit would make, against what you paid">If stop-loss hit · if take-profit reached</th>
+        <th>Account</th></tr>${pos.map(p => {
         const u = p.unrealized_base, c = esc(p.base_currency || '');
-        return `<tr><td><a href="/portfolio"><b>${esc(p.ticker)}</b></a>
+        return `<tr><td style="white-space:nowrap"><a href="/portfolio" data-chart="${esc(p.instrument_id)}" data-tk="${esc(p.ticker)}"
+              aria-label="${esc(p.ticker)} — open Portfolio; its chart shows while you rest here"><b>${esc(p.ticker)}</b></a>
             <span class="muted small">${esc(p.exchange)}${p.is_open === false ? ' · closed' : ''}</span></td>
-          <td style="text-align:right">${fmt(p.qty, p.qty % 1 ? 4 : 0)}</td>
-          <td style="text-align:right">${p.value_base == null ? '<span class="warn">no price</span>' : fmt(p.value_base, 0) + ' ' + c}</td>
-          <td style="text-align:right" class="${u == null ? '' : u >= 0 ? 'ok' : 'bad'}">${u == null ? '—'
+          <td class="num">${fmt(p.qty, p.qty % 1 ? 4 : 0)}</td>
+          <td class="num">${p.value_base == null ? '<span class="warn">no price</span>' : fmt(p.value_base, 0) + ' ' + c}</td>
+          <td class="num ${u == null ? '' : u >= 0 ? 'ok' : 'bad'}">${u == null ? '—'
             : (u >= 0 ? '+' : '') + fmt(u, 0) + ' ' + c}${p.unrealized_pct == null ? ''
             : ` <span class="small">(${p.unrealized_pct >= 0 ? '+' : ''}${fmt(p.unrealized_pct, 1)}%)</span>`}</td>
           <td>${protectionOf(p)}</td>
-          <td class="muted small">${esc(p.account_id)}</td></tr>`;
-      }).join('')}</table>`
+          <td class="muted small" style="white-space:nowrap">${esc(p.account_id)}</td></tr>`;
+      }).join('')}</table>
+      <p class="plegend"><span><i class="k-paid"></i>what you paid</span>
+        <span><i class="k-trail"></i>trailing alert</span>
+        <span><i class="k-now"></i>price now</span>
+        <span>hover a row's bar for the prices and who acts</span></p>`
     : '<p class="muted">No open positions.</p>';
   const o = d.orders || {};
   const open = (o.entries || []).filter(x =>
@@ -910,6 +1048,8 @@ refresh().then(loaded => {
   if (want) { localStorage.removeItem('openDrawer'); openDrawer(want); }
 });
 connectSSE(); poll(refresh, 20000);
-showTab(location.hash === '#system' ? 'system' : 'desk');
+showTab(location.hash === '#today' ? 'desk' : 'system');
+addEventListener('hashchange', () => showTab(location.hash === '#today' ? 'desk' : 'system'));
 refreshDesk(); poll(refreshDesk, 60000);
+chartPopWire();
 </script>

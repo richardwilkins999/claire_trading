@@ -368,3 +368,55 @@ function sellSummary(o) {
     <div class="osum-line">${status}</div>
     <div class="osum-line muted">${acct.label ? `On <b>${esc(acct.label)}</b> · ` : ''}${foot}</div>`;
 }
+
+/* ── what protects a position you hold ───────────────────────────────
+   One reading of a position from /api/portfolio, used by Portfolio's cards
+   and by the Today table on the home page, so the two cannot disagree:
+   which stop-loss and take-profit act (the order nearest the price when
+   several rest at the broker, else the plan's level), who holds each, and
+   the price line that draws them against what you paid and the price now. */
+function protectionFacts(p) {
+  const m = p.market || {}, lv = p.levels || {}, cur = m.price, avg = lv.avg_cost_native;
+  const short = p.side === 'short', legs = p.legs || [];
+  /* several entries → several orders; the one nearest the price acts first */
+  const pick = kind => {
+    const ls = legs.filter(l => l.leg === kind);
+    if (!ls.length) return null;
+    const near = ls.slice().sort((x, y) => kind === 'stop' ? (short ? x.price - y.price : y.price - x.price)
+                                                        : (short ? y.price - x.price : x.price - y.price))[0];
+    return {...near, all: ls, plTotal: avg != null
+      ? ls.reduce((t, l) => t + (short ? avg - l.price : l.price - avg) * l.qty, 0) : null};
+  };
+  const sl = pick('stop'), tp = pick('target');
+  return {lv, cur, avg, short, sl, tp, ccy: esc(p.currency || ''),
+          stop: sl ? sl.price : lv.stop_loss, tgt: tp ? tp.price : lv.take_profit,
+          trails: sl && sl.trails};
+}
+/* who would act at a level: an order at the broker, Claire's simulation, or
+   nobody — only a level in the plan. `l` is the leg protectionFacts picked. */
+function protectionHolder(l) {
+  return !l ? {kind: 'plan', short: 'plan only', text: 'Plan only — no order, nothing sells here'}
+    : String(l.venue_order || '').startsWith('sim-')
+      ? {kind: 'sim', short: "Claire's sim", text: "Claire's sim — sells at the live price"}
+      : {kind: 'auto', short: 'at the broker', text: 'At the broker — sells by itself'};
+}
+/* what each level means in money for these shares, against what you paid:
+   {stop, target, alert} in the share's own currency — null where there is
+   no level or no cost. Several orders at one level are added up. */
+function protectionMoney(p, f) {
+  const qty = Math.abs(p.qty || 0), {avg, short, sl, tp, lv} = f;
+  const pl = v => avg != null && v != null ? (short ? avg - v : v - avg) * qty : null;
+  return {stop: sl ? sl.plTotal : pl(f.stop), target: tp ? tp.plTotal : pl(f.tgt), alert: pl(lv.alert)};
+}
+/* the price line: stop-loss · trailing alert · you paid · now · take-profit,
+   red from the stop to what you paid and green from there to the target */
+function protectionLine(f, opt = {}) {
+  const {lv, cur, avg, stop, tgt, trails, ccy} = f;
+  return ladder([
+    {k: 'stop', v: stop, label: trails ? 'trailing stop' : 'stop-loss'},
+    ...(lv.alert != null ? [{k: 'trail', v: lv.alert, label: 'trailing alert'}] : []),
+    ...(avg != null ? [{k: 'paid', v: avg, label: 'you paid'}] : []),
+    ...(cur != null ? [{k: 'now', v: cur, label: 'now'}] : []),
+    {k: 'target', v: tgt, label: 'take-profit'}], ccy, [],
+    {...opt, zones: avg != null ? [[stop, avg, 'loss'], [avg, tgt, 'gain']] : []});
+}

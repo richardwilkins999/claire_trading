@@ -10,44 +10,32 @@
   .pprot { padding:.5rem .6rem; margin:.4rem 0 .5rem; container-type:inline-size; }
   .ptiles { display:grid; grid-template-columns:1fr 1fr; gap:.5rem; }
   .ptile.trail { grid-column:1 / -1; }
-  @container (min-width: 620px) {
+  @container (min-width: 460px) {
     .ptiles { grid-template-columns:repeat(3, minmax(0, 1fr)); }
     .ptile.trail { grid-column:auto; }
   }
-  @container (max-width: 330px) { .ptiles { grid-template-columns:1fr; } }
-  .ptile { display:flex; flex-direction:column; gap:.2rem; background:var(--bg);
+  @container (max-width: 300px) { .ptiles { grid-template-columns:1fr; } }
+  .ptile { display:flex; flex-direction:column; gap:.15rem; background:var(--bg);
     border:1px solid var(--line); border-left:3px solid var(--line); border-radius:8px;
-    padding:.5rem .65rem .45rem; min-width:0; }
+    padding:.45rem .6rem .4rem; min-width:0; }
   .ptile.loss { border-left-color:var(--bad); }
   .ptile.gain { border-left-color:var(--good); }
   .ptile.trail { border-left-color:var(--warn); }
-  .pt-head { display:flex; justify-content:space-between; align-items:center; gap:.4rem; }
+  .pt-head { display:flex; justify-content:space-between; align-items:center; gap:.4rem; min-height:1.3rem; }
   .pt-label { color:var(--muted); font-size:.68rem; text-transform:uppercase; letter-spacing:.09em; font-weight:600; }
-  .pt-dist { font-size:.7rem; color:var(--dim); border:1px solid var(--line); border-radius:999px;
-    padding:0 .45rem; white-space:nowrap; font-variant-numeric:tabular-nums; }
   .pt-price { font-size:1.3rem; font-weight:700; line-height:1.2; font-variant-numeric:tabular-nums; }
   .pt-price small { font-size:.72rem; font-weight:500; color:var(--dim); }
   .ptile.loss .pt-price { color:var(--bad); } .ptile.gain .pt-price { color:var(--good); }
   .ptile.trail .pt-price { color:var(--warn); }
   .pt-none { font-size:1.1rem; font-weight:600; color:var(--dim); }
-  .pt-out { display:flex; justify-content:space-between; align-items:baseline; gap:.5rem;
-    font-size:.8rem; padding:.15rem 0; }
+  .pt-out { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:baseline;
+    gap:0 .5rem; font-size:.8rem; }
   .pt-out span { color:var(--muted); }
-  .pt-out b { font-variant-numeric:tabular-nums; }
-  .pt-out b.ok { color:var(--good); } .pt-out b.bad { color:var(--bad); }
-  .pt-note { font-size:.74rem; color:var(--dim); line-height:1.4; }
-  .pt-orders { display:block; color:var(--muted); }
-  .pt-ord { display:flex; justify-content:space-between; font-variant-numeric:tabular-nums; }
+  .pt-out b { font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .ptile .pt-price.ok { color:var(--good); } .ptile .pt-price.bad { color:var(--bad); }
   .pt-callout { font-size:.74rem; line-height:1.4; margin-top:.15rem; padding:.3rem .45rem;
     border-radius:6px; background:rgba(255,183,77,.08); border:1px solid rgba(255,183,77,.25); }
   .pt-callout a { color:inherit; }
-  .pt-foot { margin-top:auto; padding-top:.35rem; border-top:1px solid var(--line);
-    display:flex; justify-content:space-between; align-items:center; gap:.5rem;
-    font-size:.72rem; color:var(--muted); }
-  .pt-dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:.4rem;
-    vertical-align:1px; background:var(--dim); }
-  .pt-dot.auto { background:var(--good); } .pt-dot.ask { background:var(--warn); }
-  .pt-dot.sim { background:var(--accent); } .pt-dot.plan { background:var(--bad); }
   .pt-btn { font-size:.7rem; padding:.05rem .55rem; }
   .pfloor { border:1px dashed var(--line); border-radius:8px; padding:.35rem .55rem; margin:.45rem 0 0; }
   .pprot .ladder { margin-left:.9rem; margin-right:.9rem; }
@@ -302,57 +290,41 @@ function alertFired(lv, ccy, short) {
       : `It alerts again only if the price falls a further 3%, to the level shown.`) + '</div>';
 }
 function protection(p) {
-  const m = p.market || {}, lv = p.levels || {}, cur = m.price, avg = lv.avg_cost_native;
-  const ccy = esc(p.currency || ''), short = p.side === 'short', qty = Math.abs(p.qty || 0);
-  const k = floorKey(p), a = jsArg(k), legs = p.legs || [];
-  const pl = v => avg != null && v != null ? (short ? avg - v : v - avg) * qty : null;
+  /* which price acts, and who holds it: protectionFacts (orderform.js),
+     shared with the Today table on the home page */
+  const f = protectionFacts(p);
+  const {lv, cur, avg, ccy, short, sl, tp, stop, tgt, trails} = f;
+  const k = floorKey(p), a = jsArg(k);
+  const worth = protectionMoney(p, f);
   const sh = q => fmt(q, q % 1 ? 4 : 0);
-  /* several entries → several orders; the one nearest the price acts first */
-  const pick = kind => {
-    const ls = legs.filter(l => l.leg === kind);
-    if (!ls.length) return null;
-    const near = ls.slice().sort((x, y) => kind === 'stop' ? (short ? x.price - y.price : y.price - x.price)
-                                                        : (short ? y.price - x.price : x.price - y.price))[0];
-    return {...near, all: ls, plTotal: avg != null
-      ? ls.reduce((t, l) => t + (short ? avg - l.price : l.price - avg) * l.qty, 0) : null};
-  };
-  const status = l => !l ? ['plan', 'Plan only — no order, nothing sells here']
-    : String(l.venue_order || '').startsWith('sim-') ? ['sim', "Claire's sim — sells at the live price"]
-    : ['auto', 'At the broker — sells by itself'];
+  /* a tile shows the figures only; who acts, the separate orders and the
+     distance from the price are its tooltip (plain text, one fact a line) */
+  const holder = l => protectionHolder(l);
   const orders = l => l && l.all.length > 1
-    ? `<span class="pt-orders">${l.all.length} orders</span>${l.all.map(x =>
-        `<span class="pt-ord"><span>${sh(x.qty)} shares</span><span>${money(x.price, '')}</span></span>`).join('')}` : '';
+    ? `${l.all.length} orders: ` + l.all.map(x => `${sh(x.qty)} shares at ${money(x.price, '')}`).join(', ') : '';
 
-  const sl = pick('stop'), stop = sl ? sl.price : lv.stop_loss, trails = sl && sl.trails;
-  const tp = pick('target'), tgt = tp ? tp.price : lv.take_profit;
   const stopTile = ptile({
     kind: 'loss', label: trails ? 'Trailing stop' : 'Stop-loss', price: stop, ccy, cur,
     none: 'Nothing sells on the way down — only the trailing alert warns you.',
-    outLabel: 'If hit', out: sl ? sl.plTotal : pl(stop),
-    notes: [trails ? `Follows the best price ${money(trails, ccy)} below it — never moves back.` : '', orders(sl)],
-    status: stop == null ? null : status(sl)});
+    warnNone: 'no stop-loss',
+    outLabel: 'if hit at', out: worth.stop,
+    tips: [trails ? `Follows the best price ${money(trails, ccy)} below it — never moves back.` : '', orders(sl)],
+    holder: stop == null ? null : holder(sl)});
   const tgtTile = ptile({
     kind: 'gain', label: 'Take-profit', price: tgt, ccy, cur,
     none: 'Nothing sells automatically on the way up.',
-    outLabel: 'If reached', out: tp ? tp.plTotal : pl(tgt),
-    notes: [orders(tp)], status: tgt == null ? null : status(tp)});
+    outLabel: 'if reached at', out: worth.target,
+    tips: [orders(tp)], holder: tgt == null ? null : holder(tp)});
   const edit = FLOOR_ED[k] ? '' : `<button class="ghost pt-btn" onclick="floorOpen(${a})">${lv.alert != null ? 'Edit' : 'Set…'}</button>`;
   const alertTile = ptile({
     kind: 'trail', label: 'Trailing alert', price: lv.alert, ccy, cur,
     none: 'Not set yet — the watcher sets one on its next check.',
-    outLabel: 'At that price', out: pl(lv.alert),
-    notes: [lv.alert != null ? `${fmt(lv.alert_live_pct ?? lv.alert_pct, 1)}% ${short ? 'above' : 'below'} the best price since you bought
-      (${money(lv.alert_ref ?? avg, ccy)}) — it rises with it.` : '', alertFired(lv, ccy)],
-    status: ['ask', `Asks you before selling${trails ? ' · backup to the trailing stop' : ''}`],
-    action: edit});
+    outLabel: 'at', out: worth.alert,
+    tips: [lv.alert != null ? `${fmt(lv.alert_live_pct ?? lv.alert_pct, 1)}% ${short ? 'above' : 'below'} the best price since you bought (${money(lv.alert_ref ?? avg, ccy)}) — it rises with it.` : '',
+           `Asks you before selling${trails ? ' · backup to the trailing stop' : ''}`],
+    callout: alertFired(lv, ccy), action: edit});
 
-  const pts = [
-    {k: 'stop', v: stop, label: trails ? 'trailing stop' : 'stop-loss'},
-    ...(lv.alert != null ? [{k: 'trail', v: lv.alert, label: 'trailing alert'}] : []),
-    ...(avg != null ? [{k: 'paid', v: avg, label: 'you paid'}] : []),
-    ...(cur != null ? [{k: 'now', v: cur, label: 'now'}] : []),
-    {k: 'target', v: tgt, label: 'take-profit'}];
-  const lad = ladder(pts, ccy, [], {zones: avg != null ? [[stop, avg, 'loss'], [avg, tgt, 'gain']] : []});
+  const lad = protectionLine(f);
   return `<div class="osum pprot">
     <div class="osum-title">What protects it</div>
     <div class="ptiles">${stopTile}${tgtTile}${alertTile}</div>
@@ -360,23 +332,31 @@ function protection(p) {
     ${lad}
   </div>`;
 }
-/* one protection tile: label + distance chip, the price, what it means for
-   these shares, notes, and a footer saying who acts on it */
+/* one protection tile: the label, what the level means for these shares in
+   money (large, first) and the price it happens at — nothing else. The rest (how far from the price now, the
+   separate orders, who acts on it) is the tile's tooltip. Two things are
+   still written out, because they need you: a level with no order behind
+   it, and the alert having fired today. */
 function ptile(o) {
-  const {kind, label, price, ccy, cur, none, outLabel, out, notes = [], status, action = ''} = o;
+  const {kind, label, price, ccy, cur, none, warnNone, outLabel, out, tips = [], holder, callout = '', action = ''} = o;
   const dist = price != null && cur ? (price - cur) / cur * 100 : null;
-  const chip = dist == null ? '' : `<span class="pt-dist" title="from the current price">${dist >= 0 ? '+' : '−'}${fmt(Math.abs(dist), 1)}%</span>`;
+  const tip = (price == null ? [none] : [
+    dist == null ? '' : `${dist >= 0 ? '+' : '−'}${fmt(Math.abs(dist), 1)}% from the current price`,
+    ...tips, holder && holder.kind !== 'plan' ? holder.text : '']).filter(Boolean).join('\n');
+  const plan = holder && holder.kind === 'plan';
   const body = price == null
-    ? `<div class="pt-none">none</div><div class="pt-note">${none}</div>`
-    : `<div class="pt-price">${money(price, '')} <small>${ccy}</small></div>
-       ${out != null ? `<div class="pt-out"><span>${outLabel}</span><b class="${out >= 0 ? 'ok' : 'bad'}">${out >= 0 ? '+' : '−'}${money(Math.abs(out), ccy)}</b></div>` : ''}
-       ${notes.filter(Boolean).map(n => `<div class="pt-note">${n}</div>`).join('')}`;
-  return `<div class="ptile ${kind}">
-    <div class="pt-head"><span class="pt-label">${label}</span>${chip}</div>
+    ? `<div class="pt-none">none</div>${warnNone ? `<div><span class="pill bad" title="${esc(none)}">⚠ ${warnNone}</span></div>` : ''}`
+    : (out != null
+        /* the money first — what this level means for these shares against
+           what you paid — then the price it happens at */
+        ? `<div class="pt-price ${out >= 0 ? 'ok' : 'bad'}">${out >= 0 ? '+' : '−'}${money(Math.abs(out), '')} <small>${ccy}</small></div>
+           <div class="pt-out"><span>${outLabel}</span><b>${money(price, ccy)}</b></div>`
+        : `<div class="pt-price">${money(price, '')} <small>${ccy}</small></div>`) + `
+       ${plan ? `<div><span class="pill warn" title="No order exists for this level. If the price gets there, nothing happens unless you act.">⚠ plan only</span></div>` : ''}
+       ${callout}`;
+  return `<div class="ptile ${kind}" title="${esc(tip)}">
+    <div class="pt-head"><span class="pt-label">${label}</span>${action}</div>
     ${body}
-    ${status || action ? `<div class="pt-foot">${status ? (status[0] === 'plan'
-        ? `<span class="pill warn" title="No order exists for this level. If the price gets there, nothing happens unless you act.">⚠ ${status[1]}</span>`
-        : `<span><i class="pt-dot ${status[0]}" aria-hidden="true"></i>${status[1]}</span>`) : '<span></span>'}${action}</div>` : ''}
   </div>`;
 }
 
@@ -481,27 +461,7 @@ async function loadChart(id, force) {
 }
 function drawPosChart(id, d) {
   const el = document.getElementById('ch-' + id);
-  if (!el || !d) return;
-  if (!d.chart) {
-    el.innerHTML = `<p class="muted" style="font-size:.75rem">chart
-      unavailable${d.chart_error ? ' — ' + esc(d.chart_error) : ''}</p>`;
-    return;
-  }
-  const lv = d.levels || {};
-  const levels = [];
-  if (lv.avg_cost_native != null) levels.push({value: lv.avg_cost_native,
-    color: 'var(--accent)', label: 'your avg cost', dash: '5 3'});
-  if (lv.stop_loss != null) levels.push({value: lv.stop_loss,
-    color: 'var(--bad)', label: 'stop-loss', dash: '7 4'});
-  if (lv.take_profit != null) levels.push({value: lv.take_profit,
-    color: 'var(--good)', label: 'take-profit', dash: '7 4'});
-  if (lv.alert != null) levels.push({value: lv.alert,
-    color: 'var(--warn)', dash: '2 3',      // "trailing alert · −8% of 101.20"
-    label: esc('trailing alert' + (lv.alert_rule
-      ? ' · ' + String(lv.alert_rule).replace(/^trailing\s*/, '') : ''))});
-  drawChart(el, d.chart, {height: 210, volume: true, sma20: false,
-    levels, fills: (d.fills || []).map(f => ({ts: f.ts, price: f.price_native,
-      side: f.side, qty: f.qty}))});
+  if (!drawPositionChart(el, d)) return;     // charts.js — shared with the home page
   const s = document.getElementById('src-' + id);
   if (s) s.textContent = 'source: ' + (d.chart.src || 'yahoo');
 }

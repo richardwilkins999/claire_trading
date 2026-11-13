@@ -385,7 +385,12 @@ def test_mission_control_map_is_one_svg(web):
         page = c.get("/").text
         assert 'id="map"' in page and 'viewBox="0 0 1240 530"' in page
         assert "class=\"mapwrap\"" in page
-        assert "position:absolute" not in page      # no overlay layer
+        # no overlay layer: nothing on the page is positioned over the map.
+        # (The Today tab's small price bar, .pbar, is the one positioned
+        # thing here, and it sits in a table cell of the other tab.)
+        placed = [ln.strip() for ln in page.splitlines()
+                  if "position:absolute" in ln]
+        assert all(ln.startswith(".pbar ") for ln in placed), placed
         for piece in ("renderMap", "SCREEN · scans only",
                       "OTHER SYSTEMS", "BACK OFFICE", "claire_chat",
                       "VENUES", "mcp:", "id === 'book'"):
