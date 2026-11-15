@@ -79,6 +79,90 @@ def test_position_carries_book_truth_and_market_metrics(book):
     assert p["is_open"] is True               # NASDAQ open at T0+1d (Wed)
 
 
+def test_profit_after_fees_takes_off_the_buy_fee_and_the_fee_to_sell(book):
+    """The pages show profit AFTER fees: the +200 price gain, less the 1
+    already paid on the buy, less the 1 it would cost to sell (flat 1 a
+    trade). The before-fees figure stays as it was."""
+    d = portfolio.build(book, FakeMarket(), clock=lambda: T0 + 86400)
+    p = d["exchanges"]["NASDAQ"][0]
+    assert p["unrealized_base"] == 200
+    assert p["fees_paid_base"] == 1 and p["exit_fee_est_base"] == 1
+    assert p["net_base"] == 198
+    assert round(p["net_pct"], 2) == round(198 / 1001 * 100, 2)
+    assert "fee_model" not in p                 # used, not sent to the page
+    (usd,) = d["totals"]
+    assert usd["unrealized"] == 200 and usd["net"] == 198
+
+
+def test_fee_to_sell_follows_a_percentage_model_with_its_minimum():
+    pct = {"type": "pct", "pct": "0.0008", "min": "6.39"}
+    assert portfolio.exit_fee_estimate(pct, Decimal("49341")) == \
+        Decimal("39.4728")
+    assert portfolio.exit_fee_estimate(pct, Decimal("1000")) == \
+        Decimal("6.39")                         # the minimum applies
+    assert portfolio.exit_fee_estimate(pct, Decimal("-49341")) == \
+        Decimal("39.4728")                      # a short: fee on its size
+    assert portfolio.exit_fee_estimate({"type": "nonsense"}, 100) == 0
+    assert portfolio.exit_fee_estimate(None, 100) == 0
+
+
+def test_no_price_means_no_after_fees_figure_either(book):
+    class NoPrice(FakeMarket):
+        def metrics(self, syms):
+            return {}
+    d = portfolio.build(book, NoPrice(), clock=lambda: T0 + 86400)
+    p = d["exchanges"]["NASDAQ"][0]
+    assert p["net_base"] is None and p["net_pct"] is None
+    assert p["fees_paid_base"] == 1             # the fee paid is still known
+
+
+def test_holdings_are_also_totalled_in_the_shares_own_currency():
+    """An SGD account holding a US share and a Paris share: the account
+    totals are one SGD line, but the shares are worth dollars and euros —
+    by_share_currency says how much, in each."""
+    conn = db.connect(":memory:")
+    db.init(conn)
+    r = Repo(conn)
+    r.create_account("sg", "saxo", "paper", "SGD",
+                     fee_model={"type": "flat", "per_trade": "0"}, ts=T0)
+    r.deposit("sg", to_micro("100000"), ts=T0)
+    for iid, tk, ex, ccy, px, fx in (
+            ("NASDAQ:NVDA", "NVDA", "NASDAQ", "USD", "100", "1.3"),
+            ("PARIS:ACA", "ACA", "PARIS", "EUR", "15", "1.5")):
+        r.add_instrument(iid, tk, ex, ccy)
+        r.create_order(id="o" + tk, account_id="sg", instrument_id=iid,
+                       side="buy", qty=to_micro("10"), expires_at=T0 + 999,
+                       ts=T0)
+        r.record_fill("o" + tk, broker_fill_id="f" + tk, qty=to_micro("10"),
+                      price_native=to_micro(px), fx_rate=to_micro(fx), ts=T0)
+
+    class M:
+        def metrics(self, syms):
+            return {s: ({"price": 120, "currency": "USD"} if "NVDA" in s
+                        else {"price": 14, "currency": "EUR"}) for s in syms}
+
+        def fx(self, a, b):
+            return Decimal("1.3") if a == "USD" else Decimal("1.5")
+    d = portfolio.build(conn, M(), clock=lambda: T0 + 60, env={})
+    (sgd,) = d["totals"]                      # the account's money: one line
+    assert sgd["ccy"] == "SGD" and sgd["value"] == 120 * 10 * 1.3 + 14 * 10 * 1.5
+    eur, usd = d["by_share_currency"]         # the shares' own: sorted
+    assert eur == {"ccy": "EUR", "positions": 1, "unpriced": 0,
+                   "value": 140, "cost": 150, "gain": -10}
+    assert usd == {"ccy": "USD", "positions": 1, "unpriced": 0,
+                   "value": 1200, "cost": 1000, "gain": 200}
+
+
+def test_share_currency_totals_count_an_unpriced_holding_without_valuing_it(book):
+    class NoPrice(FakeMarket):
+        def metrics(self, syms):
+            return {}
+    d = portfolio.build(book, NoPrice(), clock=lambda: T0 + 86400)
+    assert d["by_share_currency"] == [{"ccy": "USD", "positions": 1,
+                                       "unpriced": 1, "value": 0, "cost": 0,
+                                       "gain": 0}]
+
+
 def test_levels_come_from_your_fills_and_your_thesis(book):
     d = portfolio.build(book, FakeMarket(), clock=lambda: T0 + 60)
     lv = d["exchanges"]["NASDAQ"][0]["levels"]

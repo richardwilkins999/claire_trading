@@ -540,6 +540,13 @@ class Handler(SystemViews, RunViews, OrderViews, Actions, BaseHTTPRequestHandler
                 if not self._paired():
                     raise HTTPError(403, "dashboard not paired")
                 return self._send(200, self._position_floor(body))
+            if u.path == "/api/position-levels":
+                # move a HELD position's stop-loss / take-profit — resting
+                # orders that sell by themselves, so a money-path action:
+                # the key is re-checked here, like thesis-action
+                if not self._paired():
+                    raise HTTPError(403, "dashboard not paired")
+                return self._send(200, self._position_levels(body))
             if u.path == "/api/manual-trade":
                 # a trade you start (the Sell button) is a money-path
                 # action: same local re-check as thesis-action. Named so

@@ -2,7 +2,7 @@
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Claire — Orders</title>
-<link rel="stylesheet" href="/style.css"><script src="/nav.js"></script><script src="/orderinfo.js"></script><script src="/live.js"></script><script src="/orderform.js"></script>
+<link rel="stylesheet" href="/style.css"><script src="/nav.js"></script><script src="/orderinfo.js"></script><script src="/live.js"></script><script src="/orderform.js"></script><script src="/levels.js"></script>
 <script>nav('/orders')</script>
 <style>
   .ot td { vertical-align:top; font-size:.85rem; }
@@ -195,7 +195,12 @@ function legRow(o, parent) {
       : o.legs_at_broker === false
         ? '<span class="pill ok">working</span><br><span class="small muted">held by Claire\'s sim since ' + when(o.placed_at || o.created_at) + ' — checked against the live price every 5 minutes while the market is open</span>'
         : '<span class="pill ok">working</span><br><span class="small muted">at the broker since ' + when(o.placed_at || o.created_at) + '</span>'}</td>
-    <td class="act"></td></tr>`;
+    <td class="act">${attached ? '' : o.can_change
+      ? `<button class="ghost" onclick="levelsOpen(${jsArg(o.account_id + '|' + o.instrument_id)}, {${stop ? 'stop' : 'target'}: null})"
+           title="move this ${stop ? 'stop-loss' : 'take-profit'} to another price">Edit…</button>`
+      : `<span class="muted small" title="${esc(stop && o.trail_is_stop
+           ? 'a trailing stop held at Saxo follows the price by itself — its distance cannot be changed from the desk'
+           : (o.venue_label || 'this broker') + ' does not let the desk change it once the trade is done')}">🔒 fixed</span>`}</td></tr>`;
 }
 /* an entry's stop/target that the broker does not hold yet (the order is
    still queued here): listed so every buy shows its stop */
@@ -267,7 +272,10 @@ function renderGroups() {
     }
     if (working.length) body += grpRow(`Protecting your shares (${working.length})`,
       'they work at the broker even when Claire is off; when one fills the other is cancelled')
-      + working.map(l => legRow(l, null)).join('');
+      + working.map(l => legRow(l, null)).join('')
+      /* the editor for these levels opens here (levels.js), one per account */
+      + [...new Set(working.map(l => l.account_id + '|' + l.instrument_id))].map(k =>
+          `<tr class="sub"><td colspan="8"><div id="lvlbox-${esc(k)}"></div></td></tr>`).join('');
     if (s.triggers.length) body += grpRow(`Price triggers (${s.triggers.length})`)
       + s.triggers.map(triggerRow).join('');
     const counts = [s.entries.length && `${s.entries.length} order${s.entries.length > 1 ? 's' : ''}`,
@@ -283,6 +291,7 @@ function renderGroups() {
         <th class="num">Value / outcome</th><th>Account</th><th>Status</th><th><span class="sr">Edit or cancel</span></th></tr>${body}</table></div>`;
   }).join(''));
   renderDoneTriggers();
+  levelsRestore();                 /* an open editor survives the refresh */
 }
 function renderDoneTriggers() {
   const done = (DATA.triggers || []).filter(t => t.status !== 'active');
@@ -572,6 +581,7 @@ async function loadOrders() {
 }
 /* reports "updated 12:03" / "cannot reach Claire" in the menu bar */
 const load = tracked(loadOrders);
+levelsSaved = () => load();
 load();
 poll(load, 30000);
 </script>

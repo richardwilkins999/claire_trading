@@ -27,11 +27,13 @@
     yet are tracked on <a href="/orders">Orders</a>, where you can edit or
     cancel them.</p>
   <details id="decided-box" style="margin-top:1rem">
-    <summary><b>Desk passed — no action needed</b> <span class="muted" id="decided-n"></span></summary>
+    <summary><b>Desk passed, or a buy expired — no action needed</b> <span class="muted" id="decided-n"></span></summary>
     <p class="muted" style="font-size:.75rem"><b>PASS</b> means the desk
     studied the stock and decided not to trade it. A PASS never comes to you
     for approval, so these finished on their own. You can still override one
-    and trade it anyway.</p>
+    and trade it anyway. A <b>buy that expired</b> — its approval ran out, or
+    its order was never filled — bought nothing; you can send it to approval
+    again.</p>
     <div id="decided"></div>
   </details>
   <details id="archive-box" style="margin-top:.6rem" ontoggle="if (this.open) loadArchive()">
@@ -300,8 +302,12 @@ function renderDecided() {
           <span class="muted">${esc(r.state)} ${ago(r.at)}</span>
           ${r.trigger ? `<span class="muted"> · ⟲ ${esc(r.trigger)}</span>`
             : ''}
+          ${r.reissue ? `<span class="pill" title="${r.expired_how === 'order'
+              ? 'you approved it, but the order was never filled and ran out'
+              : 'it waited for your approval until it ran out'} — nothing was bought">${
+              r.expired_how === 'order' ? 'order never filled' : 'approval ran out'}</span>` : ''}
           ${r.overridden_by
-            ? '<span class="pill warn">overridden</span>' : ''}</summary>
+            ? `<span class="pill warn">${r.reissue ? 'sent again' : 'overridden'}</span>` : ''}</summary>
         ${(r.conditions || []).length
           ? `<ul style="margin:.4rem 0 0 1rem">${r.conditions.map(c =>
               `<li>${esc(c)}</li>`).join('')}</ul>`
@@ -310,7 +316,7 @@ function renderDecided() {
         ${evidence(r)}
         ${r.overridable ? overrideForm(r) : r.overridden_by
           ? `<p class="muted" style="margin-top:.5rem">You already sent this to
-             the gate as <b>${esc(r.overridden_by)}</b> — it is above, or
+             the gate${r.reissue ? ' again' : ''} as <b>${esc(r.overridden_by)}</b> — it is above, or
              already decided.</p>` : ''}
         <p style="margin-top:.4rem"><a href="/trading#${esc(r.id)}" title="run ${esc(r.id)}">the full run →</a></p>
       </details>`).join('');
@@ -380,17 +386,22 @@ const OV = {};                    // per PASS: {lead, touched}
 function overrideForm(r) {
   const id = esc(r.id), J = jsArg(r.id), c = CTX[r.id] || {};
   const ccy = esc(((c.quote || {}).currency) || c.currency || '');
-  OV[r.id] = OV[r.id] || {lead: 'amount', touched: false};
+  /* a buy that expired starts from the stop-loss / take-profit it had
+     (`touched`: the suggester leaves them alone); a PASS has no levels */
+  const re = !!r.reissue, had = v => re && v != null ? esc(v) : '';
+  OV[r.id] = OV[r.id] || {lead: 'amount', touched: re && r.stop != null};
   return `<div class="card" style="margin-top:.6rem;padding:.6rem .8rem">
-    <h3 style="font-size:.95rem;margin:0">Override — trade it anyway</h3>
-    <p class="muted" style="font-size:.75rem">This does not place an order. It
+    <h3 style="font-size:.95rem;margin:0">${re ? 'Expired — send it to approval again' : 'Override — trade it anyway'}</h3>
+    <p class="muted" style="font-size:.75rem">${re ? `The desk said <b>buy</b>, but ${
+      r.expired_how === 'order' ? 'the order was never filled and ran out' : 'the approval ran out'} — nothing was bought.
+      The stop-loss and take-profit below are the ones it had${r.entry != null ? ` (it priced the buy at ${esc(r.entry)})` : ''}; check them against the price now. ` : ''}This does not place an order. It
       sends <b>${esc(r.ticker)}</b> to the approval gate with these prices, shares
       and account, where you still approve it as normal.</p>
     <div id="ovctx-${id}">${ctxTable(CTX[r.id])}</div>
     <div class="ord">
     <div class="row">
       <label for="ovdir-${id}">Direction <select id="ovdir-${id}" onchange="ovDirChanged(${J})">
-        <option value="buy">Buy</option><option value="sell">Sell</option></select></label>
+        <option value="buy">Buy</option>${re ? '' : '<option value="sell">Sell</option>'}</select></label>
       <label for="ovmode-${id}">Order type <select id="ovmode-${id}" onchange="ovModeChanged(${J})">
         <option value="market">At the current price — fills now</option>
         <option value="manual">Manual — set your own price</option></select></label>
@@ -404,9 +415,9 @@ function overrideForm(r) {
         <input id="oventry-${id}" type="number" step="any" min="0" readonly class="locked"
           oninput="ovLimitTyped(${J})"> <span class="muted">${ccy}/share</span></label>
       <span id="ovlevels-${id}" style="display:contents">
-        <label for="ovstop-${id}"><span id="ovstopword-${id}">Stop-loss</span> <input id="ovstop-${id}" type="number" step="any" min="0"
+        <label for="ovstop-${id}"><span id="ovstopword-${id}">Stop-loss</span> <input id="ovstop-${id}" type="number" step="any" min="0" value="${had(r.stop)}"
           oninput="OV[${J}].touched = true; updOverride(${J})"> <span class="muted">${ccy}</span></label>
-        <label for="ovtarget-${id}">Take-profit <input id="ovtarget-${id}" type="number" step="any" min="0" placeholder="none"
+        <label for="ovtarget-${id}">Take-profit <input id="ovtarget-${id}" type="number" step="any" min="0" placeholder="none" value="${had(r.target)}"
           oninput="OV[${J}].touched = true; updOverride(${J})"> <span class="muted">${ccy} · optional</span></label>
         <label for="ovtrail-${id}" data-trail="ov:${id}" title="not an order: the watcher alerts you if the price falls this far below its best since you bought"><span class="trail-name">Trailing alert</span>
           <input id="ovtrail-${id}" type="number" step="0.5" min="0.5" max="90" value="8"
@@ -422,10 +433,10 @@ function overrideForm(r) {
         oninput="OV[${J}].lead = 'shares'; updOverride(${J})"></label>
       <span class="muted small" id="ovsznote-${id}"></span>
     </div>
-    <div class="row"><input id="ovnote-${id}" placeholder="why are you overruling the desk?"
-      aria-label="Why are you overruling the desk? (optional)" style="flex:1" maxlength="200"></div>
+    <div class="row"><input id="ovnote-${id}" placeholder="${re ? 'a note for the record (optional)' : 'why are you overruling the desk?'}"
+      aria-label="${re ? 'A note for the record (optional)' : 'Why are you overruling the desk? (optional)'}" style="flex:1" maxlength="200"></div>
     <div class="row"><span style="flex:1"></span>
-      <button onclick="override(${J})">⚠ Send to approval →</button></div>
+      <button onclick="override(${J})">${re ? 'Send to approval again →' : '⚠ Send to approval →'}</button></div>
     <p class="small" id="ovmsg-${id}"></p>
     </div>
   </div>`;
@@ -501,6 +512,11 @@ function ovValues(id) {
           qty: fv('ovqty-' + id), amount: fv('ovamt-' + id), note: g('note') || null};
 }
 
+/* the pill on the form's order summary: an override, or a buy sent again */
+function ovLead(id) {
+  const r = (DATA.decided || []).find(x => x.id === id) || {};
+  return `<span class="pill warn">${r.reissue ? 'sent again' : 'override'}</span>`;
+}
 function updOverride(id) {
   const box = document.getElementById('ovctx-' + id);
   if (box) box.innerHTML = ctxTable(CTX[id]);
@@ -549,14 +565,14 @@ function updOverride(id) {
                   trail: w.trail || 0, fee: feeFor(acct.fee_model, w.amount || 0), amount: w.amount,
                   ticker: r.ticker || c.ticker, lot, r2y: c.range2y, lv: c.levels,
                   exchange: c.exchange,
-                  lead: '<span class="pill warn">override</span>', drag: 'ov:' + id}) +
+                  lead: ovLead(id), drag: 'ov:' + id}) +
       (problems.length ? sumRows(problems).replace('<div class="osum-title">Order summary</div>', '') : '');
   } else {
     sum.innerHTML = '<div class="osum-title">Order summary</div>' +
       sellSummary({shares: w.qty, px, ccy, acct, mkt: w.mkt, live, lim: w.entry, ticker: r.ticker || c.ticker,
                    exit: m === 'exit', held: c.held_total || 0, avg: (c.avg_cost || {})[acct.id],
                    stop: w.stop, tgt: w.target, fx, r2y: c.range2y, lv: c.levels,
-                   lead: '<span class="pill warn">override</span>', drag: 'ov:' + id}) +
+                   lead: ovLead(id), drag: 'ov:' + id}) +
       (problems.length ? sumRows(problems).replace('<div class="osum-title">Order summary</div>', '') : '');
   }
 }
@@ -580,9 +596,13 @@ async function override(id) {
       ` (${(Math.abs(entry - v.stop) / entry * 100).toFixed(1)}% away)` +
       (v.target ? `, take-profit ${v.target}` : '') +
       (v.trail ? `, ${trailName(acct, (CTX[id] || {}).exchange)} ${v.trail}%` : '');
-  if (!await ask(`Overrule the desk on ${r.ticker}?\n\nThe desk's verdict was ` +
-    `PASS (no trade), with ${convictionText(r.conviction)}. You are sending it to the ` +
-    `approval gate as ${what}, on ${acct.label || v.broker}.\n\nNothing trades until you approve it there.`)) return;
+  if (!await ask(r.reissue
+    ? `Send ${r.ticker} to approval again?\n\nThe desk said BUY, but ` +
+      `${r.expired_how === 'order' ? 'the order was never filled and ran out' : 'the approval ran out'} — nothing was bought. ` +
+      `You are sending it to the approval gate as ${what}, on ${acct.label || v.broker}.\n\nNothing trades until you approve it there.`
+    : `Overrule the desk on ${r.ticker}?\n\nThe desk's verdict was ` +
+      `PASS (no trade), with ${convictionText(r.conviction)}. You are sending it to the ` +
+      `approval gate as ${what}, on ${acct.label || v.broker}.\n\nNothing trades until you approve it there.`)) return;
   try {
     await api('/api/override', {work_item_id: id, direction: v.dir, entry, stop: v.stop,
                                 target: v.target, trail_pct: v.trail, note: v.note,
@@ -868,10 +888,15 @@ function card(a) {
           ${a.trigger ? '⟲ ' + esc(a.trigger) + ' · ' : ''}
           ${a.llm_calls} agent calls · $${fmt(a.llm_cost, 4)} ·
           <span title="after this the approval can no longer be used — stale prices should not trade">expires ${esc(fmtUntil(a.expires_at))}</span></p>
-        ${a.override_of ? `<p class="warn" style="font-size:.78rem">
+        ${a.override_of ? ((a.trigger || '').startsWith('re-issue of expired ')
+          ? `<p class="warn" style="font-size:.78rem">
+          ⚠ <b>Sent again by you.</b> The desk said BUY on this, but it expired with
+          nothing bought — the evidence below is that earlier run's, and the purchase
+          price and stop-loss are the ones you confirmed. Nothing here re-analysed the stock.</p>`
+          : `<p class="warn" style="font-size:.78rem">
           ⚠ <b>Your override.</b> The desk's verdict on this was PASS (no trade) — the
           evidence below is that run's, and the purchase price and stop-loss are yours.
-          Nothing here re-analysed the position.</p>` : ''}
+          Nothing here re-analysed the position.</p>`) : ''}
         ${manual ? `<p class="warn" style="font-size:.78rem">
           <b>Your own trade</b> — no agent analysed it${a.prior_run
           ? '; the evidence below is the run that opened the position' : ''}.

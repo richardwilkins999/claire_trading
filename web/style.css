@@ -371,3 +371,14 @@ tr.sel td { background:#0f2233; }
   .statstrip .stat { flex:1 1 44%; }
   button, select, input { min-height:2.2rem; }
 }
+
+/* the editor for a held position's levels (levels.js: Home and Orders) */
+.lvled { border:1px dashed var(--line); border-radius:8px; padding:.4rem .6rem; background:var(--bg); }
+.lvled-row { display:flex; flex-wrap:wrap; align-items:center; gap:.4rem .9rem; font-size:.8rem; }
+.lvled-row label { color:var(--muted); white-space:nowrap; }
+.lvled-row label.locked { opacity:.6; }
+.lvled-row input { width:6.2rem; margin-left:.3rem; }
+.lvled-msg { font-size:.76rem; margin-top:.3rem; line-height:1.45; }
+.lvled-msg .bad { color:var(--bad); } .lvled-msg .warn { color:var(--warn); }
+tr.sub > td { padding:0 !important; border:0 !important; }
+tr.sub > td > div:not(:empty) { padding:.3rem .5rem .55rem; }

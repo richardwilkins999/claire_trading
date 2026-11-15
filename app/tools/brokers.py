@@ -310,6 +310,23 @@ class PaperSimBroker:
                         lb.status = "cancelled"
                         self._save(lid)
 
+    def change_leg(self, broker_order_id, price, *, symbol=None) -> dict:
+        """Move a resting stop-loss / take-profit to a new price (the Edit
+        on a held position, app/level_change.py). The sim holds the order
+        itself, so this is the whole change. Returns the price it now has."""
+        b = self.orders.get(broker_order_id)
+        if b is None or b.kind == "entry":
+            raise BrokerError(f"no resting stop-loss or take-profit "
+                              f"{broker_order_id}")
+        if b.status not in ("placed", "partially_filled"):
+            raise BrokerError(f"that order is {b.status} — nothing to change")
+        px = Decimal(str(price))
+        if px <= 0:
+            raise BrokerError("the price must be more than zero")
+        b.trigger = px
+        self._save(broker_order_id)
+        return {"price": str(px), "verified": True}
+
     def related_order_ids(self, order_id) -> list:
         return [k for k, b in self.orders.items() if b.parent == order_id]
 

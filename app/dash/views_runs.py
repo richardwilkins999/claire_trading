@@ -113,17 +113,28 @@ class RunViews:
         # a PASS never reaches the gate, so an empty Approvals page used
         # to be the only sign a run had concluded at all
         decided = []
-        for r in self.ctx.conn.execute(
-                "SELECT id, ticker, state, thesis_json, updated_at,"
+        week = int(self.ctx.clock()) - 7 * 86400
+        cols = ("SELECT id, ticker, state, thesis_json, updated_at,"
                 " trigger, override_of FROM work_items"
-                " WHERE thesis_json IS NOT NULL"
-                " AND state IN ('done','rejected','expired')"
-                " AND updated_at > ? ORDER BY updated_at DESC LIMIT 12",
-                (int(self.ctx.clock()) - 7 * 86400,)):
+                " WHERE thesis_json IS NOT NULL AND updated_at > ?")
+        recent = self.ctx.conn.execute(
+            cols + " AND state IN ('done','rejected','expired')"
+            " ORDER BY updated_at DESC LIMIT 12", (week,)).fetchall()
+        # every run that EXPIRED this week is listed as well, however many
+        # passes have concluded since: an expired buy can be sent to
+        # approval again, and must not scroll out of reach behind them
+        seen = {r["id"] for r in recent}
+        expired = [r for r in self.ctx.conn.execute(
+            cols + " AND state='expired' ORDER BY updated_at DESC LIMIT 30",
+            (week,)).fetchall() if r["id"] not in seen]
+        for r in sorted([*recent, *expired],
+                        key=lambda r: r["updated_at"], reverse=True):
             try:
                 t = json.loads(r["thesis_json"])
             except ValueError:
                 continue
+            if r["id"] not in seen and t.get("direction") != "buy":
+                continue                    # the extra rows: expired BUYS only
             # already overturned? then the override owns the decision and
             # offering a second one would double-buy the same thesis
             ovr = self.ctx.conn.execute(
@@ -143,8 +154,23 @@ class RunViews:
                 # the same evidence the approval cards show, so a PASS can
                 # be read on its merits rather than taken on trust
                 "reports": self._reports_for(r["id"]),
-                "overridable": (t.get("direction") == "pass"
-                                and not r["override_of"] and not ovr),
+                # a PASS can be overridden; a BUY that expired with nothing
+                # bought (its approval ran out, or its order was never
+                # filled) can be sent to approval again — `reissue`, with
+                # the levels it had, to start the form from
+                "overridable": ((t.get("direction") == "pass"
+                                 and not r["override_of"] and not ovr)
+                                or (t.get("direction") == "buy"
+                                    and r["state"] == "expired" and not ovr)),
+                "reissue": (t.get("direction") == "buy"
+                            and r["state"] == "expired"),
+                "expired_how": (None if r["state"] != "expired" else
+                                "order" if self.ctx.conn.execute(
+                                    "SELECT 1 FROM orders WHERE"
+                                    " work_item_id=? LIMIT 1",
+                                    (r["id"],)).fetchone() else "approval"),
+                "entry": t.get("entry_high") or t.get("entry_low"),
+                "stop": t.get("stop_loss"), "target": t.get("take_profit"),
                 "overridden_by": ovr["id"] if ovr else None,
                 "trigger": r["trigger"], "at": r["updated_at"]})
         failed = approvals.failed_approvals(self.ctx.conn, clock=self.ctx.clock)

@@ -115,7 +115,7 @@ def test_today_and_portfolio_read_a_position_the_same_way():
         assert "protectionFacts(p)" in src and "protectionMoney(p, f)" in src, name
         # neither page picks the acting order or works out the money itself
         assert "l.leg === kind" not in src and "plTotal" not in src, name
-    assert "protectionLine(f)" in pf and "ladder(" not in pf
+    assert "protectionLine(f, {nowCcy: true, drag: k" in pf and "ladder(" not in pf
 
 
 def test_today_row_is_one_compact_line_led_by_the_money():
@@ -138,22 +138,81 @@ def test_today_row_is_one_compact_line_led_by_the_money():
 
 
 def test_portfolio_protection_tiles_show_the_figures_only():
-    """A tile is its label, the price and the money outcome. How far from the
-    price, the separate orders and who acts are its tooltip; a level with no
-    order behind it and a missing stop-loss are still written out."""
+    """A tile is its label and the money outcome. Its price is on the line
+    below it (once); how far from the price, the separate orders and who
+    acts are its tooltip; a level with no order behind it and a missing
+    stop-loss are still written out."""
     pf = (WEB / "portfolio.html").read_text()
     assert '<div class="ptile ${kind}" title="${esc(tip)}">' in pf
     for gone in ("pt-dist", "pt-note", "pt-foot", "pt-orders", "pt-dot"):
         assert gone not in pf, gone
-    for kept in ("pt-price", "pt-out", "⚠ plan only", "warnNone: 'no stop-loss'",
-                 "callout: alertFired(lv, ccy)", "floorOpen("):
+    assert "pt-out" not in pf            # no "if it is hit" line (2026-11-15)
+    assert "${outLabel}, against what you paid" in pf        # it is the tooltip
+    for kept in ("pt-price", "⚠ plan only", "warnNone: 'no stop-loss'",
+                 "callout: alertFired(lv, ccy)", "levelsOpen("):
         assert kept in pf, kept
     assert "pt-dot" not in (WEB / "orderform.css").read_text()
-    # the money is the large first figure; the price it happens at is under it
+    # the money is the large figure; the price is not repeated in the tile
     tile = pf[pf.index("function ptile(o)"):pf.index("function posCard(p)")]
     big = tile.index('<div class="pt-price ${out >= 0')
     assert "money(Math.abs(out), '')" in tile[big:tile.index("</div>", big)]
-    assert big < tile.index("<b>${money(price, ccy)}</b>")
+    assert "<b>${money(price, ccy)}</b>" not in tile
+    assert "`${label} at ${money(price, ccy)}`" in tile       # the tooltip
+
+
+def test_portfolio_card_says_each_thing_once():
+    """2026-11-15: the card repeated itself — the share count twice, the
+    average cost twice, the price now twice, every level's price twice.
+    Each is now in one place: shares in the header, every price on the
+    price line."""
+    pf = (WEB / "portfolio.html").read_text()
+    card = pf[pf.index("function posCard(p)"):pf.index("async function loadChart")]
+    assert "<span>current price</span>" not in card
+    assert "you bought" not in card and "@ avg" not in card
+    assert card.count("fmt(p.qty, 4)") == 1                   # the header
+    assert "protectionLine(f, {nowCcy: true, drag: k" in pf
+    for kept in ("<span>today</span>", "<span>day range</span>",
+                 "<span>volume</span>", "cost <b>", "fees <b>"):
+        assert kept in card, kept
+    # cost and fees are in the card's top line, not a row of their own
+    head = card[card.index("const head = `"):card.index("if (folded) return")]
+    assert "cost <b>" in head and "fees <b>" in head and "realized" in head
+    assert 'class="yours"' not in card
+
+
+def test_portfolio_cards_fold_down_to_their_top_line():
+    """Each card has a ▾ that leaves only its top line; the choice is kept
+    in the browser, there is a fold-all control, and a folded card loads no
+    chart."""
+    pf = (WEB / "portfolio.html").read_text()
+    for needle in ("const FOLDED = new Set(JSON.parse(localStorage.getItem('pfFolded')",
+                   "function toggleCard(k)", "function foldAll(on)",
+                   'aria-expanded="${!folded}"', 'id="foldbar"',
+                   "if (folded) return `<div class=\"poscard folded",
+                   "!FOLDED.has(levelsKey(p))) loadChart("):
+        assert needle in pf, needle
+
+
+def test_home_marks_levels_with_vertical_lines_not_boxes():
+    """The Today bar marks each level the way Portfolio's price line does:
+    a vertical line. A level that can be moved is the same line, draggable."""
+    home = (WEB / "index.html").read_text()
+    css = home[home.index("<style>"):home.index("</style>")]
+    assert ".pbar .t, .pbar .h {" in css
+    assert "border-radius:4px;\n    background:var(--bg); border:2px solid" not in css
+    assert ".pbar .h.stop { border-color" not in css
+    assert "level('stop', f.stop" in home and "level('target', f.tgt" in home
+    assert 'role="slider"' in home
+    # solid = fixed (.t: what you paid, and any level that cannot be moved);
+    # dashed = can be dragged (.h) — and the key says so
+    fixed = css[css.index("\n  .pbar .t {"):css.index("\n  .pbar .h {")]
+    assert "linear-gradient(var(--c), var(--c))" in fixed
+    assert "repeating" not in fixed
+    drag = css[css.index("\n  .pbar .h {"):css.index(".pbar .h:hover")]
+    assert "repeating-linear-gradient(var(--c)" in drag
+    assert ".pbar .paid" not in css                      # no dashes on "paid"
+    # no written key for it (2026-11-15: "we do not need the description")
+    assert "solid line: fixed" not in home and "k-fixed" not in home
 
 
 def test_ticker_on_today_pops_up_its_chart():
@@ -202,3 +261,67 @@ def test_chat_history_is_served_to_paired_browsers_only(web):  # noqa: F811
             {"role": "assistant", "content": "Six positions."}]
         assert d["updated_at"] == 5
         assert c.get("/api/chat-history?thread=nope").json()["messages"] == []
+
+
+def test_profit_and_loss_is_shown_after_fees():
+    """Home and Portfolio show the after-fees figure (net_base), and the sum
+    behind it — before fees, fees paid, the estimated fee to sell — is one
+    shared tooltip, so the two pages cannot disagree."""
+    web = Path(__file__).resolve().parent.parent / "web"
+    home = (web / "index.html").read_text()
+    pf = (web / "portfolio.html").read_text()
+    nav = (web / "nav.js").read_text()
+    assert "function feesNote(p)" in nav
+    for page in (home, pf):
+        assert "feesNote(p)" in page
+        assert "p.net_base" in page and "p.net_pct" in page
+        assert "perCcy(t, 'net'" in page
+        assert "p.unrealized_base" not in page   # only inside feesNote now
+    assert "after fees" in pf
+
+
+def test_portfolio_line_is_solid_when_fixed_and_dashed_when_it_can_be_moved():
+    """The same rule as Home's bar: a solid line cannot be changed (what you
+    paid, always), a dashed one can be dragged. One editor — the shared one
+    — for all three levels; Portfolio's own trailing-alert editor is gone."""
+    pf = (WEB / "portfolio.html").read_text()
+    js = (WEB / "orderform.js").read_text()
+    css = (WEB / "orderform.css").read_text()
+    assert '<script src="/levels.js"></script>' in pf
+    assert "movable: {" in pf and "can.stop.ok" in pf and "can.target.ok" in pf
+    assert "window.onLadderDrag" in pf and "levelsPreset(id, part, moved)" in pf
+    assert 'id="lvlbox-${esc(k)}"' in pf and "levelsRestore()" in pf
+    assert "solid line: fixed" not in pf and "ladder-key" not in pf + css
+    for gone in ("FLOOR_ED", "floorOpen", "floorSave", "floorEditor", "pfloor"):
+        assert gone not in pf, gone
+    # the shared line: only the marks named movable can be dragged
+    assert "(!opt.movable || !!opt.movable[k])" in js
+    assert "' movable' : ' fixed'" in js
+    fixed = css[css.index(".lm.fixed .ltick {"):]
+    assert "background:var(--c" in fixed[:fixed.index("}")]
+    mov = css[css.index(".lm.movable .ltick {"):]
+    assert "dashed" in mov[:mov.index("}")]
+    # the buy forms' lines are untouched: the rule needs opt.movable
+    assert ".ladder.marks-fixed .lm.fixed" in css
+    lv = (WEB / "levels.js").read_text()
+    assert "function levelsPreset(key, part, price)" in lv
+    assert "dragPreset" not in (WEB / "index.html").read_text()
+
+
+def test_portfolio_card_buttons_share_a_line_and_figures_explain_themselves():
+    pf = (WEB / "portfolio.html").read_text()
+    card = pf[pf.index("function posCard(p)"):pf.index("async function loadChart")]
+    row = card[card.index('<div class="row pbtns"'):]
+    row = row[:row.index("</div>")]
+    assert "sellButton(sk)" in row and "toggleChart(" in row
+    assert ".poscard .mgrid b { font-size:1.15rem" in pf
+    for tip in ("against yesterday's close", "lowest and highest price traded today",
+                "multiple of an average day", "cash plus the market value",
+                "if every holding were sold now"):
+        assert tip in pf, tip
+
+
+def test_portfolio_shows_holdings_in_the_shares_own_currency():
+    pf = (WEB / "portfolio.html").read_text()
+    assert 'id="strip2"' in pf and "d.by_share_currency" in pf
+    assert "perCcy(sc, 'value')" in pf and "perCcy(sc, 'gain', {signed: true})" in pf

@@ -120,6 +120,15 @@ def build():
             (wi, tk, state, wi, NOW + 3600,
              json.dumps({**thesis, "ticker": tk, "currency": ccy}),
              NOW - 7200, NOW - 600))
+    # a BUY whose approval ran out: Approvals offers to send it again
+    conn.execute(
+        "INSERT INTO work_items (id, kind, ticker, state, thread_id,"
+        " thesis_json, trigger, created_at, updated_at) VALUES"
+        " ('wi_2026-11-12_AAPL_ex', 'pipeline', 'AAPL', 'expired',"
+        " 'wi_2026-11-12_AAPL_ex', ?, 'preview data', ?, ?)",
+        (json.dumps({**thesis, "ticker": "AAPL", "currency": "USD",
+                     "entry_low": 228, "entry_high": 229, "stop_loss": 214,
+                     "take_profit": 262}), NOW - 90000, NOW - 4000))
     for oid, acct, inst, qty, px, wi in (
             ("o1", "alpaca-paper", "NASDAQ:NVDA", "10", "100",
              "wi_2026-11-10_NVDA_ab"),
@@ -131,6 +140,20 @@ def build():
         r.record_fill(oid, broker_fill_id="f" + oid, qty=to_micro(qty),
                       price_native=to_micro(px), fx_rate=to_micro("1"),
                       ts=NOW - 3600)
+    # NVDA is protected by the built-in sim: a stop-loss and a take-profit
+    # resting as orders, so the Today bar has handles to drag and the Orders
+    # page an Edit — and a trailing alert
+    from app import protection
+    from app.tools.brokers import PaperSimBroker
+    sim = PaperSimBroker(protect=True, store=conn, venue="alpaca")
+    placed = sim.place_bracket(symbol="NVDA", side="buy", qty=10, limit=100,
+                               stop_loss=92, take_profit=130)
+    protection.persist_legs(r, parent="o1", legs=placed.legs, side="sell",
+                            qty=to_micro("10"), ts=NOW - 3600,
+                            work_item_id="wi_2026-11-10_NVDA_ab")
+    conn.execute("INSERT INTO price_alerts (instrument_id, account_id, side,"
+                 " rule, threshold, armed, peak_base) VALUES"
+                 " ('NASDAQ:NVDA','alpaca-paper',1,'trail_pct',8,1,118.0)")
     # one buy still working at the venue
     r.create_order(id="o4", account_id="alpaca-paper",
                    instrument_id="NASDAQ:AAPL", side="buy",
@@ -145,8 +168,36 @@ def build():
     return conn, r
 
 
+def levels_in_process(conn, repo):
+    """There is no claire-api behind the preview. So that Save on a moved
+    stop-loss / take-profit can be tried, that one call is answered here by
+    the same code claire-api runs, against the throwaway book's own sim."""
+    import time
+
+    from app import level_change
+    from app.dash import claire_api
+    from app.dash.common import HTTPError
+    from app.tools.brokers import PaperSimBroker
+    real_post = claire_api.post
+
+    def post(ctx, path, body=None, **kw):
+        if path != "/internal/levels":
+            return real_post(ctx, path, body, **kw)
+        sim = PaperSimBroker(protect=True, store=conn, venue="alpaca")
+        try:
+            return level_change.change(
+                repo, {"alpaca": sim}, body["account_id"],
+                body["instrument_id"], stop=body.get("stop"),
+                target=body.get("target"), price=body.get("price"),
+                ts=int(time.time()), env={})
+        except level_change.LevelChangeError as e:
+            raise HTTPError(e.status, str(e))
+    claire_api.post = post
+
+
 def main(port=7799):
     conn, repo = build()
+    levels_in_process(conn, repo)
     srv = create_server(conn, repo, Market(), secret="preview-secret",
                         dash_key="preview-key",
                         api_base="http://127.0.0.1:9",      # discard port

@@ -103,7 +103,7 @@ def test_a_stop_that_is_not_a_floor_is_refused(tmp_path):
 
 
 def test_only_a_pass_can_be_overridden(tmp_path):
-    _, _, desk = _desk(tmp_path, thesis_direction="buy")
+    _, _, desk = _desk(tmp_path, thesis_direction="buy")   # a buy, done
     with pytest.raises(ValueError, match="only a pass"):
         desk.override("wi_pass", direction="buy", entry=106.0, stop=98.0,
                       background=False)
@@ -392,3 +392,171 @@ def test_london_levels_in_pence_are_brought_to_the_quotes_pounds():
         {"sma20": 250.0, "atr14": 4.0}
     assert quote_units({"sma20": 30.0}, 9.48) == {"sma20": 30.0}
     assert quote_units({}, 9.48) == {} and quote_units(None, 9.48) is None
+
+
+# ── a BUY that expired can be sent to approval again (2026-11-15) ──────────
+def test_an_expired_buy_can_be_sent_to_approval_again(tmp_path):
+    """The desk said buy; the approval ran out (or the order was never
+    filled), so nothing was bought. Sending it again is the override's path:
+    the gate, a token, the human's (checked) levels — nothing more."""
+    conn, repo, desk = _desk(tmp_path, thesis_direction="buy",
+                             state="expired")
+    wi = desk.override("wi_pass", direction="buy", entry=101.0, stop=91.0,
+                       target=120.0, note="still good", background=False)
+    row = conn.execute("SELECT * FROM work_items WHERE id=?", (wi,)).fetchone()
+    assert row["state"] == "awaiting_approval" and row["kind"] == "override"
+    assert row["approval_token"] and row["token_state"] == "minted"
+    assert row["override_of"] == "wi_pass"
+    assert row["trigger"] == "re-issue of expired wi_pass"
+    t = json.loads(row["thesis_json"])
+    assert (t["direction"], t["entry_low"], t["stop_loss"]) == ("buy", 101.0,
+                                                                91.0)
+    assert any("RE-ISSUED BY YOU" in c and "still good" in c
+               for c in t["conditions"])
+    assert not any("OVERRIDE of a PASS" in c for c in t["conditions"])
+    assert conn.execute("SELECT COUNT(*) c FROM orders").fetchone()["c"] == 0
+    ev = conn.execute("SELECT actor, payload FROM events WHERE item_id=? AND"
+                      " to_state='override'", (wi,)).fetchone()
+    assert ev["actor"] == "human" and json.loads(ev["payload"])["reissue"]
+    # once only, while that one is alive
+    with pytest.raises(ValueError, match="already overridden"):
+        desk.override("wi_pass", direction="buy", entry=101.0, stop=91.0,
+                      background=False)
+
+
+@pytest.mark.parametrize("state", ["done", "rejected"])
+def test_a_buy_that_did_not_expire_is_still_refused(tmp_path, state):
+    """A buy that was filled (done) or that you rejected is not an expired
+    order: sending it again would buy twice, or overrule your own no."""
+    _, _, desk = _desk(tmp_path, thesis_direction="buy", state=state)
+    with pytest.raises(ValueError, match="only a pass, or a buy that expired"):
+        desk.override("wi_pass", direction="buy", entry=101.0, stop=91.0,
+                      background=False)
+
+
+def test_an_expired_buy_is_sent_again_only_as_a_buy_with_sane_levels(tmp_path):
+    conn, _, desk = _desk(tmp_path, thesis_direction="buy", state="expired")
+    with pytest.raises(ValueError, match="only be sent again as a buy"):
+        desk.override("wi_pass", direction="sell", entry=101.0, stop=110.0,
+                      background=False)
+    with pytest.raises(Exception):                 # the Thesis validator
+        desk.override("wi_pass", direction="buy", entry=101.0, stop=105.0,
+                      background=False)
+    with pytest.raises(ValueError, match="needs a stop"):
+        desk.override("wi_pass", direction="buy", entry=101.0, stop=None,
+                      background=False)
+    assert conn.execute("SELECT COUNT(*) c FROM work_items WHERE"
+                        " override_of IS NOT NULL").fetchone()["c"] == 0
+
+
+def test_an_expired_sell_is_not_reissued(tmp_path):
+    _, _, desk = _desk(tmp_path, thesis_direction="sell", state="expired")
+    with pytest.raises(ValueError, match="only a pass, or a buy that expired"):
+        desk.override("wi_pass", direction="sell", entry=101.0, stop=110.0,
+                      background=False)
+
+
+def test_an_expired_buy_that_somehow_filled_is_refused(tmp_path):
+    """Belt and braces: an expired run has no fills (a part-filled order ends
+    'done'), but if the book says shares were bought, it is not re-issued."""
+    from app.accounting.money import to_micro
+    conn, repo, desk = _desk(tmp_path, thesis_direction="buy",
+                             state="expired")
+    repo.create_account("acct", "alpaca", "paper", "USD",
+                        fee_model={"type": "flat", "per_trade": "0"}, ts=T0)
+    repo.deposit("acct", to_micro("10000"), ts=T0)
+    repo.create_order(id="o1", account_id="acct",
+                      instrument_id="NASDAQ:SBUX", side="buy",
+                      qty=to_micro("5"), expires_at=T0 + 999, ts=T0,
+                      work_item_id="wi_pass")
+    repo.record_fill("o1", broker_fill_id="f1", qty=to_micro("5"),
+                     price_native=to_micro("100"), fx_rate=to_micro("1"),
+                     ts=T0)
+    with pytest.raises(ValueError, match="part of that buy was filled"):
+        desk.override("wi_pass", direction="buy", entry=101.0, stop=91.0,
+                      background=False)
+
+
+def test_telegram_names_a_reissue_for_what_it_is():
+    from app import telegram_approvals as ta
+    assert ta.origin("override", "re-issue of expired wi_x") == \
+        "Your re-issue of a buy that expired (wi_x)"
+    assert ta.origin("override", "human override of wi_x") == \
+        "Your override of a PASS (wi_x)"
+
+
+def test_the_approvals_page_offers_the_reissue():
+    from pathlib import Path
+    page = (Path(__file__).resolve().parents[1] / "web" /
+            "approvals.html").read_text()
+    for needle in ("Expired — send it to approval again",
+                   "Send to approval again →", "r.reissue",
+                   "a buy expired — no action needed",
+                   "startsWith('re-issue of expired ')",
+                   'value="${had(r.stop)}"', 'value="${had(r.target)}"'):
+        assert needle in page, needle
+    # an expired buy is a buy: the form offers no Sell
+    assert "${re ? '' : '<option value=\"sell\">Sell</option>'}" in page
+
+
+def test_the_decided_list_marks_an_expired_buy_for_reissue(tmp_path):
+    """/api/approvals: an expired buy is offered (overridable + reissue) with
+    the levels it had; a pass is offered as before; neither once it has a
+    live override."""
+    import httpx
+
+    from tests.test_level_change import T0 as NOW, serve
+    conn, repo, desk = _desk(tmp_path, thesis_direction="buy",
+                             state="expired")
+    # the list holds the last 7 days by the dashboard's clock (NOW + 60)
+    conn.execute("UPDATE work_items SET updated_at=? WHERE id='wi_pass'",
+                 (NOW,))
+
+    class M:
+        def spark(self, syms):
+            return {}
+
+        def quote(self, s):
+            return {}
+    def decided():
+        with serve(conn, repo, M()) as (base, key):
+            d = httpx.get(base + "/api/approvals",
+                          headers={"X-Dash-Key": key}, timeout=5).json()
+        return {r["id"]: r for r in d["decided"]}
+    r = decided()["wi_pass"]
+    assert r["overridable"] and r["reissue"]
+    assert r["expired_how"] == "approval"             # no order was sent
+    assert (r["entry"], r["stop"], r["target"]) == (100.0, 90.0, None)
+    desk.override("wi_pass", direction="buy", entry=101.0, stop=91.0,
+                  background=False)
+    r = decided()["wi_pass"]
+    assert not r["overridable"] and r["overridden_by"]
+
+
+def test_an_expired_buy_stays_listed_behind_a_dozen_newer_passes(tmp_path):
+    """The list shows the 12 most recent conclusions; an expired buy from
+    earlier in the week used to fall off the end of it."""
+    import httpx
+
+    from tests.test_level_change import T0 as NOW, serve
+    conn, repo, desk = _desk(tmp_path, thesis_direction="buy",
+                             state="expired")
+    conn.execute("UPDATE work_items SET updated_at=? WHERE id='wi_pass'",
+                 (NOW - 3 * 86400,))
+    for i in range(14):                     # newer passes push it down
+        repo.create_work_item(f"wi_p{i}", "pipeline", "SBUX", ts=NOW)
+        conn.execute("UPDATE work_items SET thesis_json=?, state='done',"
+                     " updated_at=? WHERE id=?",
+                     (json.dumps({"ticker": "SBUX", "direction": "pass"}),
+                      NOW - i, f"wi_p{i}"))
+
+    class M:
+        def spark(self, syms):
+            return {}
+
+        def quote(self, s):
+            return {}
+    with serve(conn, repo, M()) as (base, key):
+        d = httpx.get(base + "/api/approvals", headers={"X-Dash-Key": key},
+                      timeout=5).json()["decided"]
+    assert len(d) == 13 and d[-1]["id"] == "wi_pass" and d[-1]["reissue"]

@@ -163,6 +163,9 @@ def origin(kind, trigger):
         src = t.split(" from ", 1)[1] if " from " in t else ""
         return "Manual trade you started" + (f" from {src}" if src else "")
     if code == run_origin.OVERRIDE:
+        if t.lower().startswith("re-issue of expired "):
+            return ("Your re-issue of a buy that expired ("
+                    + t[len("re-issue of expired "):] + ")")
         return "Your override of a PASS" + (f" ({detail})" if detail else "")
     if code == run_origin.EXIT_REVIEW:
         return "Exit review (price watcher)" + more

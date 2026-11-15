@@ -10,6 +10,7 @@ import re
 
 
 from ..accounts import sim_label
+from . import claire_api
 from .common import HTTPError
 from .common import session_facts
 
@@ -19,7 +20,8 @@ log = logging.getLogger(__name__)
 class OrderViews:
     def _portfolio(self):
         from .. import portfolio
-        data = portfolio.build(self.ctx.conn, self.ctx.market, clock=self.ctx.clock, cal=self.ctx.cal)
+        data = portfolio.build(self.ctx.conn, self.ctx.market, clock=self.ctx.clock, cal=self.ctx.cal,
+                               env=self.ctx.env or None)
         data["alerts"] = [dict(r) for r in self.ctx.conn.execute(
             "SELECT * FROM price_alerts ORDER BY instrument_id")]
         for a in data["accounts"]:
@@ -71,6 +73,20 @@ class OrderViews:
             r["legs_at_broker"] = bool(
                 (r["broker"] or "").startswith("saxo") and not (
                     r["broker"] == "saxo" and suf in SIM_LOCAL_SUFFIXES))
+            # may this resting stop-loss / take-profit be moved now that
+            # the shares are held? The broker's row in capabilities
+            # (a trailing stop at Saxo never: set below)
+            r["can_change"] = False
+            if r["leg"] in ("stop", "target"):
+                from .. import capabilities
+                venue = capabilities.venue_of(
+                    a.get("broker"), a.get("environment"), r["exchange"],
+                    sim_on=((self.ctx.env or {}).get("SAXO_SIM_EXECUTION")
+                            or "").lower() == "enabled",
+                    order_id=r["broker_order_id"])
+                r["can_change"] = bool(capabilities.can_change(venue).get(
+                    "stop_loss" if r["leg"] == "stop" else "take_profit"))
+                r["venue_label"] = capabilities.LABEL.get(venue, venue)
             r["where"] = ("queued — sent when the market opens"
                           if r["status"] == "pending_session" and
                           not r["submitted_at"] else
@@ -92,7 +108,7 @@ class OrderViews:
                 d = trail_distance(p) if p else None
                 if d:
                     r.update(trail_pct=p["trail_pct"], trails=float(d),
-                             trail_is_stop=True)
+                             trail_is_stop=True, can_change=False)
             elif not r["leg"] and r["order_trail_pct"] and \
                     r["legs_at_broker"] and r["stop_loss"]:
                 r.update(trail_pct=r["order_trail_pct"],
@@ -424,6 +440,38 @@ class OrderViews:
             raise HTTPError(404, "the desk holds no such position")
         before = set_position_floor(self.ctx.conn, inst, acct, pct, side=side)
         return {"ok": True, "pct": pct, "before": before}
+
+    def _position_levels(self, body):
+        """Move a HELD position's stop-loss / take-profit (the Today bar,
+        the Orders page). claire-api owns the broker adapters and does the
+        work (app/level_change.py); this adds the price now, so a level on
+        the wrong side of the market is refused before it reaches a venue."""
+        from ..tools.market import yahoo_symbol
+        inst = str(body.get("instrument_id") or "")
+        acct = str(body.get("account_id") or "")
+        req = {"account_id": acct, "instrument_id": inst, "actor": "human"}
+        for k in ("stop", "target"):
+            if body.get(k) not in (None, ""):
+                try:
+                    req[k] = float(body[k])
+                except (TypeError, ValueError):
+                    raise HTTPError(422, f"the {k} must be a number")
+        if "stop" not in req and "target" not in req:
+            raise HTTPError(422, "give a new stop-loss or take-profit")
+        row = self.ctx.conn.execute(
+            "SELECT ticker, exchange FROM instruments WHERE id=?",
+            (inst,)).fetchone()
+        if row is None:
+            raise HTTPError(404, "the desk holds no such position")
+        try:                                    # best effort: bounds the level
+            px = self.ctx.market.quote(
+                yahoo_symbol(row["ticker"], row["exchange"])).get("price")
+            if px is not None:
+                req["price"] = float(px)
+        except Exception:                       # noqa: BLE001
+            pass
+        return claire_api.post(self.ctx, "/internal/levels", req, timeout=60,
+                               what="level change")
 
     def _saxo_account(self, which):
         """One Saxo account straight from Saxo (read-only), plus each

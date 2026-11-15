@@ -28,23 +28,30 @@
   .ptile.loss .pt-price { color:var(--bad); } .ptile.gain .pt-price { color:var(--good); }
   .ptile.trail .pt-price { color:var(--warn); }
   .pt-none { font-size:1.1rem; font-weight:600; color:var(--dim); }
-  .pt-out { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:baseline;
-    gap:0 .5rem; font-size:.8rem; }
-  .pt-out span { color:var(--muted); }
-  .pt-out b { font-variant-numeric:tabular-nums; white-space:nowrap; }
   .ptile .pt-price.ok { color:var(--good); } .ptile .pt-price.bad { color:var(--bad); }
   .pt-callout { font-size:.74rem; line-height:1.4; margin-top:.15rem; padding:.3rem .45rem;
     border-radius:6px; background:rgba(255,183,77,.08); border:1px solid rgba(255,183,77,.25); }
   .pt-callout a { color:inherit; }
   .pt-btn { font-size:.7rem; padding:.05rem .55rem; }
-  .pfloor { border:1px dashed var(--line); border-radius:8px; padding:.35rem .55rem; margin:.45rem 0 0; }
+  .mgrid.three { grid-template-columns:repeat(3, 1fr); }
+  /* the card's market figures, at a size you can read at a glance */
+  .poscard .mgrid div { padding:.4rem .6rem; }
+  .poscard .mgrid span { font-size:.68rem; }
+  .poscard .mgrid b { font-size:1.15rem; line-height:1.35; }
+  .poscard .mgrid b span { display:inline; font-size:.8rem; text-transform:none; letter-spacing:0; }
+  .poshead .nm b { color:var(--text); font-weight:600; }
+  .poshead .nm b.ok { color:var(--good); } .poshead .nm b.bad { color:var(--bad); }
+  .poshead .fold { padding:0 .35rem; margin-right:.25rem; font-size:.8rem; line-height:1.3; }
+  .poscard.folded .poshead { margin-bottom:0; }
   .pprot .ladder { margin-left:.9rem; margin-right:.9rem; }
 </style>
-<script src="/sell.js"></script>
+<script src="/sell.js"></script><script src="/levels.js"></script>
 <script>nav('/portfolio')</script>
 <main>
   <h1>Portfolio</h1>
   <div class="statstrip" id="strip"></div>
+  <div class="statstrip" id="strip2"></div>
+  <div id="foldbar" style="display:flex;justify-content:flex-end;margin:.2rem 0"></div>
   <div class="exchcols" id="cols"></div>
   <div id="empty"></div>
 
@@ -77,12 +84,14 @@ async function refreshData() {
   DATA = await api('/api/portfolio');
   renderStrip(); renderCols(); renderRest();
   sellRestore();                      // an open Sell form survives refresh
+  levelsRestore();                    // and an open level editor
   startClocks();
   renderSaxoLive();                   // independent: a Saxo hiccup never
 }                                     // blanks the rest of the page
 /* not redrawn under your cursor — the menu bar then says "paused while you
    are editing", and "cannot reach Claire" when the load fails */
-const refresh = tracked(refreshData, {paused: () => typing()});
+const refresh = tracked(refreshData, {paused: () => typing() || !!LADDER_DRAG});
+levelsSaved = () => refresh();
 
 /* Real money, read-only, straight from Saxo (same data as /saxo?env=live).
    Kept visibly apart from the desk's paper book above and below it. */
@@ -148,15 +157,32 @@ function renderStrip() {
      added the SGD and USD accounts together */
   const t = d.totals || [];
   const unpriced = t.reduce((s, r) => s + (r.unpriced || 0), 0);
-  const pill = (l, v, cls) =>
-    `<div class="stat"><span>${l}</span><b class="${cls || ''}">${v}</b></div>`;
+  const pill = (l, v, tip) =>
+    `<div class="stat" title="${esc(tip)}"><span>${l}</span><b>${v}</b></div>`;
+  /* one line per currency: money in different currencies is never added */
   document.getElementById('strip').innerHTML =
-    pill('positions', d.position_count) +
+    pill('positions', d.position_count,
+         'How many holdings the desk has open, across all its accounts.') +
     pill('market value' + (unpriced ? ` (${unpriced} unpriced)` : ''),
-         perCcy(t, 'value')) +
-    pill('unrealized', perCcy(t, 'unrealized', {signed: true})) +
-    pill('equity', perCcy(t, 'equity')) +
-    pill('accounts', d.accounts.length);
+         perCcy(t, 'value'),
+         'What the shares you hold are worth at the price now. One line per account currency.') +
+    pill('profit after fees', perCcy(t, 'net', {signed: true}),
+         'What you would be up or down if every holding were sold now: the price gain, less the fees already paid and the estimated fees to sell.') +
+    pill('equity', perCcy(t, 'equity'),
+         'What the accounts are worth in total: cash plus the market value of the shares.') +
+    pill('accounts', d.accounts.length,
+         'How many accounts the desk keeps a book for — listed under Accounts below.');
+  /* the same shares in the currency each is traded in: the totals above
+     are in the ACCOUNT's currency, so Paris shares held by an SGD account
+     are inside its SGD line and have no euro figure there */
+  const sc = d.by_share_currency || [];
+  document.getElementById('strip2').innerHTML = sc.length < 2 && !(sc[0] && t.some(x => x.ccy !== sc[0].ccy)) ? '' :
+    pill('shares, in their own currency', perCcy(sc, 'value'),
+         'What your shares are worth in the currency each one is traded in — US shares in USD, Paris shares in EUR — whichever account holds them. The same shares as Market value above, before they are converted into the account\'s currency.') +
+    pill('price gain, in their own currency', perCcy(sc, 'gain', {signed: true}),
+         'How far the share prices have moved since you bought, in the shares\' own currency: before fees and before any change in the exchange rate. Profit after fees above is the full picture, in the account\'s currency.') +
+    pill('holdings', '<span class="cvs">' + sc.map(r => `<span class="cv">${r.positions}</span><span class="cc">${esc(r.ccy)}</span>`).join('<br>') + '</span>',
+         'How many holdings are traded in each currency.');
 }
 
 function renderCols() {
@@ -166,6 +192,11 @@ function renderCols() {
     `<p class="muted">No open positions yet. When you approve a trade on
      <a href="/approvals">Approvals</a> and the order fills, the stock appears
      here automatically — with its chart, what you paid and your stop-loss.</p>`;
+  const keys = allKeys(), allFolded = keys.length > 0 && keys.every(k => FOLDED.has(k));
+  document.getElementById('foldbar').innerHTML = keys.length < 2 ? '' :
+    `<button class="ghost" onclick="foldAll(${!allFolded})"
+       title="${allFolded ? 'open every card' : 'fold every card down to its top line'}">${
+       allFolded ? '▸ Expand all' : '▾ Collapse all'}</button>`;
   document.getElementById('cols').innerHTML = names.map(name => {
     const items = ex[name];
     const open = items[0].is_open;
@@ -180,8 +211,19 @@ function renderCols() {
       ${items.map(posCard).join('')}</div>`;
   }).join('');
   // a chart is drawn only for a stock you open (it used to draw every one)
-  Object.values(ex).flat().forEach(p => { if (SHOWN.has(p.instrument_id)) loadChart(p.instrument_id); });
+  Object.values(ex).flat().forEach(p => {
+    if (SHOWN.has(p.instrument_id) && !FOLDED.has(levelsKey(p))) loadChart(p.instrument_id);
+  });
 }
+/* which cards are folded down to their top line — kept across refreshes */
+const FOLDED = new Set(JSON.parse(localStorage.getItem('pfFolded') || '[]'));
+const allKeys = () => Object.values((DATA || {}).exchanges || {}).flat().map(levelsKey);
+function foldSave() {
+  localStorage.setItem('pfFolded', JSON.stringify([...FOLDED]));
+  renderCols(); sellRestore(); levelsRestore();
+}
+function toggleCard(k) { FOLDED.has(k) ? FOLDED.delete(k) : FOLDED.add(k); foldSave(); }
+function foldAll(on) { allKeys().forEach(k => on ? FOLDED.add(k) : FOLDED.delete(k)); foldSave(); }
 /* which positions have their chart open — kept across refreshes */
 const SHOWN = new Set(JSON.parse(localStorage.getItem('pfCharts') || '[]'));
 function toggleChart(id) {
@@ -189,6 +231,7 @@ function toggleChart(id) {
   localStorage.setItem('pfCharts', JSON.stringify([...SHOWN]));
   renderCols();
   sellRestore();                      // an open Sell form survives this too
+  levelsRestore();
 }
 
 function pct(v) { return v == null ? '—' : (v >= 0 ? '+' : '') + fmt(v) + '%'; }
@@ -196,75 +239,30 @@ function pct(v) { return v == null ? '—' : (v >= 0 ? '+' : '') + fmt(v) + '%';
 /* stop-loss / take-profit for one position: the orders resting at the broker
    when there are any (they are what actually sells), else the plan's levels
    (no order behind them — on Claire's paper sim nothing rests at a venue) */
-/* ── the trailing alert: Edit changes its % ───────────────────────────
-   An alert, not an order — it asks you, never sells. Only the % changes;
-   the best price since you bought is kept. FLOOR_ED keeps an open editor
-   across the page's refresh. */
-const FLOOR_ED = {};
-const floorKey = p => p.account_id + '|' + p.instrument_id;
-function floorRef(p) { const lv = p.levels || {}; return lv.alert_ref ?? lv.avg_cost_native; }
-function floorAt(p, pct) {
-  const ref = floorRef(p);
-  return ref && pct ? ref * (1 + (p.side === 'short' ? 1 : -1) * pct / 100) : null;
-}
-/* the trailing-alert editor, opened from its tile */
-function floorEditor(p) {
-  const k = floorKey(p), a = jsArg(k), ed = FLOOR_ED[k];
-  if (!ed) return '';
-  return `<div class="pfloor">
-    <div class="row" style="gap:.5rem;flex-wrap:wrap;align-items:center;margin:.2rem 0">
-      <label for="fl-${esc(k)}" title="how far below the best price since you bought (above, for a short) the alert sits">Trailing alert
-        <input id="fl-${esc(k)}" type="number" min="0.5" max="90" step="0.5" style="width:70px"
-          value="${esc(ed.pct ?? '')}" oninput="floorTyped(${a})"> %</label>
-      <button onclick="floorSave(${a})">Save</button>
-      <button class="ghost" onclick="floorClose(${a})">Cancel</button>
-    </div>
-    <div id="flp-${esc(k)}" style="font-size:.75rem">${floorPreview(p, ed)}</div></div>`;
-}
-function floorPreview(p, ed) {
-  const cur = (p.market || {}).price, ccy = esc(p.currency || ''), lv = p.levels || {};
-  const pct = Number(ed.pct), short = p.side === 'short';
-  if (ed.msg) return ed.msg;
-  if (!(pct >= 0.5 && pct <= 90)) return '<b class="bad">Enter a % between 0.5 and 90.</b>';
-  const at = floorAt(p, pct), ref = floorRef(p);
-  if (at == null) return '<span class="muted">No reference price yet.</span>';
-  const was = lv.alert != null ? `moves from <b>${fmt(lv.alert)}</b> to` : 'sits at';
-  const fires = cur != null && (short ? cur >= at : cur <= at);
-  return `The alert ${was} <b class="warn">${fmt(at)}</b> ${ccy} — ${pct}% ${short ? 'above' : 'below'} ${
-    lv.alert_ref != null ? 'the best price since you bought' : 'what you paid'} (${fmt(ref)})` +
-    (cur != null ? `, ${fmt(Math.abs(at - cur) / cur * 100, 1)}% ${at < cur ? 'below' : 'above'} now.` : '.') +
-    (fires ? ` <b class="bad">The price is already past it — it alerts (and starts a sell review) at once.</b>` : '') +
-    ' <span class="muted">It rises with the price, never falls. Nothing is sold without your approval.</span>' +
-    ((p.legs || []).some(l => l.trails) ? ' <span class="warn">This changes only the desk\'s backup alert — the trailing stop at Saxo keeps its distance.</span>' : '');
-}
-function floorPos(k) { return Object.values((DATA || {}).exchanges || {}).flat().find(p => floorKey(p) === k); }
-function floorOpen(k) {
-  const p = floorPos(k); if (!p) return;
-  FLOOR_ED[k] = {pct: (p.levels || {}).alert_pct ?? 8};
-  renderCols(); sellRestore();
-}
-function floorClose(k) { delete FLOOR_ED[k]; renderCols(); sellRestore(); }
-function floorTyped(k) {
-  const ed = FLOOR_ED[k], p = floorPos(k); if (!ed || !p) return;
-  ed.pct = document.getElementById('fl-' + k).value; ed.msg = '';
-  document.getElementById('flp-' + k).innerHTML = floorPreview(p, ed);
-}
-async function floorSave(k) {
-  const ed = FLOOR_ED[k], p = floorPos(k); if (!ed || !p) return;
-  const pct = Number(ed.pct);
-  if (!(pct >= 0.5 && pct <= 90)) return floorTyped(k);
-  try {
-    await api('/api/position-floor', {instrument_id: p.instrument_id, account_id: p.account_id,
-                                      side: p.side, pct});
-    delete FLOOR_ED[k];
-    toast(`${p.ticker} trailing alert set to ${pct}% ✓`);
-    refresh();
-  } catch (e) {
-    ed.msg = `<b class="bad">${esc(e.message)}</b>`;
-    document.getElementById('flp-' + k).innerHTML = ed.msg;
-    ed.msg = '';
+/* ── changing a level you hold: one editor (levels.js, shared with Home
+   and Orders) for the stop-loss, the take-profit and the trailing alert.
+   It opens from Edit on the trailing-alert tile, or by dragging a DASHED
+   line on the price line; a SOLID line is fixed. Which levels may be moved
+   is the broker's row in app/capabilities.py, sent as p.can_change. */
+const PDRAG = {};
+window.onLadderDrag = (id, k, v, done) => {
+  const box = document.querySelector(`.pprot[data-lk="${CSS.escape(id)}"]`);
+  if (!done) {                       /* follow the pointer: the line and its price */
+    Object.assign(PDRAG, {id, k, v});
+    const el = box && box.querySelector('.lm.' + k), lad = box && box.querySelector('.ladder');
+    if (el && lad) {
+      const lo = +lad.dataset.lo, hi = +lad.dataset.hi;
+      el.style.left = ((v - lo) / (hi - lo) * 100).toFixed(2) + '%';
+      const b = el.querySelector('.llab b');
+      if (b) b.textContent = money(v, '');
+    }
+    return;
   }
-}
+  const moved = PDRAG.id === id && PDRAG.k === k ? PDRAG.v : null;
+  PDRAG.id = null;
+  const part = k === 'trail' ? 'pct' : k;   /* the editor's field for this line */
+  levelsOpen(id, moved != null ? levelsPreset(id, part, moved) : {[part]: null});
+};
 
 /* ── what protects the position, in the same shape as a buy's order
    summary: three tiles (stop-loss · take-profit · trailing alert), then one
@@ -294,7 +292,8 @@ function protection(p) {
      shared with the Today table on the home page */
   const f = protectionFacts(p);
   const {lv, cur, avg, ccy, short, sl, tp, stop, tgt, trails} = f;
-  const k = floorKey(p), a = jsArg(k);
+  const k = levelsKey(p), a = jsArg(k), can = levelsCan(p);
+  levelsRegister(p);
   const worth = protectionMoney(p, f);
   const sh = q => fmt(q, q % 1 ? 4 : 0);
   /* a tile shows the figures only; who acts, the separate orders and the
@@ -307,33 +306,38 @@ function protection(p) {
     kind: 'loss', label: trails ? 'Trailing stop' : 'Stop-loss', price: stop, ccy, cur,
     none: 'Nothing sells on the way down — only the trailing alert warns you.',
     warnNone: 'no stop-loss',
-    outLabel: 'if hit at', out: worth.stop,
+    outLabel: 'if it is hit', out: worth.stop,
     tips: [trails ? `Follows the best price ${money(trails, ccy)} below it — never moves back.` : '', orders(sl)],
     holder: stop == null ? null : holder(sl)});
   const tgtTile = ptile({
     kind: 'gain', label: 'Take-profit', price: tgt, ccy, cur,
     none: 'Nothing sells automatically on the way up.',
-    outLabel: 'if reached at', out: worth.target,
+    outLabel: 'if it is reached', out: worth.target,
     tips: [orders(tp)], holder: tgt == null ? null : holder(tp)});
-  const edit = FLOOR_ED[k] ? '' : `<button class="ghost pt-btn" onclick="floorOpen(${a})">${lv.alert != null ? 'Edit' : 'Set…'}</button>`;
+  const edit = `<button class="ghost pt-btn" onclick="levelsOpen(${a}, {pct: null})">${lv.alert != null ? 'Edit' : 'Set…'}</button>`;
   const alertTile = ptile({
     kind: 'trail', label: 'Trailing alert', price: lv.alert, ccy, cur,
     none: 'Not set yet — the watcher sets one on its next check.',
-    outLabel: 'at', out: worth.alert,
+    outLabel: 'if you sold there', out: worth.alert,
     tips: [lv.alert != null ? `${fmt(lv.alert_live_pct ?? lv.alert_pct, 1)}% ${short ? 'above' : 'below'} the best price since you bought (${money(lv.alert_ref ?? avg, ccy)}) — it rises with it.` : '',
            `Asks you before selling${trails ? ' · backup to the trailing stop' : ''}`],
     callout: alertFired(lv, ccy), action: edit});
 
-  const lad = protectionLine(f);
-  return `<div class="osum pprot">
+  /* the line is where each price is written, once — so the price now
+     carries its currency here (there is no "current price" tile)
+     — and a line you may move is dashed and can be dragged */
+  const lad = protectionLine(f, {nowCcy: true, drag: k, movable: {
+    stop: can.stop.ok && stop != null, target: can.target.ok && tgt != null,
+    trail: can.trail.ok}});
+  return `<div class="osum pprot" data-lk="${esc(k)}">
     <div class="osum-title">What protects it</div>
     <div class="ptiles">${stopTile}${tgtTile}${alertTile}</div>
-    ${floorEditor(p)}
     ${lad}
+    <div id="lvlbox-${esc(k)}"></div>
   </div>`;
 }
 /* one protection tile: the label, what the level means for these shares in
-   money (large, first) and the price it happens at — nothing else. The rest (how far from the price now, the
+   money — nothing else (its price is on the line below; what the money means is the tooltip). The rest (how far from the price now, the
    separate orders, who acts on it) is the tile's tooltip. Two things are
    still written out, because they need you: a level with no order behind
    it, and the alert having fired today. */
@@ -341,16 +345,17 @@ function ptile(o) {
   const {kind, label, price, ccy, cur, none, warnNone, outLabel, out, tips = [], holder, callout = '', action = ''} = o;
   const dist = price != null && cur ? (price - cur) / cur * 100 : null;
   const tip = (price == null ? [none] : [
+    `${label} at ${money(price, ccy)}`,
+    out == null ? '' : `${out >= 0 ? '+' : '−'}${money(Math.abs(out), ccy)} ${outLabel}, against what you paid`,
     dist == null ? '' : `${dist >= 0 ? '+' : '−'}${fmt(Math.abs(dist), 1)}% from the current price`,
     ...tips, holder && holder.kind !== 'plan' ? holder.text : '']).filter(Boolean).join('\n');
   const plan = holder && holder.kind === 'plan';
   const body = price == null
     ? `<div class="pt-none">none</div>${warnNone ? `<div><span class="pill bad" title="${esc(none)}">⚠ ${warnNone}</span></div>` : ''}`
     : (out != null
-        /* the money first — what this level means for these shares against
-           what you paid — then the price it happens at */
-        ? `<div class="pt-price ${out >= 0 ? 'ok' : 'bad'}">${out >= 0 ? '+' : '−'}${money(Math.abs(out), '')} <small>${ccy}</small></div>
-           <div class="pt-out"><span>${outLabel}</span><b>${money(price, ccy)}</b></div>`
+        /* the money only — what this level means for these shares against
+           what you paid. Its price is on the line just below, once. */
+        ? `<div class="pt-price ${out >= 0 ? 'ok' : 'bad'}">${out >= 0 ? '+' : '−'}${money(Math.abs(out), '')} <small>${ccy}</small></div>`
         : `<div class="pt-price">${money(price, '')} <small>${ccy}</small></div>`) + `
        ${plan ? `<div><span class="pill warn" title="No order exists for this level. If the price gets there, nothing happens unless you act.">⚠ plan only</span></div>` : ''}
        ${callout}`;
@@ -362,7 +367,7 @@ function ptile(o) {
 
 function posCard(p) {
   const m = p.market || {}, lv = p.levels || {};
-  const up = (p.unrealized_base || 0) >= 0;
+  const up = (p.net_base || 0) >= 0;
   const id = p.instrument_id;
   const rng = RANGE[id] || DEFAULT_RANGE;
   // where today's price sits inside the 52-week range
@@ -388,49 +393,53 @@ function posCard(p) {
     held: p.qty, price: m.price, currency: m.currency || p.currency,
     whole: String(p.broker).startsWith('saxo'), source: 'portfolio',
     avg: lv.avg_cost_native, symbol: p.symbol || m.symbol});
-  return `<div class="poscard ${p.is_open ? '' : 'closedmkt'}" id="pc-${esc(id)}">
-    <div class="poshead">
-      <div><span class="tk">${esc(p.ticker)}</span>
+  /* the top line: the stock, what you hold and what it cost, and the
+     profit. The ▾ folds the card down to just this line (kept in this
+     browser); everything below it is the detail. */
+  const fk = levelsKey(p), folded = FOLDED.has(fk);
+  const head = `<div class="poshead">
+      <div><button class="ghost fold" onclick="toggleCard(${jsArg(fk)})" aria-expanded="${!folded}"
+          aria-label="${folded ? 'show the detail of' : 'show only the top line of'} ${esc(p.ticker)}"
+          title="${folded ? 'show everything' : 'show only this line'}">${folded ? '▸' : '▾'}</button>
+        <span class="tk">${esc(p.ticker)}</span>
         <span class="nm">${esc(m.name || p.instrument_id)}</span><br>
         <span class="nm">${fmt(p.qty, 4)} shares · <span
           title="share of the ${esc(p.base_currency)} positions, by value">${fmt(p.weight_pct, 1)}%
-          of ${esc(p.base_currency)} book</span> · held ${p.holding_days}d</span></div>
-      <div style="text-align:right">
-        <div class="pl ${up ? 'ok' : 'bad'}">${p.unrealized_base == null
-          ? '—' : (up ? '+' : '') + fmt(p.unrealized_base)}</div>
-        <span class="nm">${pct(p.unrealized_pct)} unrealized</span></div>
-    </div>
+          of ${esc(p.base_currency)} book</span> · held ${p.holding_days}d
+          · cost <b>${fmt(p.cost_base)} ${esc(p.base_currency)}</b>
+          · fees <b>${fmt(p.commissions)} ${esc(p.base_currency)}</b>${
+          p.realized_base ? ` · realized <b class="${p.realized_base >= 0
+            ? 'ok' : 'bad'}">${fmt(p.realized_base)}</b>` : ''}</span></div>
+      <div style="text-align:right" title="${esc(feesNote(p))}">
+        <div class="pl ${up ? 'ok' : 'bad'}">${p.net_base == null
+          ? '—' : (up ? '+' : '') + fmt(p.net_base)}</div>
+        <span class="nm">${pct(p.net_pct)} after fees</span></div>
+    </div>`;
+  if (folded) return `<div class="poscard folded ${p.is_open ? '' : 'closedmkt'}" id="pc-${esc(id)}">${head}</div>`;
+  return `<div class="poscard ${p.is_open ? '' : 'closedmkt'}" id="pc-${esc(id)}">
+    ${head}
 
     ${p.price_unavailable
       ? `<p class="warn" style="font-size:.75rem">price unavailable right now
          — the position and your cost basis below are still exact</p>`
-      : `<div class="mgrid">
-        <div><span>current price</span><b>${fmt(m.price)} ${m.currency || ''}</b></div>
-        <div><span>today</span><b class="${(m.change_pct || 0) >= 0 ? 'ok'
+      : `<div class="mgrid three">
+        <div title="how far the price has moved today, against yesterday's close"><span>today</span><b class="${(m.change_pct || 0) >= 0 ? 'ok'
           : 'bad'}">${pct(m.change_pct)}</b></div>
-        <div><span>day range</span><b>${fmt(m.day_low)}–${fmt(m.day_high)}</b>
+        <div title="the lowest and highest price traded today, in ${esc(m.currency || p.currency || '')}"><span>day range</span><b>${fmt(m.day_low)}–${fmt(m.day_high)}</b>
           </div>
-        <div><span>volume</span><b>${fmtBig(m.volume)}${volRatio
+        <div title="shares traded today${volRatio ? `, and that as a multiple of an average day (${fmt(volRatio, 1)}× — above 1.5× is unusually busy)` : ''}"><span>volume</span><b>${fmtBig(m.volume)}${volRatio
           ? ` <span class="${volRatio > 1.5 ? 'warn' : 'muted'}">${
             fmt(volRatio, 1)}×</span>` : ''}</b></div>
       </div>${bar}`}
 
-    <div class="yours">
-      you bought <b>${fmt(p.qty, 4)}</b> @ avg
-      <b>${fmt(lv.avg_cost_native)} ${p.currency}</b>
-      · cost <b>${fmt(p.cost_base)} ${p.base_currency}</b>
-      · fees ${fmt(p.commissions)}
-      ${p.realized_base ? ` · realized <b class="${p.realized_base >= 0
-        ? 'ok' : 'bad'}">${fmt(p.realized_base)}</b>` : ''}
-    </div>
     ${protection(p)}
-    ${p.qty > 0 ? `<div class="row" style="margin:.1rem 0 .4rem;gap:.5rem">
-      ${sellButton(sk)}<span class="muted" style="font-size:.7rem">goes to
-      Approvals first — nothing sells until you approve</span></div>
-      <div id="sellbox-${esc(sk)}"></div>` : ''}
-
-    <button class="ghost" style="font-size:.75rem" onclick="toggleChart(${jsArg(id)})">${
-      SHOWN.has(id) ? '▴ hide chart' : '📈 show chart'}</button>
+    <div class="row pbtns" style="margin:.1rem 0 .4rem;gap:.5rem;align-items:center">
+      ${p.qty > 0 ? sellButton(sk) : ''}
+      <button class="ghost" onclick="toggleChart(${jsArg(id)})">${
+        SHOWN.has(id) ? '▴ hide chart' : '📈 show chart'}</button>
+      ${p.qty > 0 ? `<span class="muted" style="font-size:.7rem">Sell goes to
+        Approvals first — nothing sells until you approve</span>` : ''}</div>
+    ${p.qty > 0 ? `<div id="sellbox-${esc(sk)}"></div>` : ''}
     ${SHOWN.has(id) ? `<div class="row" style="justify-content:space-between;margin:.3rem 0">
       <div class="tabs" style="margin:0">${RANGES.map(([r, lbl]) =>
         `<button class="${rng === r ? 'on' : ''}"

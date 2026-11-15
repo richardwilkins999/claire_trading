@@ -75,3 +75,14 @@ body.ladder-dragging, body.ladder-dragging * { cursor:ew-resize !important; user
   padding:.05rem .45rem; font-size:.7rem; font-weight:600; letter-spacing:.04em; }
 .lm.now .llab b, .lnow b { color:var(--bg); }
 .lm.now { color:var(--text); }
+
+/* a held position's price line (Portfolio; ladder opt.movable): the lines
+   keep their colours, and how they are drawn says whether you can move
+   them — SOLID = fixed (what you paid always, and any level the account
+   does not let the desk change), DASHED = drag it to change it. */
+.ladder.marks-fixed .lm.stop { --c:var(--bad); } .ladder.marks-fixed .lm.target { --c:var(--good); }
+.ladder.marks-fixed .lm.trail { --c:var(--warn); } .ladder.marks-fixed .lm.paid { --c:var(--accent); }
+.ladder.marks-fixed .lm.fixed .ltick { width:2px; height:22px; border:0; border-radius:0; background:var(--c, var(--text)); }
+.ladder.marks-fixed .lm.movable .ltick { width:0; height:26px; margin-top:-2px; border-radius:0; background:transparent;
+  border-left:2px dashed var(--c, var(--text)); box-shadow:none; }
+.ladder.marks-fixed .lm.movable:hover .ltick, .ladder.marks-fixed .lm.movable.held .ltick { border-left-width:4px; box-shadow:none; }

@@ -7,6 +7,7 @@ agent can call.
 """
 import hmac
 import json
+import os
 import time
 from typing import Literal
 
@@ -104,6 +105,15 @@ class RunBody(BaseModel):
         from .desk import validate_symbol
         validate_symbol(self.ticker, self.exchange)
         return self
+
+
+class LevelsBody(BaseModel):
+    account_id: str
+    instrument_id: str
+    actor: str = "human"
+    stop: float | None = Field(default=None, gt=0)
+    target: float | None = Field(default=None, gt=0)
+    price: float | None = Field(default=None, gt=0)
 
 
 class OrderControlBody(BaseModel):
@@ -248,6 +258,24 @@ def create_app(desk, conn, secret: str, *, clock=time.time,
             raise HTTPException(422, str(e.errors()[0].get("msg"))[:300])
         except ValueError as e:
             raise HTTPException(409, str(e)[:300])
+
+    @app.post("/internal/levels")
+    def internal_levels(body: LevelsBody, request: Request):
+        """Move a held position's resting stop-loss / take-profit. Same
+        trust boundary as /internal/order; only where the broker's row in
+        capabilities.CAN_CHANGE allows it."""
+        from .. import level_change
+        _guard(request)
+        if body.actor != "human":
+            raise HTTPException(403, "only a human moves a stop-loss or "
+                                     "take-profit")
+        try:
+            return level_change.change(
+                desk.repo, brokers or {}, body.account_id,
+                body.instrument_id, stop=body.stop, target=body.target,
+                price=body.price, ts=int(clock()), env=os.environ)
+        except level_change.LevelChangeError as e:
+            raise HTTPException(e.status, str(e)[:300])
 
     @app.post("/internal/override")
     def internal_override(body: OverrideBody, request: Request):

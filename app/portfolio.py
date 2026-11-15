@@ -8,9 +8,14 @@ the usual trader metrics. Market lookups are best-effort: a throttled source
 degrades a card to "price unavailable", it never hides a position you hold.
 """
 import json
+import os
 import time
 from decimal import Decimal
 
+from . import capabilities
+
+from .accounting.money import to_micro
+from .accounting.repo import Repo
 from .tools.market import yahoo_symbol
 
 MICRO = Decimal(1_000_000)
@@ -25,7 +30,8 @@ def open_positions(conn) -> list[dict]:
     rows = []
     for p in conn.execute(
             "SELECT l.account_id, l.instrument_id, i.ticker, i.exchange,"
-            " i.currency, a.broker, a.base_currency,"
+            " i.currency, a.broker, a.environment, a.base_currency,"
+            " a.fee_model,"
             " SUM(CASE WHEN l.qty_opened<0 THEN -l.qty_remaining"
             "     ELSE l.qty_remaining END) AS qty,"
             # SIGNED cost: a short's entry is money received, so it is
@@ -46,6 +52,7 @@ def open_positions(conn) -> list[dict]:
         cost_base = Decimal(p["cost_num"] or 0) / MICRO / MICRO
         rows.append({
             "account_id": p["account_id"], "broker": p["broker"],
+            "environment": p["environment"],
             "base_currency": p["base_currency"],
             "instrument_id": p["instrument_id"], "ticker": p["ticker"],
             "exchange": p["exchange"], "currency": p["currency"],
@@ -55,8 +62,36 @@ def open_positions(conn) -> list[dict]:
             "cost_base": float(cost_base),
             "avg_cost_base": float(cost_base / qty) if qty else None,
             "commissions": float(_d(p["commissions"])),
+            "fee_model": json.loads(p["fee_model"] or "{}"),
             "opened_at": p["opened_at"]})
     return rows
+
+
+def exit_fee_estimate(fee_model, value_base) -> Decimal:
+    """What closing the whole position at this value would cost in fees, by
+    the account's own fee model — the same sum the ledger charges a fill.
+    An estimate: the real fee is whatever is charged on the day."""
+    try:
+        return _d(Repo._fee_for(fee_model or {},
+                                to_micro(str(abs(Decimal(str(value_base)))))))
+    except Exception:                           # noqa: BLE001 — odd model
+        return Decimal(0)
+
+
+def after_fees(p, value, cost):
+    """Profit / loss the way it would land if the position were closed now:
+    the price gain, less the fees already paid to open it (still attached to
+    the open lots), less the estimated fee to close it. This is what the
+    ledger's realized P/L will subtract too (proceeds − cost − commission).
+    The percentage is of everything paid in: the shares plus the buy fees."""
+    paid = Decimal(str(p["commissions"]))
+    closing = exit_fee_estimate(p.get("fee_model"), value)
+    net = value - cost - paid - closing
+    outlay = abs(cost) + paid
+    return {"fees_paid_base": float(paid),
+            "exit_fee_est_base": float(closing),
+            "net_base": float(net),
+            "net_pct": float(net / outlay * 100) if outlay else None}
 
 
 def fills_for(conn, account_id, instrument_id) -> list[dict]:
@@ -240,7 +275,7 @@ def realized_for(conn, account_id, instrument_id) -> float:
     return float(_d(pl))
 
 
-def build(conn, market, *, clock, cal=None) -> dict:
+def build(conn, market, *, clock, cal=None, env=None) -> dict:
     """The whole portfolio view: positions grouped by exchange, each with
     book numbers, live market metrics and the levels for its chart."""
     from datetime import datetime, timezone
@@ -278,16 +313,26 @@ def build(conn, market, *, clock, cal=None) -> dict:
             p["unrealized_base"] = float(value - cost)
             p["unrealized_pct"] = (float((value - cost) / abs(cost) * 100)
                                    if cost else None)
+            p.update(after_fees(p, value, cost))
             total_value += value
         else:
             p["value_base"] = None
             p["unrealized_base"] = None
             p["unrealized_pct"] = None
+            p.update(fees_paid_base=p["commissions"], exit_fee_est_base=None,
+                     net_base=None, net_pct=None)
+        p.pop("fee_model", None)
         p["realized_base"] = realized_for(conn, p["account_id"],
                                           p["instrument_id"])
         p["fills"] = fills_for(conn, p["account_id"], p["instrument_id"])
         p["levels"] = levels_for(conn, p, p["fills"], fx=fx)
         p["legs"] = legs_for(conn, p["account_id"], p["instrument_id"])
+        # which parts of its protection may be moved now that it is held —
+        # the broker's row in capabilities.CAN_CHANGE; the pages offer an
+        # edit only where this says yes, and the server checks it again
+        p["can_change"] = capabilities.for_position(
+            p, p["exchange"], env if env is not None else os.environ,
+            p["legs"])
         p["holding_days"] = (int(clock()) - (p["opened_at"] or
                                              int(clock()))) // 86400
         try:
@@ -340,6 +385,7 @@ def build(conn, market, *, clock, cal=None) -> dict:
                          "equity": float(_d(cash)) + held})
     return {"exchanges": exchanges, "closed": closed, "accounts": accounts,
             "totals": totals_by_currency(positions, accounts),
+            "by_share_currency": totals_by_share_currency(positions),
             # one number only when there is one currency to put it in
             "total_value": (float(total_value)
                             if len({p["base_currency"] for p in positions})
@@ -347,8 +393,43 @@ def build(conn, market, *, clock, cal=None) -> dict:
             "position_count": len(positions)}
 
 
+def totals_by_share_currency(positions) -> list:
+    """The same holdings, in the currency each share is TRADED in — one row
+    per share currency, whatever account holds them. `totals` is per account
+    currency, so shares in Paris held by an SGD account are in its SGD line
+    and there is no euro figure anywhere; this is where it is.
+
+    `value` = price now × shares; `cost` = what was paid × shares; `gain` =
+    the difference — the move in the share price alone, before fees and
+    before any change in the exchange rate (those are in the account's
+    currency, in `totals`). A holding with no price counts in `positions`
+    and `unpriced`; one with no known cost leaves `cost` and `gain` alone."""
+    rows = {}
+    for p in positions:
+        ccy = p.get("currency") or "?"
+        r = rows.setdefault(ccy, {"ccy": ccy, "positions": 0, "unpriced": 0,
+                                  "value": Decimal(0), "cost": Decimal(0),
+                                  "gain": Decimal(0)})
+        r["positions"] += 1
+        price = (p.get("market") or {}).get("price")
+        if price is None:
+            r["unpriced"] += 1
+            continue
+        qty = Decimal(str(p["qty"]))
+        value = Decimal(str(price)) * qty
+        r["value"] += value
+        avg = (p.get("levels") or {}).get("avg_cost_native")
+        if avg is not None:
+            cost = Decimal(str(avg)) * qty
+            r["cost"] += cost
+            r["gain"] += value - cost
+    return [{k: (float(v) if isinstance(v, Decimal) else v)
+             for k, v in rows[c].items()} for c in sorted(rows)]
+
+
 def totals_by_currency(positions, accounts) -> list:
-    """Market value, unrealized P/L, cash and equity — one row per account
+    """Market value, unrealized P/L (before fees, and `net` after them —
+    see after_fees), cash and equity — one row per account
     currency, never added across them. The page used to show a single
     "market value" and "equity" that summed SGD and USD accounts as if they
     were the same money (REVIEW-2026-11-11 B5)."""
@@ -357,6 +438,7 @@ def totals_by_currency(positions, accounts) -> list:
     def row(ccy):
         return rows.setdefault(ccy, {
             "ccy": ccy, "value": Decimal(0), "unrealized": Decimal(0),
+            "net": Decimal(0),
             "cash": Decimal(0), "equity": Decimal(0), "positions": 0,
             "unpriced": 0, "accounts": 0})
     for p in positions:
@@ -367,6 +449,7 @@ def totals_by_currency(positions, accounts) -> list:
             continue
         r["value"] += Decimal(str(p["value_base"]))
         r["unrealized"] += Decimal(str(p["unrealized_base"]))
+        r["net"] += Decimal(str(p.get("net_base", p["unrealized_base"])))
     for a in accounts:
         r = row(a["ccy"])
         r["accounts"] += 1

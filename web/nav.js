@@ -445,6 +445,16 @@ function perCcy(totals, key, opts = {}) {
       `<span class="cc">${esc(t.ccy || '?')}</span>`;
   }).join('<br>') + '</span>';
 }
+/* Profit / loss is shown AFTER fees (net_base): the price gain, less the
+   fees already paid to open the position, less the estimated fee to close
+   it. This is the tooltip that shows the sum behind the figure. */
+function feesNote(p) {
+  if (p.net_base == null) return '';
+  const c = p.base_currency || '', sg = v => (v >= 0 ? '+' : '−') + fmt(Math.abs(v), 2);
+  return `After fees. Before fees ${sg(p.unrealized_base)} ${c}` +
+    ` · fees already paid ${fmt(p.fees_paid_base || 0, 2)}` +
+    ` · fee to sell about ${fmt(p.exit_fee_est_base || 0, 2)} (estimate)`;
+}
 /* [{ccy, <key>}...] summed per currency, for rows that arrive per account */
 function sumByCcy(rows, key, ccyKey = 'ccy') {
   const by = {};

@@ -181,7 +181,9 @@ class Desk:
     def override(self, origin_wi, *, direction, entry, stop, target=None,
                  note=None, trail_pct=None, qty=None, broker=None,
                  order_type=None, background=True):
-        """Send a concluded PASS to the approval gate anyway.
+        """Send a concluded PASS to the approval gate anyway — or send a BUY
+        that expired (its approval ran out, or its order was never filled)
+        to the gate AGAIN.
 
         The arbiter declining is a decision, not a bug, so overriding it is
         deliberately NOT one click: a pass thesis carries no prices at all,
@@ -190,6 +192,12 @@ class Desk:
         same validator that guards an agent's thesis guards theirs. From the
         gate onwards this is an ordinary approval — same token, same cash
         check, same execution path.
+
+        A re-issue of an expired buy is the same act with a different
+        reason: the desk said buy, nothing was bought, and the prices it
+        gave are stale — so the human confirms (or changes) the levels, and
+        approves it again like any trade. Only a buy, only as a buy, and
+        only when the first attempt bought nothing.
         """
         origin = self.work_item(origin_wi)
         if origin is None:
@@ -197,11 +205,25 @@ class Desk:
         if not origin["thesis_json"]:
             raise ValueError("that run never produced a thesis to override")
         old = json.loads(origin["thesis_json"])
-        if old.get("direction") != "pass":
-            raise ValueError(f"only a pass can be overridden — that run is "
-                             f"{old.get('direction')!r}")
+        reissue = (old.get("direction") == "buy"
+                   and origin["state"] == "expired")
+        if old.get("direction") != "pass" and not reissue:
+            raise ValueError("only a pass, or a buy that expired, can be sent "
+                             "to approval again — that run is "
+                             f"{old.get('direction')!r} ({origin['state']})")
         if origin["state"] not in ("done", "rejected", "expired"):
             raise ValueError(f"run is still {origin['state']}")
+        if reissue:
+            if direction != "buy":
+                raise ValueError("a buy that expired can only be sent again "
+                                 "as a buy")
+            (bought,) = self.conn.execute(
+                "SELECT COUNT(*) FROM executions e JOIN orders o ON"
+                " o.id=e.order_id WHERE o.work_item_id=?",
+                (origin_wi,)).fetchone()
+            if bought:              # an expired run has no fills; be sure
+                raise ValueError("part of that buy was filled — it is a "
+                                 "position now, not an expired order")
         prior = self.conn.execute(
             "SELECT id, state FROM work_items WHERE override_of=?"
             " AND state NOT IN ('rejected','expired','failed','cancelled')",
@@ -228,8 +250,10 @@ class Desk:
                         stop_loss=stop, take_profit=target,
                         currency=old.get("currency") or "USD",
                         conditions=(old.get("conditions") or [])
-                        + [f"HUMAN OVERRIDE of a PASS verdict"
-                           f"{': ' + note if note else ''}"])
+                        + [("RE-ISSUED BY YOU after the earlier buy "
+                            "expired with nothing bought" if reissue
+                            else "HUMAN OVERRIDE of a PASS verdict")
+                           + (f": {note}" if note else "")])
         # what you chose here prefills the approval card: the trailing floor
         # (not on an exit — it closes the position, there is no floor to
         # carry), the shares, the account and the order type
@@ -243,20 +267,23 @@ class Desk:
         day = time.strftime("%Y-%m-%d", time.gmtime(ts))
         wi = f"wi_{day}_{origin['ticker']}_ovr_{secrets.token_hex(2)}"
         self.repo.create_work_item(wi, "override", origin["ticker"], ts=ts)
+        why = (f"re-issue of expired {origin_wi}" if reissue
+               else f"human override of {origin_wi}")
         self.conn.execute(
             "UPDATE work_items SET override_of=?, trigger=?, thesis_json=?,"
             " suggested_json=? WHERE id=?",
-            (origin_wi, f"human override of {origin_wi}",
+            (origin_wi, why,
              thesis.model_dump_json(),
              json.dumps(suggested) if suggested else None, wi))
         self.repo._event(wi, ts, "human", "created", "override",
                          payload={"origin": origin_wi, "direction": direction,
+                                  "reissue": reissue,
                                   "entry": entry, "stop": stop,
                                   "target": target, "trail_pct":
                                   (suggested or {}).get("trail_pct"),
                                   "note": note})
         state = PipelineState(work_item_id=wi, kind="override",
-                              trigger=f"human override of {origin_wi}",
+                              trigger=why,
                               ticker=origin["ticker"], instrument=inst,
                               thesis=thesis)
         if background:

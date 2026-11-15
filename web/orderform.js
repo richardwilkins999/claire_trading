@@ -149,6 +149,11 @@ function ladder(pts, ccy, refs = [], opt = {}) {
   const x = v => ((Math.min(hi, Math.max(lo, v)) - lo) / (hi - lo) * 100).toFixed(2) + '%';
   const P = Object.fromEntries(pts.map(p => [p.k, p.v]));
   const DRAGGABLE = {stop: 1, entry: 1, target: 1, trail: 1};
+  /* opt.movable ({stop, target, trail}: a held position's line, Portfolio):
+     only those marks can be dragged, and every mark says which it is —
+     `movable` (drawn dashed) or `fixed` (drawn solid; "you paid" always) */
+  const canDrag = k => !!opt.drag && !!DRAGGABLE[k] && (!opt.movable || !!opt.movable[k]);
+  const kindOf = k => !opt.movable || k === 'now' ? '' : canDrag(k) ? ' movable' : ' fixed';
   const zone = (a, b, cls) => a != null && b != null
     ? `<div class="lz ${cls}" style="left:${x(Math.min(a, b))};width:calc(${x(Math.max(a, b))} - ${x(Math.min(a, b))})"></div>` : '';
   /* labels that would overlap go up a lane: markers labelled ABOVE the
@@ -168,15 +173,15 @@ function ladder(pts, ccy, refs = [], opt = {}) {
   });
   const LANE = 26, upN = lanes.up.length, downN = lanes.down.length;
   const lab = p => p.lane ? ` style="${ABOVE[p.k] ? `bottom:${30 + p.lane * LANE}px` : `position:relative;top:${p.lane * LANE}px`}"` : '';
-  return `<div class="ladder${opt.drag ? ' can-drag' : ''}" data-lo="${lo}" data-hi="${hi}"${
+  return `<div class="ladder${opt.drag ? ' can-drag' : ''}${opt.movable ? ' marks-fixed' : ''}" data-lo="${lo}" data-hi="${hi}"${
     upN > 1 || downN > 1 ? ` style="margin-top:calc(2.1rem + ${Math.max(0, upN - 1) * LANE}px);height:${66 + Math.max(0, downN - 1) * LANE}px"` : ''}>
     <div class="lbar"></div>
     ${zone(P.stop, P.entry, 'loss')}${zone(P.entry, P.target, 'gain')}${(opt.zones || []).map(z => zone(...z)).join('')}
-    ${marks.filter(p => p.k !== 'ref').map(p => `<div class="lm ${p.k}${opt.drag && DRAGGABLE[p.k] ? ' drag' : ''}${
-      frozen && frozen.k === p.k ? ' held' : ''}" style="left:${x(p.v)}"${opt.drag && DRAGGABLE[p.k]
+    ${marks.filter(p => p.k !== 'ref').map(p => `<div class="lm ${p.k}${canDrag(p.k) ? ' drag' : ''}${kindOf(p.k)}${
+      frozen && frozen.k === p.k ? ' held' : ''}" style="left:${x(p.v)}"${canDrag(p.k)
       ? ` title="drag to change" onpointerdown='ladderGrab(event, ${JSON.stringify(opt.drag)}, "${p.k}")'` : ''}>
       <span class="ltick"></span>${p.k === 'now' ? '<span class="ldot"></span>' : ''}<span class="llab"${lab(p)}>${
-        p.k === 'now' ? `<span class="lnow">NOW <b>${money(p.v, '')}</b></span>` : `<b>${money(p.v, '')}</b><br>${p.label}`}</span></div>`).join('')}
+        p.k === 'now' ? `<span class="lnow">NOW <b>${money(p.v, '')}</b>${opt.nowCcy && ccy ? ' ' + ccy : ''}</span>` : `<b>${money(p.v, '')}</b><br>${p.label}`}</span></div>`).join('')}
     ${marks.filter(p => p.k === 'ref').map(r => `<div class="lm ref" style="left:${x(r.v)}" title="${esc(r.tip || '')}">
       <span class="ltick"></span><span class="llab"${lab(r)}><b>${money(r.v, '')}</b><br>${r.label}</span></div>`).join('')}
   </div>`;

@@ -511,6 +511,66 @@ class SaxoBroker:
                 "order_type": last.get("OrderType"),
                 "price": last.get("Price"), "amount": last.get("Amount")}
 
+    def change_leg(self, broker_order_id, price, *, symbol) -> dict:
+        """Move a working stop-loss / take-profit to a new price: Saxo's
+        PATCH /trade/v2/orders, which wants the whole order again with its
+        OrderId. Everything except the price is read from Saxo first and
+        sent back unchanged (amount, side, type), so only the price moves.
+        A TRAILING stop is refused: its distance is a different field, and
+        changing it has not been tried. The price goes onto Saxo's tick
+        grid in the safe direction; what Saxo then says the order is, is
+        what is returned ({price, verified})."""
+        if self.environment == "live" and self._guard is not None:
+            self._guard()
+        oid = str(broker_order_id)
+        row = next((w for w in self.working_orders()
+                    if w["order_id"] == oid), None)
+        if row is None:
+            raise BrokerError(f"Saxo lists no working order {oid} — it may "
+                              "have filled or been cancelled")
+        otype = row.get("type") or ""
+        if otype.startswith("Trailing"):
+            raise BrokerError("this is a trailing stop at Saxo: its distance "
+                              "cannot be changed from the desk")
+        kind = leg_kind(otype)
+        side = row.get("side")
+        if kind is None or side not in ("buy", "sell"):
+            raise BrokerError(f"order {oid} is not a stop-loss or take-profit"
+                              " the desk can change (its buy may not have"
+                              " filled yet)")
+        uic, details = self.resolve(symbol)
+        if row.get("uic") not in (None, uic):
+            raise BrokerError(f"order {oid} is for another instrument")
+        sell = side == "sell"
+        safe = ("down" if sell else "up") if kind == "stop" else \
+            ("up" if sell else "down")
+        px = round_price(details, price, direction=safe)
+        body = {"AccountKey": self.account_key, "OrderId": oid,
+                "AssetType": "Stock", "Uic": uic,
+                "Amount": int(Decimal(str(row["amount"]))),
+                "BuySell": "Sell" if sell else "Buy", "OrderType": otype,
+                "OrderPrice": px,
+                "OrderDuration": {"DurationType": "GoodTillCancel"}}
+        out = self._req("PATCH", "/trade/v2/orders", body=body)
+        errs = [(out or {}).get("ErrorInfo")] + [
+            o.get("ErrorInfo") for o in (out or {}).get("Orders", [])
+            if isinstance(o, dict)]
+        errs = [e for e in errs if e]
+        if errs:
+            raise BrokerError(f"Saxo refused to change {oid}: "
+                              f"{json.dumps(errs)[:300]}")
+        now = None
+        try:                                    # what Saxo says it is now
+            now = next((w.get("price") for w in self.working_orders()
+                        if w["order_id"] == oid), None)
+        except Exception:                       # noqa: BLE001 — a read-back
+            now = None
+        if now in (None, ""):
+            return {"price": str(px), "verified": False}
+        return {"price": str(now),
+                "verified": abs(Decimal(str(now)) - Decimal(str(px)))
+                < Decimal("0.0000001")}
+
     def cancel(self, broker_order_id):
         out = self._req("DELETE", f"/trade/v2/orders/{broker_order_id}/"
                                   f"?AccountKey={self.account_key}")
@@ -604,6 +664,10 @@ class SaxoSimWithLocalMarkets:
 
     def cancel(self, broker_order_id):
         return self._owner(broker_order_id).cancel(broker_order_id)
+
+    def change_leg(self, broker_order_id, price, *, symbol=None) -> dict:
+        return self._owner(broker_order_id).change_leg(
+            broker_order_id, price, symbol=symbol)
 
     def related_order_ids(self, order_id) -> list:
         if self._owner(order_id) is self.local:
