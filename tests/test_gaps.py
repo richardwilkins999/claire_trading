@@ -77,6 +77,26 @@ def test_max_position_pct(repo):
                       expires_at=T0 + 86400, ts=T0)       # 10% — fine
 
 
+def test_max_position_pct_is_exact_at_the_cap(repo):
+    """Exactly on the cap is allowed, one cent over is not — in integer
+    micro-units, with a fractional cap. It was a float division (and float
+    sums in SQL), which can land either side of an exact boundary."""
+    repo.conn.execute("UPDATE broker_accounts SET risk_limits=?"
+                      " WHERE id='acct'",
+                      (json.dumps({"max_position_pct": 12.5}),))
+    # equity 10,000: 12.5% is exactly 1,250.00 = 12.5 shares at 100
+    repo.create_order(id="on", account_id="acct",
+                      instrument_id="NASDAQ:NVDA", side="buy",
+                      qty=to_micro("12.5"), limit_price=to_micro("100"),
+                      expires_at=T0 + 86400, ts=T0)
+    repo.conn.execute("DELETE FROM orders WHERE id='on'")
+    with pytest.raises(RiskLimitExceeded, match="max_position_pct"):
+        repo.create_order(id="over", account_id="acct",
+                          instrument_id="NASDAQ:NVDA", side="buy",
+                          qty=to_micro("12.5001"), limit_price=to_micro("100"),
+                          expires_at=T0 + 86400, ts=T0)
+
+
 def test_holidays_seeded():
     from app import sessions
     xmas = datetime(2026, 12, 25, 15, 0,

@@ -1,11 +1,13 @@
 """claire-api entrypoint: python -m app.api.server (systemd: claire-api.service).
-Builds the production world from var/ + etc/claire.env and serves :7788."""
+Builds the production world from var/ + etc/claire.env and serves
+CLAIRE_API_PORT (default :7788, app/ports.py)."""
 import os
 import sqlite3
 import sys
 import time
 from pathlib import Path
 import logging
+from .. import ports
 from ..exchanges import lot_size as board_lot
 
 log = logging.getLogger(__name__)
@@ -87,7 +89,7 @@ def build_custodian(conn, repo, brokers, market, secret):
     from ..custodian import Custodian, _account_broker_from_db
 
     return Custodian(conn, repo, brokers,
-                     resume_post=default_resume_post("http://127.0.0.1:7788",
+                     resume_post=default_resume_post(ports.api_base(),
                                                      secret),
                      account_broker=_account_broker_from_db(conn),
                      fx_rate_for=make_fx_rate_for(conn, market),
@@ -273,7 +275,7 @@ def start_scheduler(conn, repo, desk, market, custodian, maintainer=None):
         return price_triggers.run_once(
             conn, desk, market,
             resume_post=default_resume_post(
-                "http://127.0.0.1:7788",
+                ports.api_base(),
                 os.environ.get("CLAIRE_INTERNAL_SECRET", "")),
             alert=alerts.send, cal=sessions.load(conn) or None,
             env=os.environ, require_open=spec.get("require_open", True))
@@ -313,6 +315,13 @@ def main():
     if not secret:
         log.critical("CLAIRE_INTERNAL_SECRET not set in etc/claire.env")
         sys.exit(2)
+    try:
+        api_port, _ = ports.check()
+        from .. import deskname
+        deskname.check()
+    except ValueError as e:              # a bad port or desk name
+        log.critical("%s (etc/claire.env)", e)
+        sys.exit(2)
     conn, repo, desk, claire, brokers, market = build_world()
     custodian = build_custodian(conn, repo, brokers, market, secret)
     maintainer = build_maintainer(conn)
@@ -338,7 +347,7 @@ def main():
     _quiet_status_polls()
     # log_config=None: uvicorn keeps its own loggers but writes through the
     # desk's handler, so its lines carry timestamps like everything else
-    uvicorn.run(app, host="127.0.0.1", port=7788, log_level="info",
+    uvicorn.run(app, host="127.0.0.1", port=api_port, log_level="info",
                 log_config=None)
 
 

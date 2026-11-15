@@ -184,13 +184,17 @@ class Maintainer:
     def _check_services(self, now):
         out = []
         if self.probe is not None:
-            up = self.probe("http://127.0.0.1:7787/")
-            out.append(_check("dashboards", "Dashboards (:7787)",
+            from . import ports
+            up = self.probe(ports.dashboard_base() + "/")
+            out.append(_check("dashboards",
+                              f"Dashboards (:{ports.dashboard_port()})",
                               "ok" if up else "bad",
                               "answering" if up else "NOT answering",
                               "" if up else "the pages and approvals are down"))
         # this code runs inside claire-api, so reaching here proves it is up
-        out.append(_check("claire_api", "claire-api (:7788)", "ok", "running"))
+        from . import ports
+        out.append(_check("claire_api", f"claire-api (:{ports.api_port()})",
+                          "ok", "running"))
         return out
 
     def _check_calendars(self, now):

@@ -15,6 +15,7 @@ from pathlib import Path
 
 import httpx
 import logging
+from . import deskname
 from .logsetup import swallowed
 
 log = logging.getLogger(__name__)
@@ -77,6 +78,10 @@ def tg_call(token, method, *, data=None, files=None, client=None,
             timeout=20):
     """One Bot API call; returns `result` or raises TelegramError. The token
     never appears in the exception text (it is part of the URL)."""
+    # the desk's name is a setting (app/deskname.py): every message says it
+    if data:
+        data = {k: deskname.brand(v) if k in ("text", "caption") else v
+                for k, v in data.items()}
     c = client or httpx.Client(timeout=timeout)
     try:
         r = c.post(f"https://api.telegram.org/bot{token}/{method}",
@@ -140,6 +145,7 @@ def edit_message(token, chat_id, message_id, html, *, keyboard=None,
 def send(text, *, title="Claire", path=TELEGRAM_ENV, client=None):
     """Best effort on every channel; returns which ones accepted it."""
     sent = []
+    title, text = deskname.brand(title), deskname.brand(text)
     token, chat = _telegram_cfg(path)
     if token and chat:
         c = client or httpx.Client(timeout=10)

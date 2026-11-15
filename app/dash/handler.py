@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 import httpx
 
 from .. import approvals
+from .. import deskname
 from .. import scheduler
 from ..levels import _range
 from ..levels import quote_units
@@ -80,6 +81,10 @@ class Handler(SystemViews, RunViews, OrderViews, Actions, BaseHTTPRequestHandler
     def _send(self, code, body, ctype="application/json", headers=()):
         data = body if isinstance(body, bytes) else json.dumps(
             body, default=str).encode()
+        # the desk's name is a setting (app/deskname.py): every page, script
+        # and piece of data says it as it leaves. Untouched with the default.
+        if ctype.startswith(self.GZIP_TYPES):
+            data = deskname.brand_bytes(data, self.ctx.env or None)
         extra = list(headers)
         # /api/runs and /api/approvals are over 100 KB of JSON and are
         # polled; nothing was compressed (REVIEW-2026-11-11 §4.2)
@@ -102,7 +107,12 @@ class Handler(SystemViews, RunViews, OrderViews, Actions, BaseHTTPRequestHandler
         an unchanged file costs a 304 with no body, a changed one is picked
         up at once — nothing is ever served stale."""
         st = path.stat()
-        etag = f'"{st.st_mtime_ns:x}-{st.st_size:x}"'
+        # the name is part of the version: renaming the desk must not leave
+        # the browser showing its cached copy with the old one
+        named = deskname.brand("Claire", self.ctx.env or None)
+        etag = (f'"{st.st_mtime_ns:x}-{st.st_size:x}'
+                + ("" if named == "Claire" else "-" + named.replace(" ", "_"))
+                + '"')
         if self.headers.get("If-None-Match") == etag:
             self.send_response(304)
             self.send_header("ETag", etag)

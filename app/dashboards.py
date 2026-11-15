@@ -1,4 +1,4 @@
-"""Dashboards server (:7787, stdlib, no build step — DESIGN.md §13) + the
+"""Dashboards server (CLAIRE_DASHBOARD_PORT, default :7787; stdlib, no build step — DESIGN.md §13) + the
 price watcher loop (§15). Serves pages from web/, JSON APIs over desk.db, and
 is the ONLY component that converts a human click into a resume (§10).
 
@@ -21,7 +21,7 @@ from http.server import ThreadingHTTPServer
 
 import httpx
 
-from . import approvals, scheduler, sessions
+from . import approvals, ports, scheduler, sessions
 # This file used to hold the whole server: 3,500 lines, 2,775 of them one
 # function. What it defined above create_server now lives in app/dash/common.py
 # (and app/levels.py, app/accounts.py, app/dash/usage.py); the request handler
@@ -288,8 +288,18 @@ def main():
     dash_key = ensure_dash_key(API_ROOT / "etc" / "claire.env")
     cal = sessions.load(conn) or None
     from . import alerts
+    # the two ports are settings (app/ports.py): a second desk on this
+    # machine runs on others
+    try:
+        _, dash_port = ports.check()
+        from . import deskname
+        log.info("this desk calls itself %s", deskname.check())
+    except ValueError as e:              # a bad port or desk name
+        log.critical("%s (etc/claire.env)", e)
+        raise SystemExit(2)
+    api_base = ports.api_base()
     start_watcher_thread(conn, repo, market,
-                         api_base="http://127.0.0.1:7788", cal=cal,
+                         api_base=api_base, cal=cal,
                          alert=alerts.send)
     # approvals + refused trades → the owner's Telegram DM (buttons relayed
     # back by Bob's bot to /api/telegram-decision)
@@ -304,11 +314,11 @@ def main():
     from . import telegram_bot, telegram_commands
     telegram_bot.start_poller_thread(
         conn, market, os.environ,
-        approvals.default_resume_post("http://127.0.0.1:7788", secret),
+        approvals.default_resume_post(api_base, secret),
         var / "telegram_offset",
         commands=telegram_commands.Commands(
             conn, market, os.environ,
-            telegram_commands.DeskApi("http://127.0.0.1:7788", secret),
+            telegram_commands.DeskApi(api_base, secret),
             nudge=telegram_approvals.nudge))
     bind =os.environ.get("CLAIRE_DASHBOARD_BIND", "127.0.0.1")
     # optional extra Host names (e.g. a DNS alias for this box); the
@@ -319,8 +329,9 @@ def main():
     srv = create_server(conn, repo, market, secret=secret, dash_key=dash_key,
                         narratives=Narratives(var / "narratives"),
                         env=os.environ, cal=cal, bind=bind,
-                        allowed_hosts=allowed)
-    log.info("dashboards on http://%s:7787", bind)
+                        allowed_hosts=allowed, api_base=api_base,
+                        port=dash_port)
+    log.info("dashboards on http://%s:%s", bind, dash_port)
     if bind not in ("127.0.0.1", "localhost"):
         import socket
         try:
@@ -328,7 +339,8 @@ def main():
             s.connect(("8.8.8.8", 80))          # no packet sent; reads the route
             lan = s.getsockname()[0]
             s.close()
-            log.info("reachable on your network at http://%s:7787", lan)
+            log.info("reachable on your network at http://%s:%s", lan,
+                     dash_port)
         except OSError:
             pass
         log.warning("anyone on this network can READ the desk; every POST "

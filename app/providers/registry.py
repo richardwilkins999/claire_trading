@@ -49,7 +49,10 @@ def render_prompt(prompt, ticker=None) -> str:
     Every caller goes through here, so the braces never reach a model
     literally — with no ticker in hand (an edited prompt on a role that has
     none) a neutral phrase stands in."""
-    return (prompt or "").replace("{ticker}", ticker or NO_TICKER)
+    from .. import deskname
+    # the desk's name is a setting: the chat introduces itself by it
+    return deskname.brand(
+        (prompt or "").replace("{ticker}", ticker or NO_TICKER))
 
 
 def check_capabilities(conn, agent_id, provider_id):

@@ -292,7 +292,8 @@ def dashboard_url(env):
             s.close()
         except OSError:
             host = socket.gethostname()
-    return f"http://{host}:7787"
+    from . import ports
+    return f"http://{host}:{ports.dashboard_port(env)}"
 
 
 # ── facts ─────────────────────────────────────────────────────────────────

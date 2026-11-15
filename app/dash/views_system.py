@@ -6,6 +6,7 @@ Moved out of the create_server closure in app/dashboards.py unchanged except
 that closure variables are now `self.ctx.<name>` (REVIEW-2026-11-11 §3.2)."""
 import json
 import logging
+from urllib.parse import urlparse
 from datetime import datetime
 from datetime import timezone
 
@@ -158,7 +159,8 @@ class SystemViews:
         up = self.ctx.api_ok()
         flags = []
         if not up:
-            flags.append("claire-api :7788 is down")
+            flags.append("claire-api "
+                         f":{urlparse(self.ctx.api_base).port or '?'} is down")
         kinds = {r[0] for r in self.ctx.conn.execute(
             "SELECT p.kind FROM agents a JOIN providers p"
             " ON p.id=a.provider_id WHERE a.enabled=1")}
@@ -285,7 +287,7 @@ class SystemViews:
             why = "no live account yet: run bin/claire live setup"
         elif not self._from_this_pc():
             why = ("arming is only accepted from a browser on the desk's "
-                   "own PC (http://127.0.0.1:7787)")
+                   f"own PC (http://127.0.0.1:{self.server.server_address[1]})")
         else:
             why = None
         return {**st, "metrics": live_trading.metrics(self.ctx.conn, clock=self.ctx.clock),

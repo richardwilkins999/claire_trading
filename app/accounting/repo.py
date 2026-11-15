@@ -282,18 +282,24 @@ class Repo:
                 raise RiskLimitExceeded(f"would exceed max_open_positions {cap}")
         cap = limits.get("max_position_pct")
         if cap is not None and side == "buy":
+            # exact: integer micro-units and a Decimal cap. The sums used to
+            # be divided by 1e6 inside SQL (a float per lot) and the test
+            # itself was a float division, so a position sitting exactly on
+            # the cap could land either side of it (REVIEW-2026-11-11 §3.6).
             (open_cost,) = self.conn.execute(
-                "SELECT COALESCE(SUM(qty_remaining*cost_per_share_base/1e6),0)"
+                "SELECT COALESCE(SUM(qty_remaining*cost_per_share_base),0)"
                 " FROM lots WHERE account_id=? AND qty_remaining>0"
                 " AND qty_opened>0", (account_id,)).fetchone()
             (inst_cost,) = self.conn.execute(
-                "SELECT COALESCE(SUM(qty_remaining*cost_per_share_base/1e6),0)"
+                "SELECT COALESCE(SUM(qty_remaining*cost_per_share_base),0)"
                 " FROM lots WHERE account_id=? AND instrument_id=?"
                 " AND qty_remaining>0 AND qty_opened>0",
                 (account_id, instrument_id)).fetchone()
-            equity = self.cash_balance(account_id) + int(open_cost)
+            open_cost, inst_cost = int(open_cost) // MICRO, \
+                int(inst_cost) // MICRO
+            equity = self.cash_balance(account_id) + open_cost
             if equity > 0 and \
-                    (int(inst_cost) + notional) / equity * 100 > cap:
+                    (inst_cost + notional) * 100 > Decimal(str(cap)) * equity:
                 raise RiskLimitExceeded(
                     f"position would exceed max_position_pct {cap}% of equity")
         cap = limits.get("max_trades_per_day")

@@ -33,8 +33,21 @@ DRAIN_STATE="$ROOT/var/.drain-schedules.json"
 STOPPED_MARK="$ROOT/var/.stopped-on-purpose"
 API_PAT='-m app\.api\.server( |$)'
 DASH_PAT='-m app\.dashboards( |$)'
-API_URL='http://127.0.0.1:7788'
-DASH_URL='http://127.0.0.1:7787'
+# The two ports are settings (CLAIRE_API_PORT / CLAIRE_DASHBOARD_PORT in
+# etc/claire.env, app/ports.py), so a second desk on this machine can use
+# others. Read here the same way the services read them: the environment
+# first, then the file, then the defaults.
+port_setting() {
+  local v="${!1:-}"
+  if [ -z "$v" ] && [ -f "$ENV_FILE" ]; then
+    v="$(grep -E "^$1=" "$ENV_FILE" | tail -n 1 | cut -d= -f2- | tr -d "\"' \r" || true)"
+  fi
+  case "$v" in ''|*[!0-9]*) printf '%s' "$2" ;; *) printf '%s' "$v" ;; esac
+}
+API_PORT="$(port_setting CLAIRE_API_PORT 7788)"
+DASH_PORT="$(port_setting CLAIRE_DASHBOARD_PORT 7787)"
+API_URL="http://127.0.0.1:$API_PORT"
+DASH_URL="http://127.0.0.1:$DASH_PORT"
 DRAIN_TIMEOUT="${CLAIRE_DRAIN_TIMEOUT:-300}"
 
 c_red=$'\033[31m'; c_grn=$'\033[32m'; c_yel=$'\033[33m'; c_dim=$'\033[2m'
@@ -228,7 +241,7 @@ cmd_status() {
     if grep -qs '^CLAIRE_DASHBOARD_BIND=0\.0\.0\.0' "$ENV_FILE"; then
       local lan; lan="$(hostname -I 2>/dev/null | awk '{print $1}')"
       if [ -n "$lan" ]; then
-        dim "    from another device: http://$lan:7787"
+        dim "    from another device: http://$lan:$DASH_PORT"
       fi
     fi
   else say "  claire-dashboards ${c_dim}stopped${c_off}"; fi
@@ -383,7 +396,7 @@ case "${1:-}" in
   *) cat <<EOF
 Claire desk control
 
-  claire start                 start claire-api (:7788) + dashboards (:7787)
+  claire start                 start claire-api (:$API_PORT) + dashboards (:$DASH_PORT)
   claire stop [--graceful]     pause schedules, let work in flight finish,
                                then stop  (default; CLAIRE_DRAIN_TIMEOUT=${DRAIN_TIMEOUT}s)
   claire stop --kill           stop now, abandoning anything in flight

@@ -10,6 +10,26 @@ import pytest
 OPTED_IN = bool(os.environ.get("CLAIRE_SMOKE"))
 
 
+def _desk_urls():
+    """The running desk's two addresses: its ports are settings
+    (app/ports.py), read from etc/claire.env the way the services do."""
+    from app import ports
+    from app.api.server import ROOT
+    env = dict(os.environ)
+    try:
+        for line in (ROOT / "etc" / "claire.env").read_text().splitlines():
+            k, sep, v = line.strip().partition("=")
+            if sep and k in ("CLAIRE_API_PORT", "CLAIRE_DASHBOARD_PORT"):
+                env.setdefault(k, v.strip())
+    except OSError:
+        pass
+    return ports.api_base(env), ports.dashboard_base(env)
+
+
+API, DASH = _desk_urls() if OPTED_IN else ("http://127.0.0.1:7788",
+                                           "http://127.0.0.1:7787")
+
+
 def _up(url):
     if not OPTED_IN:                # do not even probe the live desk
         return False
@@ -19,21 +39,21 @@ def _up(url):
         return False
 
 
-needs_api = pytest.mark.skipif(not _up("http://127.0.0.1:7788/status"),
+needs_api = pytest.mark.skipif(not _up(API + "/status"),
                                reason="set CLAIRE_SMOKE=1 and start claire-api")
-needs_dash = pytest.mark.skipif(not _up("http://127.0.0.1:7787/api/overview"),
+needs_dash = pytest.mark.skipif(not _up(DASH + "/api/overview"),
                                 reason="set CLAIRE_SMOKE=1 and start the dashboards")
 
 
 @needs_api
 def test_api_status():
-    body = httpx.get("http://127.0.0.1:7788/status", timeout=5).json()
+    body = httpx.get(API + "/status", timeout=5).json()
     assert body["ok"] is True
 
 
 @needs_api
 def test_ask_streams_ndjson():
-    with httpx.stream("POST", "http://127.0.0.1:7788/ask",
+    with httpx.stream("POST", API + "/ask",
                       json={"text": "status?"}, timeout=60) as r:
         lines = [line for line in r.iter_lines() if line]
     assert lines, "no NDJSON lines from /ask"
@@ -46,13 +66,13 @@ def test_ask_streams_ndjson():
 def test_every_page_serves():
     for page in ("/", "/portfolio", "/markets", "/trading", "/agents",
                  "/providers"):
-        r = httpx.get(f"http://127.0.0.1:7787{page}", timeout=5)
+        r = httpx.get(f"{DASH}{page}", timeout=5)
         assert r.status_code == 200, page
 
 
 @needs_dash
 def test_live_quote_plausible():
-    r = httpx.get("http://127.0.0.1:7787/api/quote?symbols=NVDA",
+    r = httpx.get(DASH + "/api/quote?symbols=NVDA",
                   timeout=30).json()
     if "error" in r and "429" in r["error"]:
         pytest.skip("Yahoo rate-limited right now")
