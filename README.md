@@ -48,7 +48,7 @@ Chat seam (voice/assistants integrate here):
 ## Tests
 
 ```sh
-tests/run.sh          # about 800 offline tests, ~90 s: accounting (exact
+tests/run.sh          # about 1,150 offline tests, ~50 s: accounting (exact
                       # micro-unit money), graph structure + interrupt/
                       # resume, authorization (403/409/410), providers,
                       # sessions, executor/custodian/watcher, dashboards HTTP
@@ -79,6 +79,27 @@ bin/claire status                # what's running, what's in flight
 
 Resetting the book (`bin/claire-reset`) is a separate, deliberately harder
 to reach command — not part of the daily-use script.
+
+### A second desk on the same machine, and what a desk is called
+
+Three settings in `etc/claire.env` (all optional; `etc/claire.env.example`
+documents them):
+
+| Setting | Default | What it is |
+|---|---|---|
+| `CLAIRE_API_PORT` | 7788 | claire-api's port (always loopback) |
+| `CLAIRE_DASHBOARD_PORT` | 7787 | the dashboards' port |
+| `CLAIRE_ASSISTANT_NAME` | Claire | the LLM that runs the desk: "Ask Claire", "Claire asks you before selling", how the chat introduces itself |
+| `CLAIRE_DESK_NAME` | the assistant's name | the desk itself: page titles, the title on Telegram alerts and notifications |
+
+To run a second desk: clone the repository into another folder, give its
+`etc/claire.env` two other ports (say 7798 and 7797) and its own names, and
+start it with that folder's `bin/claire`. Each desk has its own `var/`
+(database, logs, sign-ins) and `bin/claire` only ever touches the processes
+started from its own folder. The two ports must differ; a bad value stops
+the start with a message. Only what is displayed changes with the names —
+commands, settings (`CLAIRE_*`) and file names keep "claire". Two desks
+must not share a Telegram bot token (one bot, one reader).
 
 ### Telegram
 

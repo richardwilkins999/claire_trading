@@ -15,7 +15,7 @@ from datetime import datetime
 
 import httpx
 
-from . import saxo_live
+from . import saxo_http, saxo_live
 from .saxo_broker import MIC_BY_SUFFIX, split_symbol
 
 ASSET_TYPES = ("Stock", "Etf", "CfdOnStock", "CfdOnEtf")
@@ -46,11 +46,11 @@ def _get(path, params, *, which, client):
             time.sleep(wait)
         _last[0] = time.monotonic()
     token = saxo_live.access_token(which)
-    r = client.get(saxo_live.api_base(which) + path, params=params,
-                   headers={"Authorization": f"Bearer {token}"})
-    if r.status_code >= 400:
-        raise SaxoChartError(f"Saxo {path}: HTTP {r.status_code}")
-    return r.json()
+    try:
+        return saxo_http.send(client, which, "GET", path, token,
+                              params=params)
+    except saxo_http.SaxoHTTPError as e:
+        raise SaxoChartError(f"Saxo {path}: HTTP {e.status}") from None
 
 
 def _instrument(symbol, *, which, client):

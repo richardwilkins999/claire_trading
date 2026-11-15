@@ -94,19 +94,106 @@ def after_fees(p, value, cost):
             "net_pct": float(net / outlay * 100) if outlay else None}
 
 
+# ── one position, or every position the book holds ──────────────────────
+# Portfolio used to ask each question below once per position — about fifty
+# statements for six positions, on a page that refreshes itself
+# (REVIEW-2026-11-11 §4.3). Each is now ONE statement, whether it is asked
+# about a single position (`key` = (account id, instrument id)) or, with no
+# key, about every position the book still holds. The functions that take
+# one position keep their names and give the answers they always gave.
+
+_HELD = ("(SELECT DISTINCT account_id, instrument_id FROM lots"
+         " WHERE qty_remaining > 0) held")
+
+
+def _scope(alias, key):
+    """(JOIN, WHERE, arguments) keeping `alias`'s rows to one position — or,
+    with no key, to the positions that still have open lots."""
+    if key is not None:
+        return ("", f"{alias}.account_id=? AND {alias}.instrument_id=?",
+                list(key))
+    return (f" JOIN {_HELD} ON held.account_id = {alias}.account_id"
+            f" AND held.instrument_id = {alias}.instrument_id", "1", [])
+
+
+def _by_position(pairs) -> dict:
+    out = {}
+    for key, value in pairs:
+        out.setdefault(key, []).append(value)
+    return out
+
+
+def _select_in(conn, sql, ids, args=()):
+    """Rows of `sql` — which has one `{marks}` where the ids go — for any
+    number of ids. SQLite caps the variables in a statement (999 on older
+    builds), so they go in slices; a desk's positions fit in one."""
+    ids, rows = list(ids), []
+    for at in range(0, len(ids), 500):
+        part = ids[at:at + 500]
+        rows += conn.execute(sql.format(marks=",".join("?" * len(part))),
+                             [*part, *args]).fetchall()
+    return rows
+
+
+def _fills(conn, key=None) -> list:
+    """[(position key, fill)], oldest first."""
+    join, where, args = _scope("e", key)
+    return [((e["account_id"], e["instrument_id"]),
+             {"ts": e["executed_at"], "side": e["side"],
+              "qty": float(_d(e["qty"])),
+              "price_native": float(_d(e["price_native"])),
+              "commission": float(_d(e["commission"])),
+              "fx_rate": float(_d(e["fx_rate"])),
+              "work_item_id": e["work_item_id"]})
+            for e in conn.execute(
+                f"SELECT e.* FROM executions e{join} WHERE {where}"
+                # two fills in the same second stay in the order they were
+                # recorded — what the one-position lookup always returned,
+                # because it walks the position's index
+                " ORDER BY e.executed_at, e.rowid", args)]
+
+
 def fills_for(conn, account_id, instrument_id) -> list[dict]:
     """Every fill on this position — what you actually paid, when. These
     become the markers on the chart."""
-    return [{"ts": e["executed_at"], "side": e["side"],
-             "qty": float(_d(e["qty"])),
-             "price_native": float(_d(e["price_native"])),
-             "commission": float(_d(e["commission"])),
-             "fx_rate": float(_d(e["fx_rate"])),
-             "work_item_id": e["work_item_id"]}
-            for e in conn.execute(
-                "SELECT * FROM executions WHERE account_id=? AND"
-                " instrument_id=? ORDER BY executed_at",
-                (account_id, instrument_id))]
+    return [f for _, f in _fills(conn, (account_id, instrument_id))]
+
+
+def fills_by_position(conn) -> dict:
+    """fills_for, for every position still held, in one statement:
+    {(account id, instrument id): [fill, …]}."""
+    return _by_position(_fills(conn))
+
+
+def _held_avgs(conn, key=None) -> dict:
+    """{(account id, instrument id, is it a short): average price paid for
+    the shares STILL HELD, in the instrument's own currency}. None where a
+    lot's fill has no FX rate to convert its cost back with."""
+    where, args = ("l.account_id=? AND l.instrument_id=?", list(key)) \
+        if key is not None else ("1", [])
+    sums = {}
+    for r in conn.execute(
+            "SELECT l.account_id, l.instrument_id, l.qty_opened < 0 AS short,"
+            " l.qty_remaining AS q, l.cost_per_share_base AS c,"
+            " e.fx_rate AS fx FROM lots l JOIN executions e"
+            f" ON e.id = l.open_execution_id WHERE {where}"
+            " AND l.qty_remaining > 0"
+            # oldest lot first within a position, as the one-position
+            # lookup read them
+            " ORDER BY l.account_id, l.instrument_id, l.opened_at, l.rowid",
+            args):
+        s = sums.setdefault((r["account_id"], r["instrument_id"],
+                             bool(r["short"])),
+                            {"value": Decimal(0), "qty": Decimal(0),
+                             "ok": True})
+        if not r["fx"]:
+            s["ok"] = False                 # cannot convert back: keep fills
+            continue
+        # cost_per_share_base is native price × the fill's FX rate
+        s["value"] += Decimal(r["q"]) * Decimal(r["c"]) / Decimal(r["fx"])
+        s["qty"] += Decimal(r["q"])
+    return {k: (float(s["value"] / s["qty"]) if s["ok"] and s["qty"]
+                else None) for k, s in sums.items()}
 
 
 def open_lots_avg_native(conn, position, short=False):
@@ -116,35 +203,99 @@ def open_lots_avg_native(conn, position, short=False):
     desk does not hold)."""
     if not position or not position.get("account_id"):
         return None
-    value, qty = Decimal(0), Decimal(0)
-    for r in conn.execute(
-            "SELECT l.qty_remaining AS q, l.cost_per_share_base AS c,"
-            " e.fx_rate AS fx FROM lots l JOIN executions e"
-            " ON e.id = l.open_execution_id WHERE l.account_id=? AND"
-            " l.instrument_id=? AND l.qty_remaining > 0 AND"
-            " (l.qty_opened < 0) = ?",
-            (position["account_id"], position["instrument_id"],
-             1 if short else 0)):
-        if not r["fx"]:
-            return None                     # cannot convert back: keep fills
-        # cost_per_share_base is native price × the fill's FX rate
-        value += Decimal(r["q"]) * Decimal(r["c"]) / Decimal(r["fx"])
-        qty += Decimal(r["q"])
-    return float(value / qty) if qty else None
+    avgs = _held_avgs(conn, (position["account_id"],
+                             position["instrument_id"]))
+    return next((avg for (_, _, is_short), avg in avgs.items()
+                 if is_short == bool(short)), None)
 
 
-def levels_for(conn, position, fills, fx=None, now=None) -> dict:
-    """The lines worth drawing: your average cost, the thesis stop/target
-    that justified the trade, and the watcher's alert threshold — all in the
-    instrument's own currency. `fx` is native → account base (current); the
-    watcher stores its trailing peak in BASE currency, so it is converted
-    back here (falling back to the rate at the last opening fill)."""
+def _opening_fills(position, fills):
+    """(is it a short, the fills that OPENED this position): buys for a
+    long, sells for a short."""
+    short = (position or {}).get("qty", 0) < 0
+    return short, [f for f in fills
+                   if f["side"] == ("sell" if short else "buy")]
+
+
+def _thesis_run(opens):
+    """The run behind the latest opening fill that had one."""
+    return next((f["work_item_id"] for f in reversed(opens)
+                 if f["work_item_id"]), None)
+
+
+def _alert_for(alerts, position, short):
+    """This position's own rule (instrument, account, side); a legacy row
+    with no account/side applies to any position in the name. Its own rule
+    comes before a legacy one, and the newest before an older."""
+    acct, side = position.get("account_id"), -1 if short else 1
+    mine = [a for a in alerts
+            if a["instrument_id"] == position["instrument_id"]
+            and (a["account_id"] is None or a["account_id"] == acct)
+            and (a["side"] is None or a["side"] == side)]
+    return min(mine, key=lambda a: (a["account_id"] is None, -a["id"]),
+               default=None)
+
+
+def _today(now=None) -> str:
+    return time.strftime("%Y-%m-%d", time.gmtime(
+        now if now is not None else time.time()))
+
+
+def _fired_today(alert, today) -> int:
+    return alert["fire_count_today"] or 0 \
+        if alert["fire_count_date"] == today else 0
+
+
+def _level_rows(conn, asked, today, key=None, held=True) -> dict:
+    """What levels need from the database for these positions — `asked` is
+    [(position, its fills)] — in four statements at most, however many
+    positions there are: the average of the open lots, the thesis of each
+    position's run, the armed trailing alerts, and the sell reviews started
+    by the alerts that have fired today. `key` narrows it to one position."""
+    alerts = conn.execute(
+        "SELECT id, instrument_id, account_id, side, rule, threshold,"
+        " peak_base, last_fired_at, fire_count_today, fire_count_date"
+        " FROM price_alerts WHERE armed=1 AND rule='trail_pct'"
+        + (" AND instrument_id=?" if key is not None else ""),
+        [key[1]] if key is not None else []).fetchall()
+    runs, fired = set(), {}
+    for position, fills in asked:
+        short, opens = _opening_fills(position, fills)
+        run = _thesis_run(opens)
+        if run:
+            runs.add(run)
+        alert = _alert_for(alerts, position, short)
+        if alert and _fired_today(alert, today):
+            # the earliest moment a review of this name could count for any
+            # of its positions; each position applies its own below
+            since = (alert["last_fired_at"] or 0) - 120
+            iid = position["instrument_id"]
+            fired[iid] = min(since, fired.get(iid, since))
+    return {
+        "held": _held_avgs(conn, key) if held else {},
+        "theses": {r["id"]: r["thesis_json"] for r in _select_in(
+            conn, "SELECT id, thesis_json FROM work_items"
+                  " WHERE id IN ({marks})", sorted(runs))},
+        "alerts": alerts,
+        "reviews": _select_in(
+            conn, "SELECT i.id AS instrument_id, w.id AS id, w.state,"
+                  " w.thesis_json, w.created_at FROM work_items w"
+                  " JOIN instruments i ON i.ticker=w.ticker WHERE"
+                  " i.id IN ({marks}) AND w.kind='sell_review'"
+                  " AND w.created_at>=?"
+                  # newest first; of two started in the same second, the
+                  # one recorded first — as the one-position lookup chose
+                  " ORDER BY w.created_at DESC, w.rowid",
+            sorted(fired), [min(fired.values())]) if fired else []}
+
+
+def _levels(position, fills, fx, today, rows) -> dict:
+    """levels_for, from rows already fetched (_level_rows) — no SQL here."""
     out = {"avg_cost_native": None, "stop_loss": None, "take_profit": None,
            "entry_low": None, "entry_high": None, "alert": None,
            "work_item_id": None}
-    short = (position or {}).get("qty", 0) < 0
     # the fills that OPENED this position: buys for a long, sells for a short
-    opens = [f for f in fills if f["side"] == ("sell" if short else "buy")]
+    short, opens = _opening_fills(position, fills)
     if opens:
         qty = sum(f["qty"] for f in opens)
         if qty:
@@ -154,17 +305,16 @@ def levels_for(conn, position, fills, fx=None, now=None) -> dict:
     # position has been sold, the shares still held are the LATER lots (FIFO)
     # and their average is what "you paid" means; the line used to stay at
     # the all-time average.
-    held = open_lots_avg_native(conn, position, short)
+    held = rows["held"].get((position.get("account_id"),
+                             position["instrument_id"], short))
     if held is not None:
         out["avg_cost_native"] = held
-    wi_id = next((f["work_item_id"] for f in reversed(opens)
-                  if f["work_item_id"]), None)
+    wi_id = _thesis_run(opens)
     if wi_id:
-        row = conn.execute("SELECT thesis_json FROM work_items WHERE id=?",
-                           (wi_id,)).fetchone()
-        if row and row["thesis_json"]:
+        thesis = rows["theses"].get(wi_id)
+        if thesis:
             try:
-                t = json.loads(row["thesis_json"])
+                t = json.loads(thesis)
                 out.update({"stop_loss": t.get("stop_loss"),
                             "take_profit": t.get("take_profit"),
                             "entry_low": t.get("entry_low"),
@@ -172,17 +322,7 @@ def levels_for(conn, position, fills, fx=None, now=None) -> dict:
                             "work_item_id": wi_id})
             except ValueError:
                 pass
-    # this position's own rule (instrument, account, side); a legacy row
-    # with no account/side applies to any position in the name
-    alert = conn.execute(
-        "SELECT rule, threshold, peak_base, last_fired_at, fire_count_today,"
-        " fire_count_date FROM price_alerts"
-        " WHERE instrument_id=? AND armed=1 AND rule='trail_pct'"
-        " AND (account_id IS NULL OR account_id=?)"
-        " AND (side IS NULL OR side=?)"
-        " ORDER BY account_id IS NULL, id DESC LIMIT 1",
-        (position["instrument_id"], position.get("account_id"),
-         -1 if short else 1)).fetchone()
+    alert = _alert_for(rows["alerts"], position, short)
     if alert:
         # draw the floor where it ACTUALLY sits — trailed from the best
         # price seen, not pinned to entry. Falls back to average cost until
@@ -199,10 +339,7 @@ def levels_for(conn, position, fills, fx=None, now=None) -> dict:
             # ESCALATE_PCT before alerting again (watcher._breached): show
             # the level that is LIVE now, not the one already passed
             from .watcher import ESCALATE_PCT, MAX_FIRES_PER_DAY
-            today = time.strftime("%Y-%m-%d", time.gmtime(
-                now if now is not None else time.time()))
-            fired = alert["fire_count_today"] or 0 \
-                if alert["fire_count_date"] == today else 0
+            fired = _fired_today(alert, today)
             live_pct = alert["threshold"] + ESCALATE_PCT * fired
             out["alert"] = ref * (1 + sign * live_pct / 100)
             out["alert_rule"] = (f"trailing {'+' if short else '−'}"
@@ -218,13 +355,10 @@ def levels_for(conn, position, fills, fx=None, now=None) -> dict:
                 out["alert_done_today"] = fired >= MAX_FIRES_PER_DAY
                 out["alert_last_fired"] = alert["last_fired_at"]
                 # what the review it started concluded
-                rv = conn.execute(
-                    "SELECT w.id, w.state, w.thesis_json FROM work_items w"
-                    " JOIN instruments i ON i.ticker=w.ticker WHERE"
-                    " i.id=? AND w.kind='sell_review' AND w.created_at>=?"
-                    " ORDER BY w.created_at DESC LIMIT 1",
-                    (position["instrument_id"],
-                     (alert["last_fired_at"] or 0) - 120)).fetchone()
+                since = (alert["last_fired_at"] or 0) - 120
+                rv = next((r for r in rows["reviews"]
+                           if r["instrument_id"] == position["instrument_id"]
+                           and r["created_at"] >= since), None)
                 if rv:
                     try:
                         verdict = json.loads(rv["thesis_json"] or "{}").get(
@@ -236,43 +370,97 @@ def levels_for(conn, position, fills, fx=None, now=None) -> dict:
     return out
 
 
-def legs_for(conn, account_id, instrument_id) -> list[dict]:
-    """The protective orders resting at the venue for this position (the
-    bracket's stop-loss / take-profit, DESIGN.md §11a) — what will actually
-    sell it if the price gets there, as opposed to the thesis levels.
-    A stop whose entry carried a trail % on a venue that holds stops (Saxo)
-    is a TRAILING stop there: `trails` is its distance."""
+def levels_for(conn, position, fills, fx=None, now=None) -> dict:
+    """The lines worth drawing: your average cost, the thesis stop/target
+    that justified the trade, and the watcher's alert threshold — all in the
+    instrument's own currency. `fx` is native → account base (current); the
+    watcher stores its trailing peak in BASE currency, so it is converted
+    back here (falling back to the rate at the last opening fill)."""
+    today = _today(now)
+    acct = (position or {}).get("account_id")
+    key = (acct, position["instrument_id"])
+    # no account on the position: nothing to say which lots are its own
+    rows = _level_rows(conn, [(position, fills)], today, key,
+                       held=bool(acct))
+    # these are this position's lots whatever the caller's ids look like:
+    # file them under the ids it gave
+    rows["held"] = {(*key, short): avg
+                    for (_, _, short), avg in rows["held"].items()}
+    return _levels(position, fills, fx, today, rows)
+
+
+def _legs(conn, key=None) -> list:
+    """[(position key, leg)] — stops before targets, and each kind in the
+    order it was placed. The entry each leg protects comes along in the same
+    statement (it used to be looked up once per stop)."""
     from .graph.nodes_execution import trail_distance
 
     def trails(r):
         if r["leg"] != "stop" or not r["parent_order_id"] or \
                 not str(r["broker_order_id"] or "").isdigit():
             return None                     # sim legs ("sim-…") never trail
-        p = conn.execute("SELECT trail_pct, stop_loss, limit_price FROM"
-                         " orders WHERE id=?", (r["parent_order_id"],)
-                         ).fetchone()
-        d = trail_distance(p) if p else None
-        return {"trails": float(d), "trail_pct": p["trail_pct"]} if d \
+        if r["parent_id"] is None:
+            return None                     # the entry's row is gone
+        d = trail_distance({"trail_pct": r["parent_trail_pct"],
+                            "stop_loss": r["parent_stop_loss"],
+                            "limit_price": r["parent_limit_price"]})
+        return {"trails": float(d), "trail_pct": r["parent_trail_pct"]} if d \
             else None
-    return [{"leg": r["leg"], "side": r["side"],
-             "qty": float(_d(r["qty"])),
-             "price": float(_d(r["stop_loss"] if r["leg"] == "stop"
-                               else r["limit_price"])),
-             "status": r["status"], "venue_order": r["broker_order_id"],
-             **(trails(r) or {})}
+    join, where, args = _scope("o", key)
+    return [((r["account_id"], r["instrument_id"]),
+             {"leg": r["leg"], "side": r["side"],
+              "qty": float(_d(r["qty"])),
+              "price": float(_d(r["stop_loss"] if r["leg"] == "stop"
+                                else r["limit_price"])),
+              "status": r["status"], "venue_order": r["broker_order_id"],
+              **(trails(r) or {})})
             for r in conn.execute(
-                "SELECT * FROM orders WHERE account_id=? AND instrument_id=?"
-                " AND leg IS NOT NULL AND status IN ('placed',"
-                "'partially_filled') ORDER BY leg", (account_id,
-                                                     instrument_id))]
+                "SELECT o.*, p.id AS parent_id,"
+                " p.trail_pct AS parent_trail_pct,"
+                " p.stop_loss AS parent_stop_loss,"
+                " p.limit_price AS parent_limit_price"
+                f" FROM orders o{join}"
+                " LEFT JOIN orders p ON p.id = o.parent_order_id"
+                f" WHERE {where} AND o.leg IS NOT NULL AND o.status IN"
+                " ('placed','partially_filled') ORDER BY o.leg, o.rowid",
+                args)]
+
+
+def legs_for(conn, account_id, instrument_id) -> list[dict]:
+    """The protective orders resting at the venue for this position (the
+    bracket's stop-loss / take-profit, DESIGN.md §11a) — what will actually
+    sell it if the price gets there, as opposed to the thesis levels.
+    A stop whose entry carried a trail % on a venue that holds stops (Saxo)
+    is a TRAILING stop there: `trails` is its distance."""
+    return [leg for _, leg in _legs(conn, (account_id, instrument_id))]
+
+
+def legs_by_position(conn) -> dict:
+    """legs_for, for every position still held, in one statement:
+    {(account id, instrument id): [leg, …]}."""
+    return _by_position(_legs(conn))
+
+
+def _realized(conn, key=None) -> dict:
+    """{position key: realized P/L so far, in micro-units}; a position that
+    has closed nothing is left out."""
+    join, where, args = _scope("l", key)
+    return {(r[0], r[1]): r[2] for r in conn.execute(
+        "SELECT l.account_id, l.instrument_id,"
+        " COALESCE(SUM(c.realized_pl_base),0) FROM lot_closures c"
+        f" JOIN lots l ON l.id = c.lot_id{join} WHERE {where}"
+        " GROUP BY l.account_id, l.instrument_id", args)}
 
 
 def realized_for(conn, account_id, instrument_id) -> float:
-    (pl,) = conn.execute(
-        "SELECT COALESCE(SUM(c.realized_pl_base),0) FROM lot_closures c"
-        " JOIN lots l ON l.id = c.lot_id WHERE l.account_id=? AND"
-        " l.instrument_id=?", (account_id, instrument_id)).fetchone()
-    return float(_d(pl))
+    return float(_d(sum(_realized(conn, (account_id,
+                                         instrument_id)).values())))
+
+
+def realized_by_position(conn) -> dict:
+    """realized_for, for every position still held, in one statement:
+    {(account id, instrument id): realized P/L}; none closed → not listed."""
+    return {key: float(_d(pl)) for key, pl in _realized(conn).items()}
 
 
 def build(conn, market, *, clock, cal=None, env=None) -> dict:
@@ -285,6 +473,16 @@ def build(conn, market, *, clock, cal=None, env=None) -> dict:
     symbols = sorted({p["symbol"] for p in positions})
     quotes = market.metrics(symbols) if symbols else {}
     now = datetime.fromtimestamp(int(clock()), tz=timezone.utc)
+
+    # each kind of row once for the whole page, handed out below — not once
+    # per position (REVIEW-2026-11-11 §4.3)
+    realized = realized_by_position(conn)
+    fills = fills_by_position(conn)
+    legs = legs_by_position(conn)
+    today = _today()
+    level_rows = _level_rows(
+        conn, [(p, fills.get((p["account_id"], p["instrument_id"]), []))
+               for p in positions], today)
 
     total_value = Decimal(0)
     for p in positions:
@@ -322,11 +520,11 @@ def build(conn, market, *, clock, cal=None, env=None) -> dict:
             p.update(fees_paid_base=p["commissions"], exit_fee_est_base=None,
                      net_base=None, net_pct=None)
         p.pop("fee_model", None)
-        p["realized_base"] = realized_for(conn, p["account_id"],
-                                          p["instrument_id"])
-        p["fills"] = fills_for(conn, p["account_id"], p["instrument_id"])
-        p["levels"] = levels_for(conn, p, p["fills"], fx=fx)
-        p["legs"] = legs_for(conn, p["account_id"], p["instrument_id"])
+        key = (p["account_id"], p["instrument_id"])
+        p["realized_base"] = realized.get(key, 0.0)
+        p["fills"] = fills.get(key, [])
+        p["levels"] = _levels(p, p["fills"], fx, today, level_rows)
+        p["legs"] = legs.get(key, [])
         # which parts of its protection may be moved now that it is held —
         # the broker's row in capabilities.CAN_CHANGE; the pages offer an
         # edit only where this says yes, and the server checks it again
@@ -371,11 +569,13 @@ def build(conn, market, *, clock, cal=None, env=None) -> dict:
         " WHERE c.closed_at > ? ORDER BY c.closed_at DESC LIMIT 20",
         (int(clock()) - 30 * 86400,))]
 
+    # every account's cash in one statement (it was one per account)
+    cash_by = dict(conn.execute(
+        "SELECT account_id, COALESCE(SUM(amount_base),0)"
+        " FROM cash_transactions GROUP BY account_id").fetchall())
     accounts = []
     for a in conn.execute("SELECT * FROM broker_accounts"):
-        (cash,) = conn.execute(
-            "SELECT COALESCE(SUM(amount_base),0) FROM cash_transactions"
-            " WHERE account_id=?", (a["id"],)).fetchone()
+        cash = cash_by.get(a["id"], 0)
         held = sum(p["value_base"] or 0 for p in positions
                    if p["account_id"] == a["id"])
         accounts.append({"id": a["id"], "broker": a["broker"],

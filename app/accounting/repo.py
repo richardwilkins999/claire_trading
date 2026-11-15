@@ -563,15 +563,10 @@ class Repo:
     # ── queries the tests and views build on ─────────────────────────────
     def position(self, account_id, instrument_id):
         """(signed qty, total cost ex-comm, total commission attached)."""
-        row = self.conn.execute(
-            "SELECT COALESCE(SUM(CASE WHEN qty_opened < 0 THEN -qty_remaining"
-            "                         ELSE qty_remaining END), 0) AS qty,"
-            "       COALESCE(SUM(CASE WHEN qty_opened < 0 THEN 0 ELSE 1 END *"
-            "                    qty_remaining * cost_per_share_base / ?), 0) AS cost,"
-            "       COALESCE(SUM(commission_allocated), 0) AS comm"
-            " FROM lots WHERE account_id=? AND instrument_id=? AND qty_remaining>0",
-            (MICRO, account_id, instrument_id)).fetchone()
-        return row["qty"], int(row["cost"]), row["comm"]
+        # the lots are added up in one place for every caller — the same
+        # statement this method used to carry (REVIEW-2026-11-11 §3.1)
+        from . import holdings
+        return holdings.ledger_position(self.conn, account_id, instrument_id)
 
     def realized_pl(self, account_id, instrument_id=None) -> int:
         q = ("SELECT COALESCE(SUM(c.realized_pl_base),0) FROM lot_closures c"

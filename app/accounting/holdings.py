@@ -4,12 +4,13 @@
 with three ways of turning micro-units into a number (integer truncation,
 float division in SQL, Decimal) — REVIEW-2026-11-11 §3.1. The lots table is
 the truth: a lot's qty_remaining is positive, and a short is a lot whose
-qty_opened is negative. These three functions are that rule, in exact
-Decimal shares, signed (a short is negative).
+qty_opened is negative. net, by_account and positions are that rule, in
+exact Decimal shares, signed (a short is negative); ledger_position is the
+same rule in the ledger's own whole micro-units, with what the lots cost.
 """
 from decimal import Decimal
 
-from .money import from_micro
+from .money import MICRO, from_micro
 
 _NET = ("SUM(CASE WHEN l.qty_opened < 0 THEN -l.qty_remaining"
         " ELSE l.qty_remaining END)")
@@ -60,3 +61,22 @@ def positions(conn, account_id=None) -> list:
                 f" ON i.id = l.instrument_id WHERE {where}"
                 " GROUP BY l.account_id, l.instrument_id"
                 " ORDER BY l.account_id, i.ticker", args) if r["q"]]
+
+
+def ledger_position(conn, account_id, instrument_id) -> tuple:
+    """One position as the ledger's own checks read it (Repo.position), in
+    whole micro-units rather than Decimal: (net shares, signed as above;
+    what the LONG lots still held cost, before commission; the commission
+    still attached to the open lots). The cost is each lot's shares × cost
+    per share, cut to a whole micro-unit lot by lot — the ledger's rule,
+    moved here from repo.py as it was."""
+    row = conn.execute(
+        f"SELECT COALESCE({_NET}, 0) AS qty,"
+        "       COALESCE(SUM(CASE WHEN l.qty_opened < 0 THEN 0 ELSE 1 END *"
+        "                    l.qty_remaining * l.cost_per_share_base / ?), 0)"
+        "       AS cost,"
+        "       COALESCE(SUM(l.commission_allocated), 0) AS comm"
+        " FROM lots l WHERE l.account_id=? AND l.instrument_id=?"
+        " AND l.qty_remaining>0",
+        (MICRO, account_id, instrument_id)).fetchone()
+    return row["qty"], int(row["cost"]), row["comm"]

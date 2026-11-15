@@ -13,7 +13,7 @@ says where a copy that has drifted will need a hand.
 | Size | 47 commits, 127 files, +12,657 / −5,479 lines (about 3,000 of each are `dashboards.py` moving into `app/dash/`) |
 | Per-commit patches | [`porting/claire-2026-11-11.mbox`](porting/claire-2026-11-11.mbox) (for `git am`) |
 | One combined patch | [`porting/claire-2026-11-11.diff`](porting/claire-2026-11-11.diff) (for `git apply`) |
-| Why each change was made | [`../REVIEW-2026-11-11.md`](../REVIEW-2026-11-11.md) — start with "Status" |
+| Why each change was made | `REVIEW-2026-11-11.md` — start with "Status". It has since been removed from Claire (worked through; DESIGN.md §24.9) and is in the repository's history, e.g. `git show 2b4449e:REVIEW-2026-11-11.md` |
 
 Nothing here places, changes or cancels an order by itself, and nothing
 touches broker settings or the live-trading switch.
@@ -419,7 +419,8 @@ also discards every trade and order recorded since.
 ## 8. Not included
 
 Found by the review and **not** fixed by these patches, on Claire or
-anywhere. The full list, with reasons, is in `REVIEW-2026-11-11.md` under
+anywhere. The full list, with reasons, is in `REVIEW-2026-11-11.md` (now in the
+repository's history only — see the table at the top) under
 "Status". The ones that matter most:
 
 - NSE's 2027 holidays are incomplete until its circular is published.

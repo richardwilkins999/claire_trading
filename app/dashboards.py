@@ -148,9 +148,12 @@ def create_server(conn, repo, market, *, api_base="http://127.0.0.1:7788",
 
     class Server(ThreadingHTTPServer):
         def process_request_thread(self, request, client_address):
-            """One thread per request, so close that thread's desk.db
-            connection when the request ends (db.ThreadLocalConnection
-            .release). A raw :memory: connection (tests) has no release."""
+            """One thread per browser connection, so close that thread's
+            desk.db connection when it ends (db.ThreadLocalConnection
+            .release). The handler already does this after every request
+            (app/dash/handler.py, handle_one_request); this is the backstop
+            for a thread that dies in between. A raw :memory: connection
+            (tests) has no release."""
             try:
                 super().process_request_thread(request, client_address)
             finally:
@@ -293,7 +296,7 @@ def main():
     try:
         _, dash_port = ports.check()
         from . import deskname
-        log.info("this desk calls itself %s", deskname.check())
+        log.info("this desk is %s, run by %s", *deskname.check())
     except ValueError as e:              # a bad port or desk name
         log.critical("%s (etc/claire.env)", e)
         raise SystemExit(2)

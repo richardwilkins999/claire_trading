@@ -35,6 +35,7 @@ from urllib.parse import urlencode
 
 import httpx
 import logging
+from . import saxo_http
 from ..logsetup import swallowed
 
 log = logging.getLogger(__name__)
@@ -62,8 +63,7 @@ def auth_base(which):
 
 
 def api_base(which):
-    return "https://gateway.saxobank.com/" + (
-        "sim/openapi" if which == "sim" else "openapi")
+    return saxo_http.API["sim" if which == "sim" else "live"]
 
 
 TOKEN_FILE = token_file(DEFAULT_ENV)
@@ -331,14 +331,15 @@ def _get(what, which=None, *, env=os.environ, client=None, clock=time.time,
     w = _which(which)
     token = access_token(w, env=env, client=client, clock=clock, path=path)
     c = client or _shared_client()
-    r = c.get(api_base(w) + READ_PATHS[what],
-              headers={"Authorization": f"Bearer {token}"})
-    if r.status_code == 401:
-        raise NotSignedIn(f"Saxo rejected the {w} token — run "
-                          f"bin/saxo login {w}")
-    if r.status_code >= 400:
-        raise SaxoError(f"Saxo {what}: HTTP {r.status_code} {r.text[:200]}")
-    return r.json()
+    try:
+        # the verb is written out here, never passed in: this module reads
+        return saxo_http.send(c, w, "GET", READ_PATHS[what], token)
+    except saxo_http.SaxoHTTPError as e:
+        if e.status == 401:
+            raise NotSignedIn(f"Saxo rejected the {w} token — run "
+                              f"bin/saxo login {w}") from None
+        raise SaxoError(f"Saxo {what}: HTTP {e.status} "
+                        f"{e.text[:200]}") from None
 
 
 def _price_from_pl(view, amount):

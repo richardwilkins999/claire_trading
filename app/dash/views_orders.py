@@ -203,13 +203,70 @@ class OrderViews:
             " LEFT JOIN orders o ON o.id=e.order_id"
             " WHERE e.executed_at >= ? ORDER BY e.executed_at DESC",
             (since,))]
-        work = {}
+        # Everything else the page needs, once for all of its fills and
+        # handed out below. It used to be asked per fill — five to eight
+        # statements each, two of them scans of every lot and every closure
+        # (REVIEW-2026-11-11 §4.3). `runs` is the page's work items;
+        # `origins` the runs that its overrides overrode.
+        runs = "SELECT work_item_id FROM executions WHERE executed_at >= ?"
+        origins = f"SELECT override_of FROM work_items WHERE id IN ({runs})"
+        work = {r["id"]: dict(r) for r in self.ctx.conn.execute(
+            f"SELECT * FROM work_items WHERE id IN ({runs})", (since,))}
+        said, verdicts = {}, {}     # run → analysts' summaries / arbiter
+        for rep in self.ctx.conn.execute(
+                "SELECT work_item_id, agent_id, kind, payload"
+                " FROM agent_reports WHERE"
+                " (kind='analyst' OR agent_id='arbiter') AND"
+                f" (work_item_id IN ({runs}) OR work_item_id IN ({origins}))"
+                " ORDER BY id", (since, since)):
+            if rep["agent_id"] == "arbiter":
+                verdicts[rep["work_item_id"]] = rep["payload"]  # the latest
+            if rep["kind"] != "analyst":
+                continue
+            try:
+                s = json.loads(rep["payload"]).get("summary")
+            except (ValueError, AttributeError):
+                s = None
+            if s:
+                said.setdefault(rep["work_item_id"], []).append(
+                    f"{rep['agent_id']}: {s}")
+        approved, overrides = {}, {}    # run → first approval / override
+        for ev in self.ctx.conn.execute(
+                "SELECT item_id, ts, to_state, payload FROM events WHERE"
+                " to_state IN ('approved','override') AND"
+                f" item_id IN ({runs}) ORDER BY id", (since,)):
+            if ev["to_state"] == "approved":
+                approved[ev["item_id"]] = min(
+                    ev["ts"], approved.get(ev["item_id"], ev["ts"]))
+            else:
+                overrides.setdefault(ev["item_id"], ev["payload"])
+        # profit / loss: what each sell closed, the lot each buy opened, and
+        # what has been closed out of that lot since (oldest first)
+        closes = {r["close_execution_id"]: r for r in self.ctx.conn.execute(
+            "SELECT c.close_execution_id, COUNT(*) n,"
+            " SUM(c.realized_pl_base)/1e6 pl, SUM(c.cost_base)/1e6 cost,"
+            " SUM(c.qty)/1e6 q, MAX(c.holding_days) held"
+            " FROM lot_closures c JOIN executions e"
+            " ON e.id = c.close_execution_id WHERE e.executed_at >= ?"
+            " GROUP BY c.close_execution_id", (since,))}
+        lots = {}
+        for r in self.ctx.conn.execute(
+                "SELECT l.open_execution_id, l.id, l.qty_opened/1e6 opened,"
+                " l.qty_remaining/1e6 remaining,"
+                " l.cost_per_share_base/1e6 cost FROM lots l"
+                " JOIN executions e ON e.id = l.open_execution_id"
+                " WHERE e.executed_at >= ? ORDER BY l.rowid", (since,)):
+            lots.setdefault(r["open_execution_id"], r)
+        closed = {}
+        for r in self.ctx.conn.execute(
+                "SELECT c.lot_id, c.realized_pl_base, c.qty,"
+                " c.close_execution_id FROM lot_closures c"
+                " JOIN lots l ON l.id = c.lot_id JOIN executions e"
+                " ON e.id = l.open_execution_id WHERE e.executed_at >= ?"
+                " ORDER BY c.id", (since,)):
+            closed.setdefault(r["lot_id"], []).append(r)
 
         def item(wi):
-            if wi and wi not in work:
-                r = self.ctx.conn.execute("SELECT * FROM work_items WHERE id=?",
-                                 (wi,)).fetchone()
-                work[wi] = dict(r) if r else None
             return work.get(wi) if wi else None
 
         def thesis(w):
@@ -219,34 +276,16 @@ class OrderViews:
                 return {}
 
         def analysts(wi):
-            out = []
-            for rep in self.ctx.conn.execute(
-                    "SELECT agent_id, payload FROM agent_reports WHERE"
-                    " work_item_id=? AND kind='analyst' ORDER BY id",
-                    (wi,)):
-                try:
-                    s = json.loads(rep["payload"]).get("summary")
-                except (ValueError, AttributeError):
-                    s = None
-                if s:
-                    out.append(f"{rep['agent_id']}: {s}")
-            return out
+            return list(said.get(wi, []))
 
         def verdict(wi):
-            r = self.ctx.conn.execute(
-                "SELECT payload FROM agent_reports WHERE work_item_id=?"
-                " AND agent_id='arbiter' ORDER BY id DESC LIMIT 1",
-                (wi,)).fetchone()
             try:
-                return json.loads(r["payload"]) if r else {}
+                return json.loads(verdicts[wi]) if wi in verdicts else {}
             except ValueError:
                 return {}
 
         def approved_at(wi):
-            r = self.ctx.conn.execute(
-                "SELECT MIN(ts) FROM events WHERE item_id=? AND"
-                " to_state='approved'", (wi,)).fetchone()
-            return r[0] if r else None
+            return approved.get(wi)
 
         def reason(t):
             w = item(t["work_item_id"]) or {}
@@ -276,12 +315,9 @@ class OrderViews:
                        + (f" ({v['conviction']:.0%} conviction)"
                           if v.get("conviction") else "")
                        + " — you overrode it and approved the trade")
-                ev = self.ctx.conn.execute(
-                    "SELECT payload FROM events WHERE item_id=? AND"
-                    " to_state='override'", (w["id"],)).fetchone()
                 try:
-                    note = json.loads(ev["payload"] or "{}").get("note") \
-                        if ev else None
+                    note = json.loads(overrides[w["id"]] or "{}").get(
+                        "note") if w["id"] in overrides else None
                 except ValueError:
                     note = None
                 if note:
@@ -308,7 +344,6 @@ class OrderViews:
                                + (parent.get("id") or "?"))
             return why, details, approved_at(w["id"]) if w else None
 
-        # profit / loss: sells from their lot closures, buys from their lot
         open_syms = set()
         for t in rows:
             a = accts.get(t["account_id"]) or {}
@@ -317,16 +352,7 @@ class OrderViews:
             t["base_currency"] = a.get("base_currency")
             t["symbol"] = yahoo_symbol(t["ticker"], t["exchange"])
             t["reason"], t["details"], t["approved_at"] = reason(t)
-            cl = self.ctx.conn.execute(
-                "SELECT COUNT(*) n, SUM(realized_pl_base)/1e6 pl,"
-                " SUM(cost_base)/1e6 cost, SUM(qty)/1e6 q,"
-                " MAX(holding_days) held FROM lot_closures"
-                " WHERE close_execution_id=?", (t["id"],)).fetchone()
-            lot = self.ctx.conn.execute(
-                "SELECT id, qty_opened/1e6 opened,"
-                " qty_remaining/1e6 remaining,"
-                " cost_per_share_base/1e6 cost FROM lots"
-                " WHERE open_execution_id=?", (t["id"],)).fetchone()
+            cl, lot = closes.get(t["id"]), lots.get(t["id"])
             t["closes"] = None
             t["lot"] = None
             if cl and cl["n"]:
@@ -335,16 +361,19 @@ class OrderViews:
                                "pct": (cl["pl"] / cl["cost"] * 100
                                        if cl["cost"] else None)}
             if lot:
-                rz = self.ctx.conn.execute(
-                    "SELECT SUM(realized_pl_base)/1e6, SUM(qty)/1e6,"
-                    " GROUP_CONCAT(close_execution_id) FROM lot_closures"
-                    " WHERE lot_id=?", (lot["id"],)).fetchone()
+                parts = closed.get(lot["id"], [])
                 t["lot"] = {"opened": abs(lot["opened"]),
                             "remaining": lot["remaining"],
                             "cost": lot["cost"],
-                            "realized": rz[0], "closed_qty": rz[1],
-                            "closed_by": (rz[2] or "").split(",")
-                            if rz[2] else []}
+                            # whole micro-units added up, then one division
+                            # — the sum SQL made; nothing closed → no figure
+                            "realized": sum(c["realized_pl_base"]
+                                            for c in parts) / 1e6
+                            if parts else None,
+                            "closed_qty": sum(c["qty"] for c in parts) / 1e6
+                            if parts else None,
+                            "closed_by": [c["close_execution_id"]
+                                          for c in parts]}
                 if lot["remaining"] > 0:
                     open_syms.add(t["symbol"])
         quotes = {}

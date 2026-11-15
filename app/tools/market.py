@@ -189,6 +189,9 @@ class Market:
         self._host_i = 0
         self._primary_calls: list = []      # timestamps, for the rate gate
         self._yahoo_quiet_until = 0.0       # set when Yahoo refuses us
+        self._yahoo_refused = 0             # refusals in a row → longer quiet
+        self._primary_quiet_until = 0.0     # same, for the keyed provider
+        self._primary_refused = 0
 
     PRIMARY_PER_MIN = 7                     # Twelve Data free tier allows 8
 
@@ -204,6 +207,8 @@ class Market:
         batch larger than what is left is not sent at all."""
         if self._primary is None:
             return False
+        if time.monotonic() < self._primary_quiet_until:
+            return False                    # it refused us: see _primary_do
         cost = max(1, int(cost))
         with self._pace_lock:
             now = time.monotonic()
@@ -214,6 +219,46 @@ class Market:
             self._primary_calls.extend([now] * cost)
             return True
 
+    # How long a source is left alone after it refuses us (HTTP 429), by how
+    # many refusals in a row: 5 minutes, then 15, then an hour at a time. A
+    # success resets it. Asking again at every cache expiry — every few
+    # minutes, all night — got a refusal each time (305 in one day's log,
+    # 2026-11-15) and kept the quota from ever recovering.
+    QUIET_STEPS = (300, 900, 3600)
+
+    def _quiet_for(self, refused: int) -> int:
+        return self.QUIET_STEPS[min(refused, len(self.QUIET_STEPS)) - 1]
+
+    @staticmethod
+    def _refused(e) -> bool:
+        """Did the source say "too many requests"? Twelve Data answers a
+        spent minute AND a spent day with HTTP 429 (or an error body that
+        says so); Yahoo with a bare 429."""
+        if isinstance(e, httpx.HTTPStatusError) and e.response is not None:
+            return e.response.status_code == 429
+        msg = str(e).lower()
+        return "api credits" in msg or "too many requests" in msg
+
+    def _primary_do(self, fn):
+        """One call to the keyed provider. A refusal starts (or lengthens)
+        its quiet period, during which _primary_ok says no and every caller
+        falls through to the free chain without asking it."""
+        try:
+            out = fn()
+        except Exception as e:
+            if self._refused(e):
+                self._primary_refused += 1
+                wait = self._quiet_for(self._primary_refused)
+                self._primary_quiet_until = time.monotonic() + wait
+                log.warning("the keyed market-data provider refused a call "
+                            "(over its quota): not asking it again for %d "
+                            "min", wait // 60)
+            raise
+        if self._primary_refused:
+            log.info("the keyed market-data provider is answering again")
+        self._primary_refused = 0
+        return out
+
     MIN_GAP = 0.7                           # be a polite Yahoo client
 
     def _pace(self):
@@ -223,22 +268,27 @@ class Market:
                 time.sleep(wait)
             self._last_call = time.monotonic()
 
-    YAHOO_QUIET = 300                       # s: back off after a refusal
+    YAHOO_QUIET = 300                       # s: the first back-off step
 
     def _http_get(self, url, params=None):
         """Yahoo. After it refuses us (429 twice) we stop asking for a few
         minutes — every further call would be refused too, and each one
-        cost ~3.5 s of a page load (the Watchlist took ~20 s)."""
+        cost ~3.5 s of a page load (the Watchlist took ~20 s). Refused again
+        straight after the wait, the wait grows (QUIET_STEPS)."""
         wait = self._yahoo_quiet_until - time.monotonic()
         if wait > 0:
             raise MarketError(f"Yahoo is rate-limiting this machine — not "
                               f"asking again for {int(wait // 60) + 1} min")
         try:
-            return self._http_get_once(url, params)
+            out = self._http_get_once(url, params)
         except httpx.HTTPStatusError as e:
             if e.response is not None and e.response.status_code == 429:
-                self._yahoo_quiet_until = time.monotonic() + self.YAHOO_QUIET
+                self._yahoo_refused += 1
+                self._yahoo_quiet_until = time.monotonic() + max(
+                    self.YAHOO_QUIET, self._quiet_for(self._yahoo_refused))
             raise
+        self._yahoo_refused = 0
+        return out
 
     def _http_get_once(self, url, params=None):
         if self._client is None:
@@ -314,8 +364,9 @@ class Market:
                                               cost=len(covered)):
                 try:
                     out = dict(self._cached(("pq", covered), 60,
-                                            lambda: self._primary.quote(
-                                                list(covered))))
+                                            lambda: self._primary_do(
+                                                lambda: self._primary.quote(
+                                                    list(covered)))))
                 except Exception as e:      # noqa: BLE001 — fall through
                     swallowed(log, "quotes: keyed provider failed, "
                                    "using the free chain", e)
@@ -395,8 +446,9 @@ class Market:
                 and self._primary_gate(key, 900):
             try:
                 return self._cached(key, 900,
-                                    lambda: self._primary.chart(
-                                        symbol, range_, interval))
+                                    lambda: self._primary_do(
+                                        lambda: self._primary.chart(
+                                            symbol, range_, interval)))
             except Exception as e:          # noqa: BLE001 — fall through
                 swallowed(log, "chart: keyed provider failed, trying Yahoo",
                           e)
@@ -497,7 +549,8 @@ class Market:
                 try:                            # batched: one request for all
                     out = dict(self._cached(
                         ("m", covered), 300,
-                        lambda: self._primary.metrics(list(covered))))
+                        lambda: self._primary_do(
+                            lambda: self._primary.metrics(list(covered)))))
                 except Exception as e:          # noqa: BLE001
                     swallowed(log, "metrics: keyed provider failed, "
                                    "using TradingView", e)
@@ -564,7 +617,9 @@ class Market:
                    (("fxecb", pair), 3600, ecb)]
         if self._primary is not None:
             sources.insert(0, (("pfx", pair), self.cache_ttl,
-                               lambda: self._primary.fx(from_ccy, to_ccy)))
+                               lambda: self._primary_do(
+                                   lambda: self._primary.fx(from_ccy,
+                                                            to_ccy))))
         errors = []
         for key, ttl, fn in sources:
             if key[0] == "pfx" and not self._primary_gate(key, ttl):

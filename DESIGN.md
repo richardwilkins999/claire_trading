@@ -13,7 +13,13 @@ deterministic Python — no LLM ever touches money.
   idea, different path. See §3 and §16 for what that changes in practice.)
 - **Stack:** Python 3.14, LangGraph + LangChain 1.x, SQLite, stdlib HTTP for
   dashboards. No Node.js anywhere.
-- **Scope:** paper/simulation trading only, single user, localhost only.
+- **Scope:** paper/simulation trading by default (live trading on Saxo is
+  built but off, §22), single user. claire-api is loopback only; the
+  dashboards may be put on the LAN (`CLAIRE_DASHBOARD_BIND`), where every
+  action still needs the dashboard key.
+- **What changed in November 2026** — the features added after revision 2
+  (Telegram bot, changing levels after the buy, profit after fees, re-issuing
+  an expired buy, ports and names as settings, and more) — is §24.
 
 Everything in this document is either verified on the target machine or a
 direct consequence of a lesson learnt building an earlier prototype of this
@@ -909,6 +915,10 @@ The custodian **cannot** approve or execute: `/internal/resume` accepts only
 
 ## 13. Dashboards (:7787, stdlib Python, no build step)
 
+> The table below is the original page plan. The pages as they are now —
+> Home's Today view, the Orders page, Portfolio's cards, what can be edited
+> where — are described in §24.3. The port is a setting (§24.7).
+
 | Page | Purpose |
 |---|---|
 | `/` Mission Control | live graph of agents + broker MCP nodes, provider/model shown per agent, pulsing = currently executing (from `astream_events` → SSE); tiles: pending approvals, watcher health, custodian health, per-broker connectivity |
@@ -1080,6 +1090,11 @@ engine never sends. A live trigger can only ever create an approval card.
 ---
 
 ## 16. Scheduling & services (systemd user units)
+
+> On this machine the desk is run by `bin/claire` (start / stop / restart /
+> status / watchdog), not by these units, and the schedules live in the
+> `schedules` table run by claire-api's scheduler. The two ports (7788 /
+> 7787 below) and the desk's names are settings — §24.7.
 
 | Unit | Schedule | Purpose |
 |---|---|---|
@@ -1269,7 +1284,10 @@ runnable offline in under a second.
   symbol with no EXACT Saxo match is refused, never approximated (the SIM
   account seen on 2026-11-03 had no SGX/HKEX/TSE listings).
 - `exchange_sessions` holidays are a hand-maintained yearly list; a missed
-  holiday delays a queued order by a day, nothing more.
+  holiday delays a queued order by a day, nothing more. India's 2027 list
+  holds only the fixed dates until NSE publishes its circular (December);
+  the maintainer says so from 15 December.
+- More, from the November 2026 work, in §24.10.
 
 ---
 
@@ -1454,3 +1472,213 @@ work items, agent_runs (cost metering), live-trading logs.
 headline, checks, actions, note). A run that turns **bad** sends one
 Telegram alert (on the change, not every day). claire-api also stops
 logging the dashboards' `GET /status` polls, which were 99% of api.log.
+
+---
+
+## 24. What changed in November 2026
+
+Everything below was built and tested after revision 2. Each part names the
+module that owns it; the tests are the specification of record
+(`tests/run.sh`, about 1,150 offline tests in under a minute).
+
+### 24.1 Telegram: the desk's own bot
+
+Two set-ups, chosen by `CLAIRE_TELEGRAM_ENV` (a file holding
+`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, optionally `TELEGRAM_APPROVER_ID`
+and `TELEGRAM_POLL`):
+
+- **A shared bot** (the default, `~/bob/telegram.env`): another program is
+  the bot's only reader and relays button taps to
+  `POST /api/telegram-decision`.
+- **The desk's own bot** (`TELEGRAM_POLL=1`): the dashboards process
+  long-polls `getUpdates` itself (`app/telegram_bot.py`), keeps its offset in
+  `var/telegram_offset`, and writes a `telegram_bot` heartbeat to
+  `service_health` for the maintainer. One token has exactly one reader.
+
+What reaches the phone, and what the phone can do:
+
+- **Approval cards** (`app/telegram_approvals.py`): the trade, sized in
+  shares, with buttons — approve (two taps), reject, change the account,
+  choose the trailing %, retry or cancel a refused trade. Every rule of the
+  dashboard's approval applies unchanged (the approver's user id, the same
+  chat and message, single-use nonces, `LIVE` typed for real money).
+- **Commands** (`app/telegram_commands.py`), from the owner in a private chat
+  only: `/analyze`, `/buy`, `/sell`, `/positions`, `/orders`, `/floor`,
+  `/id`, `/help`. Each ends AT the approval gate (`/api/run`,
+  `/internal/manual`, `/internal/order`), never past it.
+- **The trailing % follows where the stop rests.** On an account whose stops
+  rest at Saxo (and for a buy that has a stop-loss) the trailing % is sent as
+  a trailing STOP that sells by itself; elsewhere it is the watcher's
+  trailing ALERT, which only asks. One rule decides it
+  (`accounts.venue_stop_facts`, mirrored by `trailIsStop` in
+  `web/orderform.js`); the card says which.
+
+### 24.2 Changing a level after the buy
+
+A held position's protection is its resting orders (§11a). They can now be
+moved without selling:
+
+- **`app/capabilities.py` — `CAN_CHANGE`**: one row per broker saying which
+  parts may be moved once the trade is done (stop-loss, take-profit, a
+  trailing stop held by the broker). Rows today: `builtin` (the desk's own
+  simulation: yes / yes / —), `saxo` (Saxo SIM: yes / yes / no), `saxo_live`
+  (all no, until proven on SIM), and `alpaca` / `moomoo` for the day those
+  venues are connected for real. A new broker is a new row plus a
+  `change_leg(order_id, price, symbol=…)` method on its adapter; a row that
+  says yes without the method is refused. The desk's own trailing alert is
+  always changeable and is not in the table.
+- **`app/level_change.py`**: moves EVERY resting stop (or target) order of a
+  position to the new price — venue first, then the book, with a
+  `levels_changed` audit event on the trade that opened the position. Human
+  only; the level must sit on the right side of the price now and of its
+  partner; a refusal by the venue leaves the book untouched. Routes:
+  `POST /internal/levels` (claire-api, which owns the adapters) behind
+  `POST /api/position-levels` (key re-checked).
+- **Adapters**: the sim changes its resting order's trigger; Saxo is
+  `PATCH /trade/v2/orders` with the whole order re-sent and only the price
+  changed, then read back. A Saxo trailing stop is refused (its distance is
+  another field, untried). **Tested against a fake Saxo only** — the first
+  real change on SIM is its proof.
+- **`web/levels.js`**: one editor for stop-loss, take-profit and trailing
+  alert, used by Home, Orders and Portfolio. A field that may not be changed
+  is locked and says why; the server checks again.
+
+### 24.3 The pages now
+
+- **Home**: opens on the System map; **Today** lists each holding on one
+  line — value, profit after fees, and a bar from stop-loss to take-profit
+  with a vertical line per level. A DASHED line can be dragged (it opens the
+  editor with that price); a SOLID line is fixed (what you paid, and any
+  level the account will not move). Each row has **Edit…** and **Sell…**;
+  resting on a ticker shows its chart.
+- **Orders**: every working order; a resting stop-loss / take-profit has
+  **Edit…**, or "🔒 fixed" with the reason.
+- **Portfolio**: one card per holding that says each thing once — the top
+  line carries shares, weight, days held, cost, fees and profit; the price
+  line carries every price (stop, trailing alert, paid, now, target) and can
+  be dragged like Home's; the three tiles show only the money. A card folds
+  down to its top line (remembered in the browser; fold-all above). Above
+  the cards, the totals per ACCOUNT currency, and beneath them the same
+  holdings in the SHARES' own currency (`by_share_currency`) — Paris shares
+  held by an SGD account are in its SGD line, and this is where their euro
+  figure is.
+- **Profit is shown after fees** (`portfolio.after_fees`): the price gain,
+  less the fees already paid to open the position, less the estimated fee
+  to close it (the account's own fee model) — what realized P/L will be.
+  The before-fees figure and the three parts are the tooltip. Stop-loss and
+  take-profit amounts stay before fees, in the share's currency.
+- **Approvals**: see 24.4.
+
+### 24.4 Sending an expired buy to approval again
+
+A buy can expire two ways with nothing bought: its approval ran out, or it
+was approved and the order was never filled. Either way the run ends
+`expired` with no fills (a part-filled order ends `done`). `Desk.override`
+now accepts such a run as well as a PASS: buy only, as a buy only, levels
+re-validated by `Thesis`, one live re-issue per run, refused if the book
+shows any fill. The new item's trigger is `re-issue of expired <id>`, its
+thesis says "RE-ISSUED BY YOU…", and the approval card and Telegram name it
+as such. The Approvals list keeps every buy that expired in the last seven
+days in reach, however many passes have concluded since.
+
+### 24.5 Market data: a source that refuses is left alone
+
+Twelve Data and Yahoo answer "too many requests" with HTTP 429. Asking
+again at every cache expiry got a refusal each time — 305 in one day's log —
+and kept the quota from recovering. Each source now has a quiet period that
+grows with consecutive refusals (`Market.QUIET_STEPS`: 5 minutes, 15, then
+an hour at a time) and resets on the first success; while the keyed
+provider is quiet, `_primary_ok` says no and every caller falls through to
+the free chain. FX then comes from the ECB's daily rate (cached an hour)
+without touching the refused sources.
+
+### 24.6 Risk arithmetic
+
+`check_risk`'s `max_position_pct` is tested in integer micro-units against
+a `Decimal` cap; the sums used to be divided by 1e6 inside SQL and the test
+itself was a float division, so a position exactly on the cap could land
+either side.
+
+### 24.7 Settings: ports and names
+
+- **`app/ports.py`** — `CLAIRE_API_PORT` (7788) and `CLAIRE_DASHBOARD_PORT`
+  (7787). The two servers, the links between them, the maintainer's probe,
+  Telegram links and `bin/claire` all read them. A bad value, or the same
+  port twice, stops the start. With its own folder, `etc/claire.env` and
+  `var/`, a second desk runs beside the first; `bin/claire` only ever
+  signals processes started from its own folder.
+- **`app/deskname.py`** — `CLAIRE_ASSISTANT_NAME` (the LLM that runs the
+  desk; default Claire) and `CLAIRE_DESK_NAME` (the desk itself; default
+  the assistant's name). Applied where words leave the desk — the
+  dashboards' response writer, Telegram and notifications, and the prompts
+  given to the models — as a whole-word replacement, with a short list of
+  patterns (`DESK_PATTERNS`: page titles, the menu's label, "… desk bot")
+  deciding where "Claire" means the desk. Commands, settings and file names
+  keep "claire". With the defaults nothing is touched.
+
+### 24.8 Internals
+
+- **Request routing is three tables** (`app/dash/handler.py`): `GET_VIEWS`
+  (views that take nothing), `GET_ROUTES` and `POST_ROUTES`, each path →
+  the name of a handler method. A route registers itself with `@get("/api/…")`
+  / `@post("/api/…")` on its own method, so the URL sits on the code that
+  guards it; registering a path twice fails at import. The order of checks
+  is unchanged (Host/Origin → the key → the body → the route), and every
+  money-path route still re-checks pairing inside its own method.
+- **The dashboards speak HTTP/1.1** with persistent connections, so a page's
+  polls reuse one connection. An idle connection closes quietly after 25 s;
+  streams (`/api/events`, the chat) end with `Connection: close`; a request
+  body that was refused before being read closes the connection (it must
+  never be parsed as the next request); the `desk.db` handle is released
+  after every request, so a failed request cannot leave a transaction open
+  for the next one.
+- **Portfolio and Trades run a fixed number of statements** however many
+  positions there are (11 and 8; they were 69 and 154 for eight positions):
+  each kind of row is fetched once for all positions
+  (`fills_by_position`, `legs_by_position`, `realized_by_position`; the
+  single-position functions are thin wrappers over the same code).
+  `Repo.position` is `holdings.ledger_position`. The watcher's per-side
+  grouping and the chat tool's cost breakdown keep their own queries: both
+  are float sums whose rounding an exact version would change by a fraction
+  of a cent, so they are not provably the same.
+- **One Saxo request core** (`app/tools/saxo_http.py`): `send(client,
+  environment, method, path, token, …)` puts one request on the wire and
+  raises `SaxoHTTPError` on an error status. The broker adapter, the
+  read-only account view and the chart reader are thin policy layers over
+  it — each keeps its own pacing, live guard, error wording and timeouts.
+  The OAuth token call and `mcp/saxo_mcp.py` (a standalone stdlib script)
+  are not on it. `SaxoBroker._throttle` reads, waits and writes under one
+  lock, so two threads cannot both send back to back.
+- **Tests cannot read the real Telegram settings.** `alerts` looked its
+  settings file up as a default argument bound at import, so the tests' and
+  the preview's redirect of `alerts.TELEGRAM_ENV` did not reach callers that
+  passed no path. It is looked up at call time now.
+
+### 24.9 The 2026-11-11 review
+
+`REVIEW-2026-11-11.md` (technical debt, efficiency and UI) has been worked
+through and removed; it is in the repository's history. Code comments that
+cite "REVIEW-2026-11-11 §x" or "B5" refer to it. What it listed and is
+still open is 24.10.
+
+### 24.10 Open, on purpose
+
+- **Changing a level at Saxo has only met a fake Saxo.** The first real
+  change on SIM is its proof; until then `saxo_live` stays off in
+  `CAN_CHANGE`, and a Saxo trailing stop's distance cannot be changed.
+- **The custodian asks Saxo once per working order.** One call per pass
+  would need the working-orders list to say when an order has part-filled;
+  that cannot be verified without Saxo, and a mistake there is a missed
+  fill.
+- **Analysts in one session** (`CLAIRE_SDK_ANALYST_ONE_SESSION=1`) is built
+  and off: unproven on real runs.
+- **The watchdog timer** (`bin/claire watchdog`, template in `systemd/`) is
+  not installed.
+- **`/api/runs` and `/api/approvals`** are compressed and revalidated but
+  not trimmed: the cost is already gone, and removing fields risks the
+  pages for nothing visible.
+- **India's 2027 holidays**: fixed dates only until NSE publishes.
+- A Saxo error answer that is JSON but not an object still surfaces as an
+  internal error, so that order counts as "outcome unknown", not "refused"
+  (unchanged behaviour, now pinned by a test).
+

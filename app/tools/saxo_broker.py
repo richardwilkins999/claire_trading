@@ -13,6 +13,7 @@ Instrument resolution never guesses. The desk's Yahoo-style symbol
 search result must match it EXACTLY; anything else refuses the order.
 """
 import json
+import threading
 import time
 import uuid
 from urllib.parse import quote
@@ -20,10 +21,10 @@ from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 
 import httpx
 
+from . import saxo_http
 from .brokers import BrokerError, PlacedOrder
 
-API = {"sim": "https://gateway.saxobank.com/sim/openapi",
-       "live": "https://gateway.saxobank.com/openapi"}
+API = saxo_http.API                 # the two gateways, under their old name
 
 # Yahoo suffix -> Saxo market identifier code(s), in preference order
 MIC_BY_SUFFIX = {
@@ -119,35 +120,54 @@ class SaxoBroker:
         self._orders = {}                   # broker order id -> placement info
         self._gap, self._sleep, self._mono = order_gap_s, sleep, monotonic
         self._last_order_call = None
+        self._throttle_lock = threading.Lock()  # see _throttle
 
     # ── HTTP ─────────────────────────────────────────────────────────────
     def _req(self, method, path, *, body=None, request_id=None):
+        """The adapter's rules on top of the shared request core
+        (saxo_http.send): order calls are paced, a placement carries its
+        request id, and whatever Saxo refuses comes out as a BrokerError
+        naming the call, the status and Saxo's own ErrorInfo. A network
+        failure is NOT a BrokerError — httpx's exception comes out as it
+        is, which is how a placement knows its outcome is unknown."""
         if method != "GET" and path.startswith("/trade/v2/orders"):
             self._throttle()
-        headers = {"Authorization": f"Bearer {self._token()}"}
+        headers = None
         if request_id:
             # Saxo rejects an identical order inside 15s unless the request
             # id differs; a REPLAY with the same id is thereby deduplicated
-            headers["x-request-id"] = request_id
-        r = self._client.request(method, API[self.environment] + path,
-                                 json=body, headers=headers)
-        if r.status_code >= 400:
-            try:
-                info = r.json().get("ErrorInfo") or r.json()
-            except ValueError:
-                info = r.text[:300]
-            raise BrokerError(f"Saxo {method} {path.split('?')[0]}: HTTP "
-                              f"{r.status_code} {json.dumps(info)[:300]}")
-        return r.json() if r.content else {}
+            headers = {"x-request-id": request_id}
+        token = self._token()               # after the pause, not before
+        try:
+            # empty_ok: Saxo answers a cancel or a change with no body
+            return saxo_http.send(self._client, self.environment, method,
+                                  path, token, json=body, headers=headers,
+                                  empty_ok=True)
+        except saxo_http.SaxoHTTPError as e:
+            # Saxo's ErrorInfo when the body has one, else the whole JSON
+            # body, else the start of whatever text came back
+            info = (e.body.get("ErrorInfo") or e.body) if e.is_json \
+                else e.text[:300]
+            raise BrokerError(f"Saxo {method} {e.path}: HTTP "
+                              f"{e.status} {json.dumps(info)[:300]}") from None
 
     def _throttle(self):
-        now = self._mono()
-        if self._last_order_call is not None and self._gap:
-            wait = self._last_order_call + self._gap - now
-            if wait > 0:
-                self._sleep(wait)
-                now = self._mono()
-        self._last_order_call = now
+        """Hold an order call back until `order_gap_s` after the previous
+        one. One SaxoBroker is shared by the custodian's thread and the
+        API's request threads, so reading the last call's time, waiting and
+        writing the new time are ONE step under a lock: without it two
+        threads could both read the old time, both find nothing to wait
+        for and send back to back — the 429 the pacing exists to avoid.
+        A second thread waits here for the first one's pause to end, then
+        takes its own pause after it."""
+        with self._throttle_lock:
+            now = self._mono()
+            if self._last_order_call is not None and self._gap:
+                wait = self._last_order_call + self._gap - now
+                if wait > 0:
+                    self._sleep(wait)
+                    now = self._mono()
+            self._last_order_call = now
 
     # ── instruments ──────────────────────────────────────────────────────
     def resolve(self, symbol):

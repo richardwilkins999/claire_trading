@@ -24,7 +24,12 @@ TELEGRAM_ENV = Path(os.environ.get("CLAIRE_TELEGRAM_ENV",
                                    Path.home() / "bob" / "telegram.env"))
 
 
-def _telegram_cfg(path=TELEGRAM_ENV):
+def _telegram_cfg(path=None):
+    # `path=None` → the module's TELEGRAM_ENV AS IT IS NOW. It used to be the
+    # default argument, bound when the module loaded — so the tests' and the
+    # preview's redirect of TELEGRAM_ENV did not reach a caller that passed
+    # no path, and such a call read the real settings file.
+    path = TELEGRAM_ENV if path is None else path
     cfg = {}
     try:
         for line in path.read_text().splitlines():
@@ -38,12 +43,13 @@ def _telegram_cfg(path=TELEGRAM_ENV):
     return cfg.get("TELEGRAM_BOT_TOKEN") or None, chat
 
 
-def telegram_settings(path=TELEGRAM_ENV):
+def telegram_settings(path=None):
     """{token, approver_id} for the interactive (button) messages. The
     approver is TELEGRAM_APPROVER_ID, else the first POSITIVE id in
     TELEGRAM_CHAT_ID — a positive chat id is a private chat, and a private
     chat's id equals the user's id. Group ids are negative and never qualify:
     a trade decision must come from one person, not from a chat."""
+    path = TELEGRAM_ENV if path is None else path
     cfg = {}
     try:
         for line in path.read_text().splitlines():
@@ -142,10 +148,12 @@ def edit_message(token, chat_id, message_id, html, *, keyboard=None,
         raise
 
 
-def send(text, *, title="Claire", path=TELEGRAM_ENV, client=None):
-    """Best effort on every channel; returns which ones accepted it."""
+def send(text, *, title=None, path=None, client=None):
+    """Best effort on every channel; returns which ones accepted it. The
+    title is the DESK's name unless the caller gives one."""
     sent = []
-    title, text = deskname.brand(title), deskname.brand(text)
+    title = deskname.desk() if title is None else deskname.brand(title)
+    text = deskname.brand(text)
     token, chat = _telegram_cfg(path)
     if token and chat:
         c = client or httpx.Client(timeout=10)
